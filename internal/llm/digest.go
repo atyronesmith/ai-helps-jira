@@ -44,17 +44,19 @@ type NotStartedItem struct {
 
 const DigestSystemPrompt = `You are a senior program manager analyzing JIRA data for an executive digest.
 
-You are given a parent Feature or Initiative and its linked Epics, along with
-recent comments from those Epics.
+You are given a parent issue (Initiative, Feature, or Epic) and its linked child
+issues, which may span multiple hierarchy levels (Initiative → Feature → Epic).
+Recent comments from child issues are included.
 
 Analyze the data and produce a structured digest:
 
 1. **Overall Status**: One of "on track", "at risk", or "blocked"
-2. **Progress Updates**: For each Epic with recent activity, summarize what happened
+2. **Progress Updates**: For each issue with recent activity, summarize what happened.
+   Use the issue key (e.g. EPIC-123) regardless of its type in the hierarchy.
 3. **Blockers**: Any issues flagged as blocked, waiting on external teams, or stalled
-4. **Not Started**: Epics that appear to have no progress or comments but should have
+4. **Not Started**: Issues that appear to have no progress or comments but should have
    started based on their status or context
-5. **Summary**: 2-3 sentence executive summary of the Feature/Initiative progress
+5. **Summary**: 2-3 sentence executive summary of progress across the hierarchy
 
 Respond ONLY with valid JSON (no markdown fences) with these keys:
   overall_status (string),
@@ -88,7 +90,7 @@ func GenerateDigest(cfg *config.Config, parent *jira.IssueDetail, links []jira.I
 		commentsByKey[c.IssueKey] = append(commentsByKey[c.IssueKey], c)
 	}
 
-	parts = append(parts, fmt.Sprintf("\n## Linked Epics (%d)", len(links)))
+	parts = append(parts, fmt.Sprintf("\n## Linked Issues (%d)", len(links)))
 	for _, link := range links {
 		parts = append(parts, fmt.Sprintf("\n### %s — %s", link.TargetKey, link.TargetSummary))
 		parts = append(parts, fmt.Sprintf("Status: %s | Type: %s | Link: %s (%s)",

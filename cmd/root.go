@@ -28,8 +28,8 @@ Examples:
   jira-cli enrich PROJ-123
   jira-cli enrich PROJ-123 --apply
   jira-cli digest FEAT-123
-  jira-cli digest FEAT-123 --days 14
-  jira-cli digest --release "2.0"
+  jira-cli digest "Features targeting release-2.0"
+  jira-cli digest "Features for release-2.0, changes in the last day"
   jira-cli --slack-markdown summary
   jira-cli -u user@company.com -p PROJ summary
   jira-cli create-epic -d "Build onboarding flow"`,

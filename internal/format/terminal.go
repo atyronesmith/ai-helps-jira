@@ -199,7 +199,7 @@ func DisplayDigest(parent *jira.IssueDetail, digest *DigestData) {
 
 	// Progress updates
 	if len(digest.Progress) > 0 {
-		data := [][]string{{"Epic", "Status", "Update"}}
+		data := [][]string{{"Issue", "Status", "Update"}}
 		for _, p := range digest.Progress {
 			summary := p.Update
 			if len(summary) > 50 {

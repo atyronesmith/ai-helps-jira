@@ -62,7 +62,7 @@ func WriteSummaryMarkdown(boards []jira.BoardInfo, openIssues []jira.Issue,
 
 func appendIssueTableMD(b *strings.Builder, issues []jira.Issue, server string) {
 	b.WriteString("| Key | Status | Priority | Summary |\n")
-	b.WriteString("|-----|--------|----------|---------||\n")
+	b.WriteString("|-----|--------|----------|---------|\n")
 	for _, issue := range issues {
 		link := fmt.Sprintf("[%s](%s/browse/%s)", issue.Key, server, issue.Key)
 		fmt.Fprintf(b, "| %s | %s | %s | %s |\n",

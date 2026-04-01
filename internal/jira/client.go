@@ -539,6 +539,7 @@ type apiIssueLinkResponse struct {
 		Labels      []string       `json:"labels"`
 		Type        apiName        `json:"issuetype"`
 		IssueLinks  []apiIssueLink `json:"issuelinks"`
+		Subtasks    []apiLinkedIssue `json:"subtasks"`
 	} `json:"fields"`
 }
 
@@ -563,9 +564,9 @@ type apiLinkedIssue struct {
 	} `json:"fields"`
 }
 
-// GetIssueWithLinks fetches an issue's details and its linked issues.
+// GetIssueWithLinks fetches an issue's details, its linked issues, and subtasks.
 func (c *Client) GetIssueWithLinks(key string) (*IssueDetail, []IssueLink, error) {
-	path := fmt.Sprintf("/rest/api/3/issue/%s?fields=summary,description,status,priority,labels,issuetype,issuelinks", key)
+	path := fmt.Sprintf("/rest/api/3/issue/%s?fields=summary,description,status,priority,labels,issuetype,issuelinks,subtasks", key)
 	slog.Info("fetching issue with links", "key", key)
 
 	var raw apiIssueLinkResponse
@@ -613,8 +614,56 @@ func (c *Client) GetIssueWithLinks(key string) (*IssueDetail, []IssueLink, error
 			})
 		}
 	}
-	slog.Info("issue links fetched", "key", key, "links", len(links))
+
+	// Include subtasks as child links
+	for _, st := range raw.Fields.Subtasks {
+		links = append(links, IssueLink{
+			SourceKey:     key,
+			TargetKey:     st.Key,
+			LinkType:      "Subtask",
+			Direction:     "outward",
+			TargetSummary: st.Fields.Summary,
+			TargetStatus:  st.Fields.Status.Name,
+			TargetType:    st.Fields.Type.Name,
+		})
+	}
+
+	slog.Info("issue links fetched", "key", key, "links", len(links),
+		"issuelinks", len(raw.Fields.IssueLinks), "subtasks", len(raw.Fields.Subtasks))
 	return detail, links, nil
+}
+
+// GetChildIssues finds all issues whose parent is the given key.
+// This catches parent-child relationships that aren't in issuelinks or subtasks
+// (e.g. Epics under a Feature in next-gen projects).
+func (c *Client) GetChildIssues(parentKey string) ([]IssueLink, error) {
+	jql := fmt.Sprintf("parent = %s ORDER BY issuetype ASC, priority ASC", parentKey)
+	slog.Info("fetching child issues", "parent", parentKey, "jql", jql)
+
+	req := searchRequest{
+		JQL:        jql,
+		MaxResults: 100,
+		Fields:     []string{"summary", "status", "priority", "issuetype"},
+	}
+	var resp searchResponse
+	if err := c.doRequest("POST", "/rest/api/3/search/jql", req, &resp); err != nil {
+		return nil, fmt.Errorf("get children of %s: %w", parentKey, err)
+	}
+
+	var links []IssueLink
+	for _, r := range resp.Issues {
+		links = append(links, IssueLink{
+			SourceKey:     parentKey,
+			TargetKey:     r.Key,
+			LinkType:      "Parent",
+			Direction:     "outward",
+			TargetSummary: r.Fields.Summary,
+			TargetStatus:  r.Fields.Status.Name,
+			TargetType:    r.Fields.Type.Name,
+		})
+	}
+	slog.Info("child issues fetched", "parent", parentKey, "count", len(links))
+	return links, nil
 }
 
 // SearchByRelease returns all issues in a fixVersion.

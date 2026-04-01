@@ -14,7 +14,8 @@ import (
 )
 
 type QueryResult struct {
-	JQL string `json:"jql"`
+	JQL  string `json:"jql"`
+	Days int    `json:"days,omitempty"` // optional time window extracted from natural language
 }
 
 const QuerySystemPrompt = `You are a JIRA JQL expert. Translate the user's natural-language query into valid JQL.
@@ -38,7 +39,8 @@ Rules:
 2. If the user mentions "my" or "me", use assignee = %s.
 3. If the user mentions a specific person by name or username, use assignee = "name" or assignee = "email".
 4. Use ORDER BY when it improves readability (e.g. priority ASC, created DESC).
-5. Respond ONLY with valid JSON (no markdown fences): {"jql": "your JQL here"}`
+5. If the user mentions a time window for viewing changes or activity (e.g. "last day", "past 2 weeks", "since Monday"), include a "days" field with the number of days. Do NOT put time constraints in the JQL for this — the days field controls a separate comment filter. Only use date constraints in JQL when filtering by issue creation/update dates. Omit the "days" field if no time window is mentioned.
+6. Respond ONLY with valid JSON (no markdown fences): {"jql": "your JQL here"} or {"jql": "your JQL here", "days": 1}`
 
 func GenerateJQL(cfg *config.Config, naturalQuery string) (*QueryResult, error) {
 	ctx := context.Background()

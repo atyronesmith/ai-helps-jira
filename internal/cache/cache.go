@@ -116,6 +116,21 @@ func migrate(db *sql.DB) error {
 		slog.Info("cache migrated to v3", "added", "comments + issue_links tables")
 	}
 
+	// v4: add digest_log table for tracking last digest run
+	if version < 4 {
+		_, err := db.Exec(`
+			CREATE TABLE IF NOT EXISTS digest_log (
+				query_key  TEXT PRIMARY KEY,
+				last_run   DATETIME NOT NULL
+			);
+		`)
+		if err != nil {
+			slog.Warn("migrate v4: table may already exist", "error", err)
+		}
+		_, _ = db.Exec("PRAGMA user_version = 4")
+		slog.Info("cache migrated to v4", "added", "digest_log table")
+	}
+
 	return nil
 }
 
@@ -443,6 +458,30 @@ func (c *Cache) GetIssueLinks(sourceKey string) ([]jira.IssueLink, error) {
 	}
 	slog.Info("cache loaded links", "count", len(links), "source", sourceKey)
 	return links, rows.Err()
+}
+
+// LastDigestRun returns the last time a digest was run for the given query key,
+// or zero time if never run.
+func (c *Cache) LastDigestRun(queryKey string) time.Time {
+	var t string
+	err := c.db.QueryRow(
+		"SELECT last_run FROM digest_log WHERE query_key = ?", queryKey,
+	).Scan(&t)
+	if err != nil {
+		return time.Time{}
+	}
+	parsed, _ := time.Parse(time.RFC3339, t)
+	return parsed
+}
+
+// LogDigestRun records the current time as the last digest run for the given query key.
+func (c *Cache) LogDigestRun(queryKey string) error {
+	_, err := c.db.Exec(
+		"INSERT INTO digest_log (query_key, last_run) VALUES (?, ?) "+
+			"ON CONFLICT(query_key) DO UPDATE SET last_run = excluded.last_run",
+		queryKey, time.Now().UTC().Format(time.RFC3339),
+	)
+	return err
 }
 
 // Clear removes all cached data for a project.
