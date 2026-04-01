@@ -161,6 +161,86 @@ func DisplayQueryResults(issues []jira.Issue, jql string) {
 	fmt.Println()
 }
 
+// DigestData holds digest results for display (avoids circular import with llm package).
+type DigestData struct {
+	OverallStatus string
+	Progress      []DigestProgress
+	Blockers      []DigestBlocker
+	NotStarted    []DigestNotStarted
+	Summary       string
+}
+
+type DigestProgress struct {
+	EpicKey, EpicSummary, Status, Update string
+}
+
+type DigestBlocker struct {
+	EpicKey, EpicSummary, Blocker, Impact string
+}
+
+type DigestNotStarted struct {
+	EpicKey, EpicSummary, Reason string
+}
+
+var overallStatusColors = map[string]pterm.Color{
+	"on track": pterm.FgGreen,
+	"at risk":  pterm.FgYellow,
+	"blocked":  pterm.FgRed,
+}
+
+// DisplayDigest renders a progress digest for a Feature/Initiative.
+func DisplayDigest(parent *jira.IssueDetail, digest *DigestData) {
+	fmt.Println()
+	pterm.DefaultBox.WithTitle(fmt.Sprintf("%s — %s", parent.Key, parent.IssueType)).
+		Println(parent.Summary)
+
+	statusText := colorize(digest.OverallStatus, overallStatusColors)
+	fmt.Printf("  Overall Status: %s\n\n", statusText)
+
+	// Progress updates
+	if len(digest.Progress) > 0 {
+		data := [][]string{{"Epic", "Status", "Update"}}
+		for _, p := range digest.Progress {
+			summary := p.Update
+			if len(summary) > 50 {
+				summary = summary[:47] + "..."
+			}
+			data = append(data, []string{p.EpicKey, p.Status, summary})
+		}
+		pterm.DefaultSection.Println("Progress Updates")
+		table, _ := pterm.DefaultTable.WithHasHeader(true).WithData(data).Srender()
+		fmt.Println(table)
+	}
+
+	// Blockers
+	if len(digest.Blockers) > 0 {
+		pterm.DefaultSection.Println("Blockers")
+		for _, b := range digest.Blockers {
+			pterm.FgRed.Printf("  %s: ", b.EpicKey)
+			fmt.Printf("%s", b.Blocker)
+			if b.Impact != "" {
+				pterm.FgLightWhite.Printf(" (Impact: %s)", b.Impact)
+			}
+			fmt.Println()
+		}
+		fmt.Println()
+	}
+
+	// Not started
+	if len(digest.NotStarted) > 0 {
+		pterm.DefaultSection.Println("Not Started")
+		for _, n := range digest.NotStarted {
+			pterm.FgYellow.Printf("  %s: ", n.EpicKey)
+			fmt.Printf("%s — %s\n", n.EpicSummary, n.Reason)
+		}
+		fmt.Println()
+	}
+
+	// Executive summary
+	pterm.DefaultBox.WithTitle("Executive Summary").Println(digest.Summary)
+	fmt.Println()
+}
+
 func StatusPrinter(msg string) *pterm.SpinnerPrinter {
 	s, _ := pterm.DefaultSpinner.Start(msg)
 	return s

@@ -83,6 +83,39 @@ func migrate(db *sql.DB) error {
 		slog.Info("cache migrated to v2", "added", "assignee column")
 	}
 
+	// v3: add comments and issue_links tables
+	if version < 3 {
+		_, err := db.Exec(`
+			CREATE TABLE IF NOT EXISTS comments (
+				id          TEXT PRIMARY KEY,
+				issue_key   TEXT NOT NULL,
+				author      TEXT NOT NULL,
+				author_email TEXT NOT NULL DEFAULT '',
+				body        TEXT NOT NULL,
+				created     DATETIME NOT NULL,
+				fetched_at  DATETIME NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS issue_links (
+				source_key     TEXT NOT NULL,
+				target_key     TEXT NOT NULL,
+				link_type      TEXT NOT NULL,
+				direction      TEXT NOT NULL,
+				target_summary TEXT NOT NULL DEFAULT '',
+				target_status  TEXT NOT NULL DEFAULT '',
+				target_type    TEXT NOT NULL DEFAULT '',
+				fetched_at     DATETIME NOT NULL,
+				PRIMARY KEY (source_key, target_key, link_type)
+			);
+			CREATE INDEX IF NOT EXISTS idx_comments_issue ON comments(issue_key);
+			CREATE INDEX IF NOT EXISTS idx_links_source ON issue_links(source_key);
+		`)
+		if err != nil {
+			slog.Warn("migrate v3: tables may already exist", "error", err)
+		}
+		_, _ = db.Exec("PRAGMA user_version = 3")
+		slog.Info("cache migrated to v3", "added", "comments + issue_links tables")
+	}
+
 	return nil
 }
 
@@ -268,6 +301,148 @@ func (c *Cache) GetBoards(project string) ([]jira.BoardInfo, error) {
 	}
 	slog.Info("cache boards loaded", "count", len(boards))
 	return boards, rows.Err()
+}
+
+// UpsertComments inserts or updates comments in the cache.
+func (c *Cache) UpsertComments(comments []jira.Comment) error {
+	if len(comments) == 0 {
+		return nil
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO comments (id, issue_key, author, author_email, body, created, fetched_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			body = excluded.body,
+			fetched_at = excluded.fetched_at
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, c := range comments {
+		_, err := stmt.Exec(c.ID, c.IssueKey, c.AuthorName, c.AuthorEmail,
+			c.Body, c.Created.Format(time.RFC3339), now)
+		if err != nil {
+			return fmt.Errorf("upsert comment %s: %w", c.ID, err)
+		}
+	}
+	slog.Info("cache upserted comments", "count", len(comments))
+	return tx.Commit()
+}
+
+// GetCommentsByKeys returns cached comments for multiple issue keys, filtered by created date.
+func (c *Cache) GetCommentsByKeys(issueKeys []string, since time.Time) ([]jira.Comment, error) {
+	if len(issueKeys) == 0 {
+		return nil, nil
+	}
+	placeholders := ""
+	args := make([]any, 0, len(issueKeys)+1)
+	for i, key := range issueKeys {
+		if i > 0 {
+			placeholders += ","
+		}
+		placeholders += "?"
+		args = append(args, key)
+	}
+	args = append(args, since.Format(time.RFC3339))
+
+	query := fmt.Sprintf(
+		"SELECT id, issue_key, author, author_email, body, created FROM comments "+
+			"WHERE issue_key IN (%s) AND created >= ? ORDER BY created DESC",
+		placeholders,
+	)
+	rows, err := c.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var comments []jira.Comment
+	for rows.Next() {
+		var cm jira.Comment
+		var created string
+		if err := rows.Scan(&cm.ID, &cm.IssueKey, &cm.AuthorName, &cm.AuthorEmail,
+			&cm.Body, &created); err != nil {
+			return nil, err
+		}
+		cm.Created, _ = time.Parse(time.RFC3339, created)
+		comments = append(comments, cm)
+	}
+	slog.Info("cache loaded comments", "count", len(comments), "keys", len(issueKeys))
+	return comments, rows.Err()
+}
+
+// UpsertIssueLinks inserts or updates issue links in the cache.
+func (c *Cache) UpsertIssueLinks(links []jira.IssueLink) error {
+	if len(links) == 0 {
+		return nil
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO issue_links (source_key, target_key, link_type, direction,
+			target_summary, target_status, target_type, fetched_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(source_key, target_key, link_type) DO UPDATE SET
+			direction = excluded.direction,
+			target_summary = excluded.target_summary,
+			target_status = excluded.target_status,
+			target_type = excluded.target_type,
+			fetched_at = excluded.fetched_at
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, l := range links {
+		_, err := stmt.Exec(l.SourceKey, l.TargetKey, l.LinkType, l.Direction,
+			l.TargetSummary, l.TargetStatus, l.TargetType, now)
+		if err != nil {
+			return fmt.Errorf("upsert link %s->%s: %w", l.SourceKey, l.TargetKey, err)
+		}
+	}
+	slog.Info("cache upserted links", "count", len(links))
+	return tx.Commit()
+}
+
+// GetIssueLinks returns cached links for a source issue key.
+func (c *Cache) GetIssueLinks(sourceKey string) ([]jira.IssueLink, error) {
+	rows, err := c.db.Query(
+		"SELECT source_key, target_key, link_type, direction, "+
+			"target_summary, target_status, target_type "+
+			"FROM issue_links WHERE source_key = ?",
+		sourceKey,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var links []jira.IssueLink
+	for rows.Next() {
+		var l jira.IssueLink
+		if err := rows.Scan(&l.SourceKey, &l.TargetKey, &l.LinkType, &l.Direction,
+			&l.TargetSummary, &l.TargetStatus, &l.TargetType); err != nil {
+			return nil, err
+		}
+		links = append(links, l)
+	}
+	slog.Info("cache loaded links", "count", len(links), "source", sourceKey)
+	return links, rows.Err()
 }
 
 // Clear removes all cached data for a project.

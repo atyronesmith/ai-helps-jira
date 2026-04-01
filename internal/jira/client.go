@@ -485,6 +485,148 @@ func extractTextNodes(node map[string]any, buf *[]byte) {
 	}
 }
 
+// --- Comments & Links (v3 API) ---
+
+type apiCommentResponse struct {
+	Key    string `json:"key"`
+	Fields struct {
+		Comment struct {
+			Comments []apiComment `json:"comments"`
+		} `json:"comment"`
+	} `json:"fields"`
+}
+
+type apiComment struct {
+	ID      string      `json:"id"`
+	Author  apiAssignee `json:"author"`
+	Body    any         `json:"body"` // ADF document
+	Created string      `json:"created"`
+}
+
+// GetComments fetches all comments for an issue.
+func (c *Client) GetComments(key string) ([]Comment, error) {
+	path := fmt.Sprintf("/rest/api/3/issue/%s?fields=comment", key)
+	slog.Debug("fetching comments", "key", key)
+
+	var raw apiCommentResponse
+	if err := c.doRequest("GET", path, nil, &raw); err != nil {
+		return nil, fmt.Errorf("get comments %s: %w", key, err)
+	}
+
+	var comments []Comment
+	for _, c := range raw.Fields.Comment.Comments {
+		created, _ := time.Parse("2006-01-02T15:04:05.000-0700", c.Created)
+		comments = append(comments, Comment{
+			ID:          c.ID,
+			IssueKey:    key,
+			AuthorName:  c.Author.DisplayName,
+			AuthorEmail: c.Author.EmailAddress,
+			Body:        extractADFText(c.Body),
+			Created:     created,
+		})
+	}
+	slog.Info("comments fetched", "key", key, "count", len(comments))
+	return comments, nil
+}
+
+type apiIssueLinkResponse struct {
+	Key    string `json:"key"`
+	Fields struct {
+		Summary     string         `json:"summary"`
+		Description any            `json:"description"`
+		Status      apiName        `json:"status"`
+		Priority    *apiName       `json:"priority"`
+		Labels      []string       `json:"labels"`
+		Type        apiName        `json:"issuetype"`
+		IssueLinks  []apiIssueLink `json:"issuelinks"`
+	} `json:"fields"`
+}
+
+type apiIssueLink struct {
+	ID   string `json:"id"`
+	Type struct {
+		Name    string `json:"name"`
+		Inward  string `json:"inward"`
+		Outward string `json:"outward"`
+	} `json:"type"`
+	InwardIssue  *apiLinkedIssue `json:"inwardIssue"`
+	OutwardIssue *apiLinkedIssue `json:"outwardIssue"`
+}
+
+type apiLinkedIssue struct {
+	Key    string `json:"key"`
+	Fields struct {
+		Summary  string   `json:"summary"`
+		Status   apiName  `json:"status"`
+		Type     apiName  `json:"issuetype"`
+		Priority *apiName `json:"priority"`
+	} `json:"fields"`
+}
+
+// GetIssueWithLinks fetches an issue's details and its linked issues.
+func (c *Client) GetIssueWithLinks(key string) (*IssueDetail, []IssueLink, error) {
+	path := fmt.Sprintf("/rest/api/3/issue/%s?fields=summary,description,status,priority,labels,issuetype,issuelinks", key)
+	slog.Info("fetching issue with links", "key", key)
+
+	var raw apiIssueLinkResponse
+	if err := c.doRequest("GET", path, nil, &raw); err != nil {
+		return nil, nil, fmt.Errorf("get issue with links %s: %w", key, err)
+	}
+
+	pri := ""
+	if raw.Fields.Priority != nil {
+		pri = raw.Fields.Priority.Name
+	}
+
+	detail := &IssueDetail{
+		Key:         raw.Key,
+		Summary:     raw.Fields.Summary,
+		Description: extractADFText(raw.Fields.Description),
+		Status:      raw.Fields.Status.Name,
+		Priority:    pri,
+		Labels:      raw.Fields.Labels,
+		IssueType:   raw.Fields.Type.Name,
+	}
+
+	var links []IssueLink
+	for _, l := range raw.Fields.IssueLinks {
+		if l.OutwardIssue != nil {
+			links = append(links, IssueLink{
+				SourceKey:     key,
+				TargetKey:     l.OutwardIssue.Key,
+				LinkType:      l.Type.Name,
+				Direction:     "outward",
+				TargetSummary: l.OutwardIssue.Fields.Summary,
+				TargetStatus:  l.OutwardIssue.Fields.Status.Name,
+				TargetType:    l.OutwardIssue.Fields.Type.Name,
+			})
+		}
+		if l.InwardIssue != nil {
+			links = append(links, IssueLink{
+				SourceKey:     key,
+				TargetKey:     l.InwardIssue.Key,
+				LinkType:      l.Type.Name,
+				Direction:     "inward",
+				TargetSummary: l.InwardIssue.Fields.Summary,
+				TargetStatus:  l.InwardIssue.Fields.Status.Name,
+				TargetType:    l.InwardIssue.Fields.Type.Name,
+			})
+		}
+	}
+	slog.Info("issue links fetched", "key", key, "links", len(links))
+	return detail, links, nil
+}
+
+// SearchByRelease returns all issues in a fixVersion.
+func (c *Client) SearchByRelease(releaseName string) ([]Issue, error) {
+	jql := fmt.Sprintf(
+		"fixVersion = %q AND project = %s ORDER BY issuetype ASC, priority ASC",
+		releaseName, c.project,
+	)
+	slog.Info("search_by_release", "release", releaseName, "jql", jql)
+	return c.searchIssues(jql, 100)
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

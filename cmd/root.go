@@ -27,6 +27,9 @@ Examples:
   jira-cli query "tickets worked on by jsmith" --show-jql
   jira-cli enrich PROJ-123
   jira-cli enrich PROJ-123 --apply
+  jira-cli digest FEAT-123
+  jira-cli digest FEAT-123 --days 14
+  jira-cli digest --release "2.0"
   jira-cli --slack-markdown summary
   jira-cli -u user@company.com -p PROJ summary
   jira-cli create-epic -d "Build onboarding flow"`,

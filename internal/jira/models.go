@@ -24,6 +24,27 @@ type IssueDetail struct {
 	IssueType   string
 }
 
+// Comment represents a single JIRA issue comment.
+type Comment struct {
+	ID          string
+	IssueKey    string
+	AuthorName  string
+	AuthorEmail string
+	Body        string // plain text extracted from ADF
+	Created     time.Time
+}
+
+// IssueLink represents a directional link between two issues.
+type IssueLink struct {
+	SourceKey     string
+	TargetKey     string
+	LinkType      string // e.g. "is parent of", "Epic Link"
+	Direction     string // "inward" or "outward"
+	TargetSummary string
+	TargetStatus  string
+	TargetType    string // issue type of target
+}
+
 type BoardInfo struct {
 	Name       string
 	BoardType  string // "scrum" or "kanban"
