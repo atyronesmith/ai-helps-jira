@@ -1,0 +1,117 @@
+package format
+
+import (
+	"fmt"
+
+	"github.com/pterm/pterm"
+
+	"github.com/atyronesmith/ai-helps-jira/internal/jira"
+)
+
+var priorityColors = map[string]pterm.Color{
+	"Highest": pterm.FgLightRed,
+	"High":    pterm.FgRed,
+	"Medium":  pterm.FgYellow,
+	"Low":     pterm.FgGreen,
+	"Lowest":  pterm.FgLightGreen,
+}
+
+var statusColors = map[string]pterm.Color{
+	"To Do":       pterm.FgWhite,
+	"In Progress": pterm.FgCyan,
+	"In Review":   pterm.FgMagenta,
+	"Done":        pterm.FgGreen,
+}
+
+func DisplaySummary(boards []jira.BoardInfo, openIssues []jira.Issue) {
+	fmt.Println()
+	for _, board := range boards {
+		if board.BoardType == "scrum" && board.SprintName != "" {
+			pterm.DefaultBox.WithTitle(fmt.Sprintf("Sprint - %s", board.Name)).
+				Println(board.SprintName)
+		} else {
+			pterm.DefaultBox.WithTitle("Kanban Board").
+				Println(board.Name)
+		}
+		printIssueTable(fmt.Sprintf("%s Issues", board.Name), board.Issues)
+	}
+
+	if len(boards) == 0 {
+		pterm.FgLightWhite.Println("No board issues found.")
+	}
+
+	if len(openIssues) > 0 {
+		printIssueTable("All Open Issues", openIssues)
+	} else {
+		pterm.FgGreen.Println("No open issues assigned to you!")
+	}
+	fmt.Println()
+}
+
+func printIssueTable(title string, issues []jira.Issue) {
+	data := [][]string{{"Key", "Status", "Pri", "Summary"}}
+	for _, issue := range issues {
+		status := colorize(issue.Status, statusColors)
+		pri := colorize(issue.Priority, priorityColors)
+		summary := issue.Summary
+		if len(summary) > 50 {
+			summary = summary[:47] + "..."
+		}
+		data = append(data, []string{issue.Key, status, pri, summary})
+	}
+
+	table, _ := pterm.DefaultTable.
+		WithHasHeader(true).
+		WithData(data).
+		Srender()
+
+	if title != "" {
+		pterm.DefaultSection.Println(title)
+	}
+	fmt.Println(table)
+}
+
+func colorize(text string, colors map[string]pterm.Color) string {
+	if c, ok := colors[text]; ok {
+		return pterm.NewStyle(c).Sprint(text)
+	}
+	return text
+}
+
+func DisplayEpicPreview(summary, description string, criteria []string, priority string, labels []string) {
+	fmt.Println()
+	pterm.DefaultBox.WithTitle("EPIC Summary").Println(summary)
+	pterm.DefaultBox.WithTitle("Description").Println(description)
+
+	if len(criteria) > 0 {
+		items := make([]pterm.BulletListItem, len(criteria))
+		for i, c := range criteria {
+			items[i] = pterm.BulletListItem{Level: 0, Text: c}
+		}
+		pterm.DefaultSection.Println("Acceptance Criteria")
+		pterm.DefaultBulletList.WithItems(items).Render()
+	}
+
+	fmt.Printf("  Priority: %s\n", priority)
+	fmt.Printf("  Labels:   %s\n", joinLabels(labels))
+	fmt.Println()
+}
+
+func joinLabels(labels []string) string {
+	if len(labels) == 0 {
+		return "(none)"
+	}
+	s := ""
+	for i, l := range labels {
+		if i > 0 {
+			s += ", "
+		}
+		s += l
+	}
+	return s
+}
+
+func StatusPrinter(msg string) *pterm.SpinnerPrinter {
+	s, _ := pterm.DefaultSpinner.Start(msg)
+	return s
+}

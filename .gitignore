@@ -1,0 +1,4 @@
+.env
+jira-cli
+*.db
+FIELDCTO.md
