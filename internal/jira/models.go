@@ -13,6 +13,17 @@ type Issue struct {
 	Sprint   string // sprint name, empty if kanban
 }
 
+// IssueDetail holds full issue fields for enrichment/editing.
+type IssueDetail struct {
+	Key         string
+	Summary     string
+	Description string // plain text extracted from ADF
+	Status      string
+	Priority    string
+	Labels      []string
+	IssueType   string
+}
+
 type BoardInfo struct {
 	Name       string
 	BoardType  string // "scrum" or "kanban"

@@ -111,6 +111,39 @@ func joinLabels(labels []string) string {
 	return s
 }
 
+// DisplayEnrichPreview shows current vs suggested enrichment fields.
+func DisplayEnrichPreview(issue *jira.IssueDetail, desc string, criteria []string, priority string, labels []string) {
+	fmt.Println()
+	pterm.DefaultBox.WithTitle(fmt.Sprintf("%s — %s", issue.Key, issue.IssueType)).
+		Println(issue.Summary)
+
+	// Current description
+	pterm.DefaultSection.Println("Current Description")
+	if issue.Description != "" {
+		fmt.Println(issue.Description)
+	} else {
+		pterm.FgLightWhite.Println("(empty)")
+	}
+
+	// Suggested description
+	pterm.DefaultSection.Println("Suggested Description")
+	fmt.Println(desc)
+
+	// Acceptance criteria
+	if len(criteria) > 0 {
+		items := make([]pterm.BulletListItem, len(criteria))
+		for i, c := range criteria {
+			items[i] = pterm.BulletListItem{Level: 0, Text: c}
+		}
+		pterm.DefaultSection.Println("Acceptance Criteria")
+		pterm.DefaultBulletList.WithItems(items).Render()
+	}
+
+	fmt.Printf("  Priority: %s → %s\n", issue.Priority, priority)
+	fmt.Printf("  Labels:   %s → %s\n", joinLabels(issue.Labels), joinLabels(labels))
+	fmt.Println()
+}
+
 // DisplayQueryResults renders issues from a JQL query.
 func DisplayQueryResults(issues []jira.Issue, jql string) {
 	fmt.Println()

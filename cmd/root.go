@@ -19,14 +19,15 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "jira-cli",
 	Short: "JIRA CLI - daily summaries and LLM-assisted EPIC creation",
-	Long: `JIRA CLI - daily summaries, LLM-assisted EPIC creation, and natural language search.
+	Long: `JIRA CLI - daily summaries, LLM-assisted features, and natural language search.
 
 Examples:
   jira-cli summary
   jira-cli query "show me all critical bugs from last week"
   jira-cli query "tickets worked on by jsmith" --show-jql
+  jira-cli enrich PROJ-123
+  jira-cli enrich PROJ-123 --apply
   jira-cli --slack-markdown summary
-  jira-cli --slack-markdown -o report.md summary
   jira-cli -u user@company.com -p PROJ summary
   jira-cli create-epic -d "Build onboarding flow"`,
 }

@@ -372,6 +372,119 @@ func (c *Client) CreateEpic(summary, description, priority string, labels []stri
 	}, nil
 }
 
+// --- Get / Update Issue (v3 API) ---
+
+type apiIssueDetail struct {
+	Key    string          `json:"key"`
+	Fields apiDetailFields `json:"fields"`
+}
+
+type apiDetailFields struct {
+	Summary     string      `json:"summary"`
+	Description any         `json:"description"` // ADF document
+	Status      apiName     `json:"status"`
+	Priority    *apiName    `json:"priority"`
+	Labels      []string    `json:"labels"`
+	Type        apiName     `json:"issuetype"`
+}
+
+// GetIssue fetches full issue details including description.
+func (c *Client) GetIssue(key string) (*IssueDetail, error) {
+	path := fmt.Sprintf("/rest/api/3/issue/%s?fields=summary,description,status,priority,labels,issuetype", key)
+	slog.Info("fetching issue", "key", key)
+
+	var raw apiIssueDetail
+	if err := c.doRequest("GET", path, nil, &raw); err != nil {
+		return nil, fmt.Errorf("get issue %s: %w", key, err)
+	}
+
+	pri := ""
+	if raw.Fields.Priority != nil {
+		pri = raw.Fields.Priority.Name
+	}
+
+	desc := extractADFText(raw.Fields.Description)
+
+	return &IssueDetail{
+		Key:         raw.Key,
+		Summary:     raw.Fields.Summary,
+		Description: desc,
+		Status:      raw.Fields.Status.Name,
+		Priority:    pri,
+		Labels:      raw.Fields.Labels,
+		IssueType:   raw.Fields.Type.Name,
+	}, nil
+}
+
+// UpdateIssue updates fields on an existing issue.
+func (c *Client) UpdateIssue(key string, description string, labels []string) error {
+	slog.Info("updating issue", "key", key)
+
+	fields := map[string]any{
+		"description": textToADF(description),
+		"labels":      labels,
+	}
+	body := map[string]any{"fields": fields}
+
+	if err := c.doRequest("PUT", fmt.Sprintf("/rest/api/3/issue/%s", key), body, nil); err != nil {
+		return fmt.Errorf("update issue %s: %w", key, err)
+	}
+	slog.Info("issue updated", "key", key)
+	return nil
+}
+
+// textToADF converts plain text to Atlassian Document Format.
+func textToADF(text string) map[string]any {
+	return map[string]any{
+		"version": 1,
+		"type":    "doc",
+		"content": []map[string]any{
+			{
+				"type": "paragraph",
+				"content": []map[string]any{
+					{"type": "text", "text": text},
+				},
+			},
+		},
+	}
+}
+
+// extractADFText recursively extracts plain text from an ADF document.
+func extractADFText(adf any) string {
+	if adf == nil {
+		return ""
+	}
+	doc, ok := adf.(map[string]any)
+	if !ok {
+		return ""
+	}
+	var result []byte
+	extractTextNodes(doc, &result)
+	return string(result)
+}
+
+func extractTextNodes(node map[string]any, buf *[]byte) {
+	if node["type"] == "text" {
+		if text, ok := node["text"].(string); ok {
+			*buf = append(*buf, text...)
+		}
+		return
+	}
+	// Add newline between paragraphs
+	if node["type"] == "paragraph" && len(*buf) > 0 {
+		*buf = append(*buf, '\n')
+	}
+	content, ok := node["content"].([]any)
+	if !ok {
+		return
+	}
+	for _, child := range content {
+		if childMap, ok := child.(map[string]any); ok {
+			extractTextNodes(childMap, buf)
+		}
+	}
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
