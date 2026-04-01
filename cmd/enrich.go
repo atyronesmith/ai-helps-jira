@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
@@ -13,7 +14,11 @@ import (
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
 )
 
-var flagApply bool
+var (
+	flagApply         bool
+	flagExtractPrompt bool
+	flagShowPrompt    bool
+)
 
 var enrichCmd = &cobra.Command{
 	Use:   "enrich [issue-key]",
@@ -22,20 +27,53 @@ var enrichCmd = &cobra.Command{
 (description, acceptance criteria, labels, priority), and preview
 the suggestions. Use --apply to update the issue in JIRA.
 
+The enrichment prompt is configurable. Place an ENHANCE.md (or any
+ENHANCE.* file) in the current directory to use a custom prompt.
+Use --extract-prompt to write the built-in prompt to ENHANCE.md
+for customization.
+
 Examples:
   jira-cli enrich PROJ-123
-  jira-cli enrich PROJ-123 --apply`,
-	Args: cobra.ExactArgs(1),
+  jira-cli enrich PROJ-123 --apply
+  jira-cli enrich --extract-prompt
+  jira-cli enrich --show-prompt`,
+	Args: cobra.RangeArgs(0, 1),
 	RunE: runEnrich,
 }
 
 func init() {
 	enrichCmd.Flags().BoolVar(&flagApply, "apply", false,
 		"Apply the enrichment to the JIRA issue.")
+	enrichCmd.Flags().BoolVar(&flagExtractPrompt, "extract-prompt", false,
+		"Write the built-in enrichment prompt to ENHANCE.md for customization.")
+	enrichCmd.Flags().BoolVar(&flagShowPrompt, "show-prompt", false,
+		"Display the active enrichment prompt (from file or built-in).")
 	rootCmd.AddCommand(enrichCmd)
 }
 
 func runEnrich(cmd *cobra.Command, args []string) error {
+	// Handle --extract-prompt: write built-in prompt to ENHANCE.md
+	if flagExtractPrompt {
+		if err := os.WriteFile("ENHANCE.md", []byte(llm.EnrichSystemPrompt+"\n"), 0o644); err != nil {
+			return fmt.Errorf("write ENHANCE.md: %w", err)
+		}
+		pterm.FgGreen.Println("Built-in prompt written to ENHANCE.md")
+		pterm.FgLightWhite.Println("Edit this file to customize the enrichment prompt.")
+		return nil
+	}
+
+	// Handle --show-prompt: display the active prompt
+	if flagShowPrompt {
+		prompt, source := llm.LoadEnrichPrompt()
+		pterm.FgLightWhite.Printfln("Prompt source: %s\n", source)
+		fmt.Println(prompt)
+		return nil
+	}
+
+	if len(args) == 0 {
+		return fmt.Errorf("issue key is required (e.g., jira-cli enrich PROJ-123)")
+	}
+
 	cfg, err := config.Load(flagUser, flagProject)
 	if err != nil {
 		return err
@@ -44,6 +82,12 @@ func runEnrich(cmd *cobra.Command, args []string) error {
 
 	issueKey := args[0]
 	slog.Info("starting enrich", "key", issueKey)
+
+	// Load prompt (custom file or built-in)
+	prompt, source := llm.LoadEnrichPrompt()
+	if source != "(built-in)" {
+		pterm.FgLightWhite.Printfln("Using custom prompt from %s", source)
+	}
 
 	// Step 1: Fetch issue from JIRA
 	client, err := jira.NewClient(cfg)
@@ -62,7 +106,7 @@ func runEnrich(cmd *cobra.Command, args []string) error {
 
 	// Step 2: Generate enrichment with LLM
 	spinner = format.StatusPrinter("Generating suggestions with Claude...")
-	enrichment, err := llm.GenerateEnrichment(cfg, issue)
+	enrichment, err := llm.GenerateEnrichment(cfg, issue, prompt)
 	spinner.Stop()
 	if err != nil {
 		return err

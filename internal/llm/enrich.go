@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -37,7 +39,24 @@ Respond ONLY with valid JSON (no markdown fences) with these keys:
   description, acceptance_criteria (array of strings),
   labels (array of strings), priority`
 
-func GenerateEnrichment(cfg *config.Config, issue *jira.IssueDetail) (*EnrichmentContent, error) {
+// LoadEnrichPrompt looks for an ENHANCE.* file in the current directory.
+// If found, returns its contents and the filename. Otherwise returns the
+// built-in default prompt.
+func LoadEnrichPrompt() (prompt, source string) {
+	matches, _ := filepath.Glob("ENHANCE.*")
+	if len(matches) > 0 {
+		data, err := os.ReadFile(matches[0])
+		if err != nil {
+			slog.Warn("failed to read prompt file, using default", "file", matches[0], "error", err)
+			return EnrichSystemPrompt, "(built-in)"
+		}
+		slog.Info("loaded custom enrich prompt", "file", matches[0])
+		return string(data), matches[0]
+	}
+	return EnrichSystemPrompt, "(built-in)"
+}
+
+func GenerateEnrichment(cfg *config.Config, issue *jira.IssueDetail, systemPrompt string) (*EnrichmentContent, error) {
 	ctx := context.Background()
 
 	slog.Info("generating enrichment", "key", issue.Key)
@@ -69,7 +88,7 @@ func GenerateEnrichment(cfg *config.Config, issue *jira.IssueDetail) (*Enrichmen
 		Model:     "claude-sonnet-4-6",
 		MaxTokens: 4096,
 		System: []anthropic.TextBlockParam{
-			{Text: EnrichSystemPrompt},
+			{Text: systemPrompt},
 		},
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(
