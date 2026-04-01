@@ -8,6 +8,7 @@ type Issue struct {
 	Priority string
 	Summary  string
 	Updated  time.Time
+	Assignee string // email address of assignee
 	Board    string // board name this issue was found on
 	Sprint   string // sprint name, empty if kanban
 }

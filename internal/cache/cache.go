@@ -70,6 +70,19 @@ func migrate(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("migrate cache: %w", err)
 	}
+
+	// v2: add assignee column to issues
+	var version int
+	_ = db.QueryRow("PRAGMA user_version").Scan(&version)
+	if version < 2 {
+		_, err := db.Exec(`ALTER TABLE issues ADD COLUMN assignee TEXT NOT NULL DEFAULT ''`)
+		if err != nil {
+			slog.Warn("migrate v2: assignee column may already exist", "error", err)
+		}
+		_, _ = db.Exec("PRAGMA user_version = 2")
+		slog.Info("cache migrated to v2", "added", "assignee column")
+	}
+
 	return nil
 }
 
@@ -96,14 +109,15 @@ func (c *Cache) UpsertIssues(project string, issues []jira.Issue) error {
 	defer tx.Rollback()
 
 	issueStmt, err := tx.Prepare(`
-		INSERT INTO issues (key, project, status, priority, summary, updated, fetched_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO issues (key, project, status, priority, summary, updated, fetched_at, assignee)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(key) DO UPDATE SET
 			status = excluded.status,
 			priority = excluded.priority,
 			summary = excluded.summary,
 			updated = excluded.updated,
-			fetched_at = excluded.fetched_at
+			fetched_at = excluded.fetched_at,
+			assignee = excluded.assignee
 	`)
 	if err != nil {
 		return err
@@ -126,7 +140,7 @@ func (c *Cache) UpsertIssues(project string, issues []jira.Issue) error {
 	for _, issue := range issues {
 		_, err := issueStmt.Exec(
 			issue.Key, project, issue.Status, issue.Priority,
-			issue.Summary, issue.Updated.Format(time.RFC3339), now,
+			issue.Summary, issue.Updated.Format(time.RFC3339), now, issue.Assignee,
 		)
 		if err != nil {
 			return fmt.Errorf("upsert issue %s: %w", issue.Key, err)
@@ -182,7 +196,7 @@ func (c *Cache) LogFetch(project, assignee string) error {
 // GetIssues returns all cached open issues for a project.
 func (c *Cache) GetIssues(project string) ([]jira.Issue, error) {
 	rows, err := c.db.Query(
-		"SELECT key, status, priority, summary, updated FROM issues WHERE project = ? "+
+		"SELECT key, status, priority, summary, updated, assignee FROM issues WHERE project = ? "+
 			"AND status NOT IN ('Done', 'Closed', 'Resolved') "+
 			"ORDER BY priority ASC, status ASC",
 		project,
@@ -196,7 +210,7 @@ func (c *Cache) GetIssues(project string) ([]jira.Issue, error) {
 	for rows.Next() {
 		var i jira.Issue
 		var updated string
-		if err := rows.Scan(&i.Key, &i.Status, &i.Priority, &i.Summary, &updated); err != nil {
+		if err := rows.Scan(&i.Key, &i.Status, &i.Priority, &i.Summary, &updated, &i.Assignee); err != nil {
 			return nil, err
 		}
 		i.Updated, _ = time.Parse(time.RFC3339, updated)
@@ -210,7 +224,7 @@ func (c *Cache) GetIssues(project string) ([]jira.Issue, error) {
 func (c *Cache) GetBoards(project string) ([]jira.BoardInfo, error) {
 	rows, err := c.db.Query(`
 		SELECT ib.board, ib.board_type, ib.sprint,
-		       i.key, i.status, i.priority, i.summary, i.updated
+		       i.key, i.status, i.priority, i.summary, i.updated, i.assignee
 		FROM issue_boards ib
 		JOIN issues i ON i.key = ib.issue_key
 		WHERE i.project = ? AND i.status NOT IN ('Done', 'Closed', 'Resolved')
@@ -228,7 +242,7 @@ func (c *Cache) GetBoards(project string) ([]jira.BoardInfo, error) {
 		var i jira.Issue
 		var updated string
 		if err := rows.Scan(&boardName, &boardType, &sprint,
-			&i.Key, &i.Status, &i.Priority, &i.Summary, &updated); err != nil {
+			&i.Key, &i.Status, &i.Priority, &i.Summary, &updated, &i.Assignee); err != nil {
 			return nil, err
 		}
 		i.Updated, _ = time.Parse(time.RFC3339, updated)

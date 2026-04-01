@@ -111,6 +111,23 @@ func joinLabels(labels []string) string {
 	return s
 }
 
+// DisplayQueryResults renders issues from a JQL query.
+func DisplayQueryResults(issues []jira.Issue, jql string) {
+	fmt.Println()
+	if jql != "" {
+		pterm.FgLightWhite.Printfln("JQL: %s", jql)
+		fmt.Println()
+	}
+	if len(issues) == 0 {
+		pterm.FgYellow.Println("No issues found.")
+		fmt.Println()
+		return
+	}
+	printIssueTable("Query Results", issues)
+	pterm.FgLightWhite.Printfln("(%d issues)", len(issues))
+	fmt.Println()
+}
+
 func StatusPrinter(msg string) *pterm.SpinnerPrinter {
 	s, _ := pterm.DefaultSpinner.Start(msg)
 	return s

@@ -106,6 +106,12 @@ type apiFields struct {
 	Labels   []string     `json:"labels"`
 	Type     apiName      `json:"issuetype"`
 	Project  apiKeyedName `json:"project"`
+	Assignee *apiAssignee `json:"assignee"`
+}
+
+type apiAssignee struct {
+	EmailAddress string `json:"emailAddress"`
+	DisplayName  string `json:"displayName"`
 }
 
 type apiName struct {
@@ -121,7 +127,7 @@ func (c *Client) searchIssues(jql string, max int) ([]Issue, error) {
 	req := searchRequest{
 		JQL:        jql,
 		MaxResults: max,
-		Fields:     []string{"summary", "status", "priority", "updated"},
+		Fields:     []string{"summary", "status", "priority", "updated", "assignee"},
 	}
 	var resp searchResponse
 	if err := c.doRequest("POST", "/rest/api/3/search/jql", req, &resp); err != nil {
@@ -143,12 +149,17 @@ func parseAPIIssues(raw []apiIssue) []Issue {
 		if r.Fields.Priority != nil {
 			pri = r.Fields.Priority.Name
 		}
+		assignee := ""
+		if r.Fields.Assignee != nil {
+			assignee = r.Fields.Assignee.EmailAddress
+		}
 		issues = append(issues, Issue{
 			Key:      r.Key,
 			Status:   r.Fields.Status.Name,
 			Priority: pri,
 			Summary:  r.Fields.Summary,
 			Updated:  updated,
+			Assignee: assignee,
 		})
 	}
 	return issues
@@ -175,6 +186,12 @@ func (c *Client) GetOpenIssuesSince(since time.Time) ([]Issue, error) {
 	)
 	slog.Debug("get_open_issues_since", "jql", jql, "since", since)
 	return c.searchIssues(jql, 100)
+}
+
+// SearchJQL runs an arbitrary JQL query and returns matching issues.
+func (c *Client) SearchJQL(jql string, max int) ([]Issue, error) {
+	slog.Info("search_jql", "jql", jql, "max", max)
+	return c.searchIssues(jql, max)
 }
 
 // --- Boards & Sprints (Agile REST API — still v1.0) ---
