@@ -1,0 +1,62 @@
+{{template "layout" .}}
+
+{{define "title"}}Enrich - {{.Data.Issue.Key}}{{end}}
+
+{{define "content"}}
+<hgroup>
+    <h1>{{.Data.Issue.Key}} — {{.Data.Issue.IssueType}}</h1>
+    <p>{{.Data.Issue.Summary}}</p>
+</hgroup>
+
+{{if .Data.Applied}}
+<article style="border-left: 4px solid var(--status-on-track); padding-left: 1em;">
+    <strong style="color: var(--status-on-track);">Applied to JIRA</strong>
+</article>
+{{end}}
+
+<div class="grid-2">
+    <article>
+        <h3>Current Description</h3>
+        {{if .Data.Issue.Description}}
+        <p>{{.Data.Issue.Description}}</p>
+        {{else}}
+        <p><em>(empty)</em></p>
+        {{end}}
+    </article>
+    <article>
+        <h3>Suggested Description</h3>
+        <p>{{.Data.Enrichment.Description}}</p>
+    </article>
+</div>
+
+{{if .Data.Enrichment.AcceptanceCriteria}}
+<article>
+    <h3>Acceptance Criteria</h3>
+    <ul>
+    {{range .Data.Enrichment.AcceptanceCriteria}}
+        <li>{{.}}</li>
+    {{end}}
+    </ul>
+</article>
+{{end}}
+
+<article>
+    <h3>Fields</h3>
+    <table>
+        <thead><tr><th>Field</th><th>Current</th><th>Suggested</th></tr></thead>
+        <tbody>
+        <tr>
+            <td><strong>Priority</strong></td>
+            <td><span class="pri-{{priorityClass .Data.Issue.Priority}}">{{.Data.Issue.Priority}}</span></td>
+            <td><span class="pri-{{priorityClass .Data.Enrichment.Priority}}">{{.Data.Enrichment.Priority}}</span></td>
+        </tr>
+        <tr>
+            <td><strong>Labels</strong></td>
+            <td>{{if .Data.Issue.Labels}}{{range $i, $l := .Data.Issue.Labels}}{{if $i}}, {{end}}{{$l}}{{end}}{{else}}<em>(none)</em>{{end}}</td>
+            <td>{{range $i, $l := .Data.Enrichment.Labels}}{{if $i}}, {{end}}{{$l}}{{end}}</td>
+        </tr>
+        </tbody>
+    </table>
+    <p class="timestamp">Enriched {{formatTime .Data.EnrichedAt}}</p>
+</article>
+{{end}}

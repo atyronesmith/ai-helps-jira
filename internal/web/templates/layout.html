@@ -1,0 +1,62 @@
+{{define "layout"}}
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{block "title" .}}JIRA CLI Dashboard{{end}}</title>
+    <link rel="stylesheet" href="/static/css/pico.min.css">
+    <style>
+        :root {
+            --status-on-track: #2e7d32;
+            --status-at-risk: #f57f17;
+            --status-blocked: #c62828;
+            --pri-highest: #c62828;
+            --pri-high: #e53935;
+            --pri-medium: #f9a825;
+            --pri-low: #43a047;
+            --pri-lowest: #66bb6a;
+        }
+        .status-on-track, .status-done { color: var(--status-on-track); font-weight: bold; }
+        .status-at-risk, .status-in-progress { color: var(--status-at-risk); font-weight: bold; }
+        .status-blocked, .status-to-do { color: var(--status-blocked); font-weight: bold; }
+        .status-in-review { color: #7b1fa2; font-weight: bold; }
+        .pri-highest { color: var(--pri-highest); font-weight: bold; }
+        .pri-high { color: var(--pri-high); }
+        .pri-medium { color: var(--pri-medium); }
+        .pri-low { color: var(--pri-low); }
+        .pri-lowest { color: var(--pri-lowest); }
+        .badge {
+            display: inline-block;
+            padding: 0.15em 0.5em;
+            border-radius: 4px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+        .badge-summary { background: #e3f2fd; color: #1565c0; }
+        .badge-query { background: #f3e5f5; color: #7b1fa2; }
+        .badge-digest { background: #e8f5e9; color: #2e7d32; }
+        .badge-enrich { background: #fff3e0; color: #e65100; }
+        .badge-create_epic { background: #fce4ec; color: #c62828; }
+        .chart-container { max-width: 400px; margin: 0 auto; }
+        nav { margin-bottom: 1em; }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+        @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
+        table { font-size: 0.9em; }
+        .timestamp { color: #666; font-size: 0.85em; }
+    </style>
+</head>
+<body>
+    <nav class="container">
+        <ul><li><strong><a href="/">JIRA CLI Dashboard</a></strong></li></ul>
+    </nav>
+    <main class="container">
+        {{block "content" .}}{{end}}
+    </main>
+    <footer class="container">
+        <small class="timestamp">Powered by jira-cli MCP server</small>
+    </footer>
+    {{block "scripts" .}}{{end}}
+</body>
+</html>
+{{end}}

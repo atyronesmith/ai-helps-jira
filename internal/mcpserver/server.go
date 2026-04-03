@@ -1,0 +1,44 @@
+package mcpserver
+
+import (
+	"fmt"
+	"log/slog"
+	"os"
+
+	"github.com/mark3labs/mcp-go/server"
+)
+
+// Run starts the MCP server on stdio and the web server on the given port.
+func Run(webPort int) error {
+	store := NewResultStore()
+
+	// Start web server in background
+	ws := NewWebServer(store, webPort)
+	go func() {
+		if err := ws.Start(); err != nil {
+			slog.Error("web server failed", "error", err)
+		}
+	}()
+
+	fmt.Fprintf(os.Stderr, "Web dashboard: http://127.0.0.1:%d\n", webPort)
+
+	// Create MCP server
+	s := server.NewMCPServer(
+		"jira-cli",
+		"1.0.0",
+		server.WithToolCapabilities(false),
+	)
+
+	// Create handlers
+	h := NewHandlers(store, webPort)
+
+	// Register tools
+	s.AddTool(summaryToolDef(), h.HandleSummary)
+	s.AddTool(queryToolDef(), h.HandleQuery)
+	s.AddTool(digestToolDef(), h.HandleDigest)
+	s.AddTool(enrichToolDef(), h.HandleEnrich)
+	s.AddTool(createEpicToolDef(), h.HandleCreateEpic)
+
+	slog.Info("MCP server ready, listening on stdio")
+	return server.ServeStdio(s)
+}

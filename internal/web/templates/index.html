@@ -1,0 +1,26 @@
+{{template "layout" .}}
+
+{{define "title"}}JIRA CLI Dashboard{{end}}
+
+{{define "content"}}
+<h1>Results</h1>
+{{if .Results}}
+<table>
+    <thead>
+        <tr><th>Type</th><th>Title</th><th>Time</th><th></th></tr>
+    </thead>
+    <tbody>
+    {{range .Results}}
+        <tr>
+            <td><span class="badge badge-{{.Type}}">{{.Type}}</span></td>
+            <td>{{.Title}}</td>
+            <td class="timestamp">{{formatTime .CreatedAt}}</td>
+            <td><a href="/view/{{.ID}}" role="button" class="outline">View</a></td>
+        </tr>
+    {{end}}
+    </tbody>
+</table>
+{{else}}
+<p>No results yet. Use Claude Code to call a jira-cli tool and results will appear here.</p>
+{{end}}
+{{end}}

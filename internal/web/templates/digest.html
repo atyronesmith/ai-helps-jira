@@ -1,0 +1,118 @@
+{{template "layout" .}}
+
+{{define "title"}}Digest - {{.Data.ParentKey}}{{end}}
+
+{{define "content"}}
+<hgroup>
+    <h1>{{.Data.ParentKey}} — {{.Data.ParentType}}</h1>
+    <p>{{.Data.ParentSummary}}</p>
+</hgroup>
+
+<article>
+    <h2>Overall Status:
+        <span class="status-{{statusClass .Data.Digest.OverallStatus}}">
+            {{.Data.Digest.OverallStatus}}
+        </span>
+    </h2>
+</article>
+
+<div class="grid-2">
+    <article>
+        <h3>Issue Status Breakdown</h3>
+        <div class="chart-container"><canvas id="statusChart"></canvas></div>
+    </article>
+    <article>
+        <h3>Issue Hierarchy</h3>
+        <pre class="mermaid">
+graph TD
+    {{.Data.ParentKey}}["{{.Data.ParentKey}}"]
+    {{range .Data.Links}}
+    {{.TargetKey}}["{{.TargetKey}}<br/>{{truncate .TargetSummary 30}}"]
+    {{$.Data.ParentKey}} --> {{.TargetKey}}
+    {{end}}
+        </pre>
+    </article>
+</div>
+
+{{if .Data.Digest.Progress}}
+<article>
+    <h3>Progress Updates</h3>
+    <table>
+        <thead><tr><th>Issue</th><th>Summary</th><th>Status</th><th>Update</th></tr></thead>
+        <tbody>
+        {{range .Data.Digest.Progress}}
+        <tr>
+            <td><a href="{{issueURL $.Data.JiraServer .EpicKey}}" target="_blank">{{.EpicKey}}</a></td>
+            <td>{{truncate .EpicSummary 40}}</td>
+            <td><span class="status-{{statusClass .Status}}">{{.Status}}</span></td>
+            <td>{{.Update}}</td>
+        </tr>
+        {{end}}
+        </tbody>
+    </table>
+</article>
+{{end}}
+
+{{if .Data.Digest.Blockers}}
+<article>
+    <h3>Blockers</h3>
+    {{range .Data.Digest.Blockers}}
+    <details open>
+        <summary>
+            <a href="{{issueURL $.Data.JiraServer .EpicKey}}" target="_blank">{{.EpicKey}}</a>:
+            {{.Blocker}}
+        </summary>
+        {{if .Impact}}<p><strong>Impact:</strong> {{.Impact}}</p>{{end}}
+    </details>
+    {{end}}
+</article>
+{{end}}
+
+{{if .Data.Digest.NotStarted}}
+<article>
+    <h3>Not Started</h3>
+    <table>
+        <thead><tr><th>Issue</th><th>Summary</th><th>Reason</th></tr></thead>
+        <tbody>
+        {{range .Data.Digest.NotStarted}}
+        <tr>
+            <td><a href="{{issueURL $.Data.JiraServer .EpicKey}}" target="_blank">{{.EpicKey}}</a></td>
+            <td>{{.EpicSummary}}</td>
+            <td>{{.Reason}}</td>
+        </tr>
+        {{end}}
+        </tbody>
+    </table>
+</article>
+{{end}}
+
+<article>
+    <h3>Executive Summary</h3>
+    <p>{{.Data.Digest.Summary}}</p>
+    <p class="timestamp">Generated {{formatTime .Data.GeneratedAt}}</p>
+</article>
+{{end}}
+
+{{define "scripts"}}
+<script src="/static/js/chart.umd.min.js"></script>
+<script src="/static/js/mermaid.min.js"></script>
+<script>
+mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+
+(function() {
+    const links = {{json .Data.Links}};
+    const statusCounts = {};
+    links.forEach(l => { statusCounts[l.TargetStatus] = (statusCounts[l.TargetStatus] || 0) + 1; });
+    const statusColors = { "To Do": "#9e9e9e", "In Progress": "#29b6f6", "In Review": "#ab47bc", "Done": "#66bb6a", "Blocked": "#c62828" };
+    const labels = Object.keys(statusCounts);
+    new Chart(document.getElementById('statusChart'), {
+        type: 'doughnut',
+        data: {
+            labels,
+            datasets: [{ data: labels.map(l => statusCounts[l]), backgroundColor: labels.map(l => statusColors[l] || "#90a4ae") }]
+        },
+        options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+    });
+})();
+</script>
+{{end}}

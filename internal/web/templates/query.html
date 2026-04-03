@@ -1,0 +1,84 @@
+{{template "layout" .}}
+
+{{define "title"}}Query Results{{end}}
+
+{{define "content"}}
+<hgroup>
+    <h1>Query Results</h1>
+    <p class="timestamp">{{formatTime .Data.QueriedAt}}</p>
+</hgroup>
+
+<article>
+    <h3>Query</h3>
+    <blockquote>{{.Data.Query}}</blockquote>
+    <details>
+        <summary>Generated JQL</summary>
+        <pre><code>{{.Data.JQL}}</code></pre>
+    </details>
+</article>
+
+{{if .Data.Issues}}
+<div class="grid-2">
+    <article>
+        <h3>Status Distribution</h3>
+        <div class="chart-container"><canvas id="statusChart"></canvas></div>
+    </article>
+    <article>
+        <h3>Priority Distribution</h3>
+        <div class="chart-container"><canvas id="priorityChart"></canvas></div>
+    </article>
+</div>
+
+<article>
+    <h3>Issues ({{len .Data.Issues}})</h3>
+    <table>
+        <thead><tr><th>Key</th><th>Status</th><th>Priority</th><th>Summary</th></tr></thead>
+        <tbody>
+        {{range .Data.Issues}}
+        <tr>
+            <td><a href="{{issueURL $.Data.JiraServer .Key}}" target="_blank">{{.Key}}</a></td>
+            <td><span class="status-{{statusClass .Status}}">{{.Status}}</span></td>
+            <td><span class="pri-{{priorityClass .Priority}}">{{.Priority}}</span></td>
+            <td>{{truncate .Summary 70}}</td>
+        </tr>
+        {{end}}
+        </tbody>
+    </table>
+</article>
+{{else}}
+<article><p>No issues found.</p></article>
+{{end}}
+{{end}}
+
+{{define "scripts"}}
+{{if .Data.Issues}}
+<script src="/static/js/chart.umd.min.js"></script>
+<script>
+(function() {
+    const issues = {{json .Data.Issues}};
+    const statusColors = { "To Do": "#9e9e9e", "In Progress": "#29b6f6", "In Review": "#ab47bc", "Done": "#66bb6a" };
+    const priColors = { "Highest": "#c62828", "High": "#e53935", "Medium": "#f9a825", "Low": "#43a047", "Lowest": "#66bb6a" };
+
+    function countField(issues, field) {
+        const counts = {};
+        issues.forEach(i => { counts[i[field]] = (counts[i[field]] || 0) + 1; });
+        return counts;
+    }
+
+    function makeChart(id, counts, colorMap) {
+        const labels = Object.keys(counts);
+        const values = labels.map(l => counts[l]);
+        const colors = labels.map(l => colorMap[l] || "#90a4ae");
+        new Chart(document.getElementById(id), {
+            type: 'doughnut',
+            data: { labels, datasets: [{ data: values, backgroundColor: colors }] },
+            options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+        });
+    }
+
+    makeChart('statusChart', countField(issues, 'Status'), statusColors);
+    makeChart('priorityChart', countField(issues, 'Priority'), priColors);
+})();
+</script>
+{{end}}
+{{end}}

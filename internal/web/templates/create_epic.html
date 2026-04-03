@@ -1,0 +1,45 @@
+{{template "layout" .}}
+
+{{define "title"}}Epic Created - {{.Data.CreatedKey}}{{end}}
+
+{{define "content"}}
+<hgroup>
+    <h1>Epic Created</h1>
+    {{if .Data.CreatedKey}}
+    <p><a href="{{issueURL .Data.JiraServer .Data.CreatedKey}}" target="_blank">{{.Data.CreatedKey}}</a></p>
+    {{end}}
+</hgroup>
+
+<article>
+    <h3>{{.Data.Epic.Summary}}</h3>
+    <p>{{.Data.Epic.Description}}</p>
+</article>
+
+{{if .Data.Epic.AcceptanceCriteria}}
+<article>
+    <h3>Acceptance Criteria</h3>
+    <ul>
+    {{range .Data.Epic.AcceptanceCriteria}}
+        <li>{{.}}</li>
+    {{end}}
+    </ul>
+</article>
+{{end}}
+
+<article>
+    <h3>Details</h3>
+    <table>
+        <tbody>
+        <tr>
+            <td><strong>Priority</strong></td>
+            <td><span class="pri-{{priorityClass .Data.Epic.Priority}}">{{.Data.Epic.Priority}}</span></td>
+        </tr>
+        <tr>
+            <td><strong>Labels</strong></td>
+            <td>{{range $i, $l := .Data.Epic.Labels}}{{if $i}}, {{end}}{{$l}}{{end}}</td>
+        </tr>
+        </tbody>
+    </table>
+    <p class="timestamp">Created {{formatTime .Data.CreatedAt}}</p>
+</article>
+{{end}}

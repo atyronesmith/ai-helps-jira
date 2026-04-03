@@ -1,0 +1,108 @@
+{{template "layout" .}}
+
+{{define "title"}}Summary - {{.Data.Project}}{{end}}
+
+{{define "content"}}
+<hgroup>
+    <h1>Summary: {{.Data.Project}}</h1>
+    <p class="timestamp">Fetched {{formatTime .Data.FetchedAt}}</p>
+</hgroup>
+
+<div class="grid-2">
+    <article>
+        <h3>Status Distribution</h3>
+        <div class="chart-container"><canvas id="statusChart"></canvas></div>
+    </article>
+    <article>
+        <h3>Priority Distribution</h3>
+        <div class="chart-container"><canvas id="priorityChart"></canvas></div>
+    </article>
+</div>
+
+{{range .Data.Boards}}
+<article>
+    {{if and (eq .BoardType "scrum") .SprintName}}
+    <h3>Sprint: {{.SprintName}} ({{.Name}})</h3>
+    {{else}}
+    <h3>Kanban: {{.Name}}</h3>
+    {{end}}
+    {{if .Issues}}
+    <table>
+        <thead><tr><th>Key</th><th>Status</th><th>Priority</th><th>Summary</th></tr></thead>
+        <tbody>
+        {{$server := $.Data.JiraServer}}
+        {{range .Issues}}
+        <tr>
+            <td><a href="{{issueURL $server .Key}}" target="_blank">{{.Key}}</a></td>
+            <td><span class="status-{{statusClass .Status}}">{{.Status}}</span></td>
+            <td><span class="pri-{{priorityClass .Priority}}">{{.Priority}}</span></td>
+            <td>{{truncate .Summary 60}}</td>
+        </tr>
+        {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <p>No issues.</p>
+    {{end}}
+</article>
+{{end}}
+
+{{if .Data.OpenIssues}}
+<article>
+    <h3>All Open Issues ({{len .Data.OpenIssues}})</h3>
+    <table>
+        <thead><tr><th>Key</th><th>Status</th><th>Priority</th><th>Summary</th></tr></thead>
+        <tbody>
+        {{range .Data.OpenIssues}}
+        <tr>
+            <td><a href="{{issueURL $.Data.JiraServer .Key}}" target="_blank">{{.Key}}</a></td>
+            <td><span class="status-{{statusClass .Status}}">{{.Status}}</span></td>
+            <td><span class="pri-{{priorityClass .Priority}}">{{.Priority}}</span></td>
+            <td>{{truncate .Summary 60}}</td>
+        </tr>
+        {{end}}
+        </tbody>
+    </table>
+</article>
+{{end}}
+{{end}}
+
+{{define "scripts"}}
+<script src="/static/js/chart.umd.min.js"></script>
+<script>
+(function() {
+    const data = {{json .Data}};
+    // Collect all issues
+    let allIssues = (data.OpenIssues || []).slice();
+    (data.Boards || []).forEach(b => { allIssues = allIssues.concat(b.Issues || []); });
+
+    // Deduplicate by Key
+    const seen = {};
+    const unique = [];
+    allIssues.forEach(i => { if (!seen[i.Key]) { seen[i.Key] = true; unique.push(i); }});
+
+    function countField(issues, field) {
+        const counts = {};
+        issues.forEach(i => { counts[i[field]] = (counts[i[field]] || 0) + 1; });
+        return counts;
+    }
+
+    const statusColors = { "To Do": "#9e9e9e", "In Progress": "#29b6f6", "In Review": "#ab47bc", "Done": "#66bb6a" };
+    const priColors = { "Highest": "#c62828", "High": "#e53935", "Medium": "#f9a825", "Low": "#43a047", "Lowest": "#66bb6a" };
+
+    function makeChart(id, counts, colorMap) {
+        const labels = Object.keys(counts);
+        const values = labels.map(l => counts[l]);
+        const colors = labels.map(l => colorMap[l] || "#90a4ae");
+        new Chart(document.getElementById(id), {
+            type: 'doughnut',
+            data: { labels, datasets: [{ data: values, backgroundColor: colors }] },
+            options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+        });
+    }
+
+    makeChart('statusChart', countField(unique, 'Status'), statusColors);
+    makeChart('priorityChart', countField(unique, 'Priority'), priColors);
+})();
+</script>
+{{end}}
