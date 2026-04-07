@@ -16,7 +16,7 @@ import (
 type WebServer struct {
 	store *ResultStore
 	port  int
-	tmpl  *template.Template
+	tmpls map[string]*template.Template
 }
 
 // NewWebServer creates a web server with parsed templates.
@@ -53,12 +53,19 @@ func NewWebServer(store *ResultStore, port int) *WebServer {
 		},
 	}
 
-	tmpl := template.Must(template.New("").Funcs(funcMap).ParseFS(web.TemplateFS, "templates/*.html"))
+	// Parse each view template separately with layout to avoid block name collisions.
+	pages := []string{"index.html", "summary.html", "query.html", "digest.html", "enrich.html", "create_epic.html", "weekly_status.html"}
+	tmpls := make(map[string]*template.Template, len(pages))
+	for _, page := range pages {
+		tmpls[page] = template.Must(
+			template.New("").Funcs(funcMap).ParseFS(web.TemplateFS, "templates/layout.html", "templates/"+page),
+		)
+	}
 
 	return &WebServer{
 		store: store,
 		port:  port,
-		tmpl:  tmpl,
+		tmpls: tmpls,
 	}
 }
 
@@ -68,6 +75,7 @@ func (ws *WebServer) Start() error {
 	mux.HandleFunc("GET /", ws.handleIndex)
 	mux.HandleFunc("GET /view/{id}", ws.handleView)
 	mux.HandleFunc("GET /api/result/{id}", ws.handleAPIResult)
+	mux.HandleFunc("DELETE /api/result/{id}", ws.handleDeleteResult)
 	mux.Handle("GET /static/", http.FileServerFS(web.StaticFS))
 
 	addr := fmt.Sprintf("127.0.0.1:%d", ws.port)
@@ -87,7 +95,7 @@ func (ws *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Results: ws.store.List(),
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ws.tmpl.ExecuteTemplate(w, "index.html", data); err != nil {
+	if err := ws.tmpls["index.html"].ExecuteTemplate(w, "layout", data); err != nil {
 		slog.Error("template error", "template", "index", "error", err)
 		http.Error(w, "Internal Server Error", 500)
 	}
@@ -103,8 +111,13 @@ func (ws *WebServer) handleView(w http.ResponseWriter, r *http.Request) {
 	}
 
 	templateName := string(result.Type) + ".html"
+	tmpl, ok := ws.tmpls[templateName]
+	if !ok {
+		http.Error(w, "Unknown result type", 500)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ws.tmpl.ExecuteTemplate(w, templateName, result); err != nil {
+	if err := tmpl.ExecuteTemplate(w, "layout", result); err != nil {
 		slog.Error("template error", "template", templateName, "error", err)
 		http.Error(w, "Internal Server Error", 500)
 	}
@@ -121,4 +134,14 @@ func (ws *WebServer) handleAPIResult(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result.Data)
+}
+
+// handleDeleteResult removes a result by ID.
+func (ws *WebServer) handleDeleteResult(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !ws.store.Delete(id) {
+		http.NotFound(w, r)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

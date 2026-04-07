@@ -13,7 +13,7 @@ LDFLAGS   := -s -w \
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 
 .PHONY: all build clean install uninstall test lint fmt vet tidy run \
-        release check help
+        release check restart-mcp help
 
 all: check build  ## Run checks then build
 
@@ -64,6 +64,10 @@ release: clean  ## Build release binaries for all platforms
 	done
 	@echo "Release binaries in dist/"
 	@ls -lh dist/
+
+restart-mcp: build  ## Rebuild and restart the MCP server
+	@pkill -f './$(BINARY) mcp' 2>/dev/null || true
+	@echo "MCP server restarted (will be relaunched on next tool call)"
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \

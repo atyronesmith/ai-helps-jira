@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -11,11 +12,15 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/cache"
+	"github.com/atyronesmith/ai-helps-jira/internal/confluence"
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
 	"github.com/atyronesmith/ai-helps-jira/internal/format"
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
 )
+
+// defaultConfluenceParent is the page ID for the weekly status parent page.
+const defaultConfluenceParent = "CONFLUENCE_PAGE_ID"
 
 // Handlers holds shared state for MCP tool handlers.
 type Handlers struct {
@@ -75,6 +80,18 @@ func enrichToolDef() mcp.Tool {
 	)
 }
 
+func weeklyStatusToolDef() mcp.Tool {
+	return mcp.NewTool("jira_weekly_status",
+		mcp.WithDescription("Generate a formatted weekly status report from JIRA activity. Queries user's work for a date range, fetches issue details and comments, uses AI to produce narrative status bullets grouped by project/epic. Optionally posts to Confluence."),
+		mcp.WithString("user", mcp.Description("JIRA user email.")),
+		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		mcp.WithString("start_date", mcp.Description("Start of reporting period (YYYY-MM-DD). Defaults to Monday of current week.")),
+		mcp.WithString("end_date", mcp.Description("End of reporting period (YYYY-MM-DD). Defaults to Friday of current week.")),
+		mcp.WithBoolean("confluence", mcp.Description("Post report to Confluence. Default false.")),
+		mcp.WithString("confluence_parent_id", mcp.Description("Confluence parent page ID. Defaults to configured parent.")),
+	)
+}
+
 func createEpicToolDef() mcp.Tool {
 	return mcp.NewTool("jira_create_epic",
 		mcp.WithDescription("Create a JIRA EPIC with LLM-generated content from a brief description."),
@@ -115,6 +132,28 @@ func getFloat(req mcp.CallToolRequest, key string) float64 {
 
 func loadConfig(req mcp.CallToolRequest) (*config.Config, error) {
 	return config.Load(getString(req, "user"), getString(req, "project"))
+}
+
+func loadJIRAConfig(req mcp.CallToolRequest) (*config.Config, error) {
+	return config.LoadJIRAOnly(getString(req, "user"), getString(req, "project"))
+}
+
+func getStringSlice(req mcp.CallToolRequest, key string) []string {
+	args := req.GetArguments()
+	if args == nil {
+		return nil
+	}
+	arr, ok := args[key].([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(arr))
+	for _, item := range arr {
+		if s, ok := item.(string); ok {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 func errorResult(msg string) *mcp.CallToolResult {
@@ -222,6 +261,7 @@ func (h *Handlers) HandleSummary(ctx context.Context, req mcp.CallToolRequest) (
 		Boards:     boards,
 		OpenIssues: openIssues,
 		Project:    cfg.JiraProject,
+		User:       cfg.Assignee(),
 		JiraServer: cfg.JiraServer,
 		FetchedAt:  time.Now(),
 	})
@@ -299,6 +339,7 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 		Query:      naturalQuery,
 		JQL:        result.JQL,
 		Issues:     issues,
+		User:       cfg.Assignee(),
 		JiraServer: cfg.JiraServer,
 		QueriedAt:  time.Now(),
 	})
@@ -532,6 +573,7 @@ func (h *Handlers) runSingleDigest(cfg *config.Config, db *cache.Cache, issueKey
 		ParentType:    parent.IssueType,
 		Digest:        displayDigest,
 		Links:         links,
+		User:          cfg.Assignee(),
 		JiraServer:    cfg.JiraServer,
 		GeneratedAt:   time.Now(),
 	}, nil
@@ -598,6 +640,269 @@ func (h *Handlers) HandleEnrich(ctx context.Context, req mcp.CallToolRequest) (*
 		text.WriteString("Preview only. Set apply=true to update JIRA.\n\n")
 	}
 	fmt.Fprintf(&text, "---\nRich dashboard: %s\n", h.viewURL(resultID))
+
+	return textResult(text.String()), nil
+}
+
+func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	cfg, err := loadConfig(req)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	// Parse date range — default to current week (Mon-Fri)
+	startStr := getString(req, "start_date")
+	endStr := getString(req, "end_date")
+
+	now := time.Now()
+	if startStr == "" {
+		// Find Monday of current week
+		weekday := int(now.Weekday())
+		if weekday == 0 {
+			weekday = 7
+		}
+		monday := now.AddDate(0, 0, -(weekday - 1))
+		startStr = monday.Format("2006-01-02")
+	}
+	if endStr == "" {
+		// Find Friday of current week
+		weekday := int(now.Weekday())
+		if weekday == 0 {
+			weekday = 7
+		}
+		friday := now.AddDate(0, 0, 5-weekday)
+		endStr = friday.Format("2006-01-02")
+	}
+
+	startTime, err := time.Parse("2006-01-02", startStr)
+	if err != nil {
+		return errorResult(fmt.Sprintf("invalid start_date: %v", err)), nil
+	}
+	// End time is end of day
+	endTime, err := time.Parse("2006-01-02", endStr)
+	if err != nil {
+		return errorResult(fmt.Sprintf("invalid end_date: %v", err)), nil
+	}
+	endTime = endTime.Add(24*time.Hour - time.Second)
+
+	slog.Info("weekly status", "user", cfg.Assignee(), "start", startStr, "end", endStr)
+
+	db, err := cache.Open()
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+	defer db.Close()
+
+	// Always run the fast search query to get current updated timestamps
+	client, err := jira.NewClient(cfg)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	assigneeJQL := cfg.Assignee()
+	if email := cfg.AssigneeEmail(); email != "" {
+		assigneeJQL = fmt.Sprintf("%q", email)
+	}
+	jql := fmt.Sprintf(
+		`project = %s AND updatedBy = %s AND updated >= "%s" ORDER BY updated DESC`,
+		cfg.JiraProject, assigneeJQL, startStr,
+	)
+
+	issues, err := client.SearchJQL(jql, 100)
+	if err != nil {
+		return errorResult(fmt.Sprintf("JIRA search failed: %v", err)), nil
+	}
+
+	if len(issues) == 0 {
+		return textResult("No issues found for the specified date range."), nil
+	}
+
+	// Find the most recent update timestamp across all issues
+	var latestUpdate time.Time
+	for _, issue := range issues {
+		if issue.Updated.After(latestUpdate) {
+			latestUpdate = issue.Updated
+		}
+	}
+
+	// Check cache — use it only if no issue has been updated since we last cached
+	cacheKey := fmt.Sprintf("weekly:%s:%s:%s", cfg.JiraProject, startStr, endStr)
+	var status *llm.WeeklyStatusContent
+
+	if cachedJSON, cachedAt, ok := db.GetWeeklyCache(cacheKey); ok {
+		if !latestUpdate.After(cachedAt) {
+			// Nothing changed in JIRA since we cached — use cached result
+			if err := json.Unmarshal([]byte(cachedJSON), &status); err == nil {
+				slog.Info("using cached weekly status (no JIRA changes)", "key", cacheKey,
+					"cached_at", cachedAt.Format(time.RFC3339),
+					"latest_update", latestUpdate.Format(time.RFC3339))
+			} else {
+				slog.Warn("failed to unmarshal cached result, will regenerate", "error", err)
+				status = nil
+			}
+		} else {
+			slog.Info("cache stale, JIRA data updated since last run",
+				"cached_at", cachedAt.Format(time.RFC3339),
+				"latest_update", latestUpdate.Format(time.RFC3339))
+		}
+	}
+
+	if status == nil {
+		// Cache miss or stale — fetch details, comments, and run LLM
+		db.UpsertIssues(cfg.JiraProject, issues)
+
+		var items []llm.IssueWithComments
+		for _, issue := range issues {
+			detail, err := client.GetIssue(issue.Key)
+			if err != nil {
+				slog.Warn("failed to get issue details", "key", issue.Key, "error", err)
+				continue
+			}
+
+			comments, err := client.GetComments(issue.Key)
+			if err != nil {
+				slog.Warn("failed to get comments", "key", issue.Key, "error", err)
+			}
+			if len(comments) > 0 {
+				db.UpsertComments(comments)
+			}
+
+			// Filter comments to date range
+			var relevantComments []jira.Comment
+			for _, c := range comments {
+				if c.Created.After(startTime) && c.Created.Before(endTime) {
+					relevantComments = append(relevantComments, c)
+				}
+			}
+
+			hasActivity := len(relevantComments) > 0 || (issue.Updated.After(startTime) && issue.Updated.Before(endTime))
+			if !hasActivity {
+				continue
+			}
+
+			item := llm.IssueWithComments{
+				Issue:    *detail,
+				Comments: relevantComments,
+			}
+			if detail.ParentKey != "" {
+				item.Parent = &jira.IssueDetail{
+					Key:     detail.ParentKey,
+					Summary: detail.ParentSummary,
+				}
+			}
+			items = append(items, item)
+		}
+
+		if len(items) == 0 {
+			return textResult("No issues with activity found in the specified date range."), nil
+		}
+
+		status, err = llm.GenerateWeeklyStatus(cfg, items, startStr, endStr)
+		if err != nil {
+			return errorResult(fmt.Sprintf("LLM generation failed: %v", err)), nil
+		}
+
+		// Cache the full result
+		if resultJSON, err := json.Marshal(status); err == nil {
+			if err := db.SetWeeklyCache(cacheKey, string(resultJSON)); err != nil {
+				slog.Warn("failed to cache weekly result", "error", err)
+			}
+		}
+	}
+
+	// Store for web dashboard
+	resultID := h.store.Save(ResultWeeklyStatus, fmt.Sprintf("Weekly Status: %s to %s", startStr, endStr), &WeeklyStatusResultData{
+		UserName:    status.UserName,
+		StartDate:   startStr,
+		EndDate:     endStr,
+		Projects:    status.Projects,
+		JiraServer:  cfg.JiraServer,
+		GeneratedAt: time.Now(),
+	})
+
+	// Build markdown text output in the established format
+	var text strings.Builder
+	fmt.Fprintf(&text, "%s\n", status.UserName)
+	for _, proj := range status.Projects {
+		fmt.Fprintf(&text, "* %s ([%s](%s/browse/%s))\n", proj.ProjectName, proj.IssueKey, cfg.JiraServer, proj.IssueKey)
+		for _, bullet := range proj.Bullets {
+			fmt.Fprintf(&text, "  * %s\n", bullet)
+		}
+	}
+	fmt.Fprintf(&text, "\n---\nRich dashboard: %s\n", h.viewURL(resultID))
+
+	// Post to Confluence if requested
+	postToConfluence := getBool(req, "confluence")
+	if postToConfluence {
+		parentID := getString(req, "confluence_parent_id")
+		if parentID == "" {
+			parentID = defaultConfluenceParent
+		}
+		if parentID == "" {
+			return errorResult("confluence_parent_id is required (no default configured)"), nil
+		}
+
+		confClient := confluence.NewClient(cfg)
+		pageTitle := fmt.Sprintf("Weekly Status: %s to %s", startStr, endStr)
+		storageBody := confluence.WeeklyStatusToStorage(status.UserName, cfg.JiraServer, status.Projects)
+
+		// Get parent page to find space ID
+		parentPage, err := confClient.GetPage(parentID)
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to get confluence parent page: %v", err)), nil
+		}
+
+		// Check if a page for this week already exists
+		existing, err := confClient.GetPageByTitle(parentPage.SpaceID, pageTitle)
+		if err != nil {
+			slog.Warn("confluence page search failed", "error", err)
+		}
+
+		var childPageID string
+		var pageURL string
+		if existing != nil {
+			// Overwrite existing page
+			existingPage, _, err := confClient.GetPageBody(existing.ID)
+			if err != nil {
+				return errorResult(fmt.Sprintf("failed to get existing page: %v", err)), nil
+			}
+			if err := confClient.UpdatePage(existing.ID, pageTitle, storageBody, existingPage.Version.Number); err != nil {
+				return errorResult(fmt.Sprintf("failed to update confluence page: %v", err)), nil
+			}
+			childPageID = existing.ID
+			pageURL = fmt.Sprintf("%s/wiki/pages/%s", cfg.JiraServer, existing.ID)
+			fmt.Fprintf(&text, "\nConfluence page updated: %s\n", pageURL)
+		} else {
+			// Create new child page
+			newPage, err := confClient.CreatePage(parentPage.SpaceID, parentID, pageTitle, storageBody)
+			if err != nil {
+				return errorResult(fmt.Sprintf("failed to create confluence page: %v", err)), nil
+			}
+			childPageID = newPage.ID
+			pageURL = fmt.Sprintf("%s/wiki/pages/%s", cfg.JiraServer, newPage.ID)
+			fmt.Fprintf(&text, "\nConfluence page created: %s\n", pageURL)
+		}
+
+		// Update parent page with link to this report (most recent at top)
+		parentWithBody, parentBody, err := confClient.GetPageBody(parentID)
+		if err != nil {
+			slog.Warn("failed to read parent page body", "error", err)
+		} else {
+			childURL := fmt.Sprintf("%s/wiki/spaces/%s/pages/%s",
+				cfg.JiraServer, parentPage.SpaceKey, childPageID)
+			entryLink := fmt.Sprintf(
+				`<li><a href="%s">%s</a></li>`,
+				childURL, pageTitle)
+
+			// Insert new entry at the top of the list, or create a list if none exists
+			newBody := confluence.InsertIndexEntry(parentBody, entryLink, pageTitle)
+			if err := confClient.UpdatePage(parentID, parentWithBody.Title, newBody, parentWithBody.Version.Number); err != nil {
+				slog.Warn("failed to update parent page index", "error", err)
+			} else {
+				slog.Info("parent page updated with link", "child", childPageID)
+			}
+		}
+	}
 
 	return textResult(text.String()), nil
 }

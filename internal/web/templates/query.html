@@ -5,7 +5,7 @@
 {{define "content"}}
 <hgroup>
     <h1>Query Results</h1>
-    <p class="timestamp">{{formatTime .Data.QueriedAt}}</p>
+    <p class="timestamp">User: {{.Data.User}} | {{formatTime .Data.QueriedAt}}</p>
 </hgroup>
 
 <article>
@@ -56,8 +56,8 @@
 <script>
 (function() {
     const issues = {{json .Data.Issues}};
-    const statusColors = { "To Do": "#9e9e9e", "In Progress": "#29b6f6", "In Review": "#ab47bc", "Done": "#66bb6a" };
-    const priColors = { "Highest": "#c62828", "High": "#e53935", "Medium": "#f9a825", "Low": "#43a047", "Lowest": "#66bb6a" };
+    const statusColors = { "New": "#78909c", "To Do": "#78909c", "Backlog": "#546e7a", "Refinement": "#8d6e63", "In Progress": "#1565c0", "In Review": "#6a1b9a", "Review": "#6a1b9a", "Done": "#2e7d32", "Closed": "#1b5e20", "Resolved": "#388e3c", "Blocked": "#b71c1c" };
+    const priColors = { "Highest": "#b71c1c", "High": "#d84315", "Major": "#e65100", "Medium": "#f57f17", "Normal": "#f9a825", "Low": "#2e7d32", "Minor": "#1565c0", "Lowest": "#546e7a", "Undefined": "#90a4ae" };
 
     function countField(issues, field) {
         const counts = {};

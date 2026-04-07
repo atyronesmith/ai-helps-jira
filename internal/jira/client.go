@@ -110,6 +110,7 @@ type apiFields struct {
 }
 
 type apiAssignee struct {
+	AccountID    string `json:"accountId"`
 	EmailAddress string `json:"emailAddress"`
 	DisplayName  string `json:"displayName"`
 }
@@ -316,60 +317,18 @@ func (c *Client) getKanbanIssues(board apiBoard) *BoardInfo {
 
 // --- Create Issue (v3 API) ---
 
-type createIssueRequest struct {
-	Fields createFields `json:"fields"`
-}
-
-type createFields struct {
-	Project     apiKeyedName `json:"project"`
-	IssueType   apiName      `json:"issuetype"`
-	Summary     string       `json:"summary"`
-	Description any          `json:"description"`
-	Priority    apiName      `json:"priority"`
-	Labels      []string     `json:"labels"`
-}
-
 type createIssueResponse struct {
 	Key string `json:"key"`
 }
 
 func (c *Client) CreateEpic(summary, description, priority string, labels []string) (*Issue, error) {
-	slog.Info("creating EPIC", "summary", summary)
-
-	// v3 API uses Atlassian Document Format for description
-	adfDesc := map[string]any{
-		"version": 1,
-		"type":    "doc",
-		"content": []map[string]any{
-			{
-				"type": "paragraph",
-				"content": []map[string]any{
-					{"type": "text", "text": description},
-				},
-			},
-		},
-	}
-
-	req := createIssueRequest{
-		Fields: createFields{
-			Project:     apiKeyedName{Key: c.project},
-			IssueType:   apiName{Name: "Epic"},
-			Summary:     summary,
-			Description: adfDesc,
-			Priority:    apiName{Name: priority},
-			Labels:      labels,
-		},
-	}
-
-	var resp createIssueResponse
-	if err := c.doRequest("POST", "/rest/api/3/issue", req, &resp); err != nil {
-		return nil, fmt.Errorf("create epic: %w", err)
-	}
-	slog.Info("EPIC created", "key", resp.Key)
-	return &Issue{
-		Key:     resp.Key,
-		Summary: summary,
-	}, nil
+	return c.CreateIssue(CreateIssueParams{
+		IssueType:   "Epic",
+		Summary:     summary,
+		Description: description,
+		Priority:    priority,
+		Labels:      labels,
+	})
 }
 
 // --- Get / Update Issue (v3 API) ---
@@ -380,17 +339,24 @@ type apiIssueDetail struct {
 }
 
 type apiDetailFields struct {
-	Summary     string      `json:"summary"`
-	Description any         `json:"description"` // ADF document
-	Status      apiName     `json:"status"`
-	Priority    *apiName    `json:"priority"`
-	Labels      []string    `json:"labels"`
-	Type        apiName     `json:"issuetype"`
+	Summary     string       `json:"summary"`
+	Description any          `json:"description"` // ADF document
+	Status      apiName      `json:"status"`
+	Priority    *apiName     `json:"priority"`
+	Labels      []string     `json:"labels"`
+	Type        apiName      `json:"issuetype"`
+	Assignee    *apiAssignee `json:"assignee"`
+	Parent      *apiParent   `json:"parent"`
+}
+
+type apiParent struct {
+	Key    string    `json:"key"`
+	Fields apiFields `json:"fields"`
 }
 
 // GetIssue fetches full issue details including description.
 func (c *Client) GetIssue(key string) (*IssueDetail, error) {
-	path := fmt.Sprintf("/rest/api/3/issue/%s?fields=summary,description,status,priority,labels,issuetype", key)
+	path := fmt.Sprintf("/rest/api/3/issue/%s?fields=summary,description,status,priority,labels,issuetype,assignee,parent", key)
 	slog.Info("fetching issue", "key", key)
 
 	var raw apiIssueDetail
@@ -405,14 +371,32 @@ func (c *Client) GetIssue(key string) (*IssueDetail, error) {
 
 	desc := extractADFText(raw.Fields.Description)
 
+	assignee := ""
+	assigneeID := ""
+	if raw.Fields.Assignee != nil {
+		assignee = raw.Fields.Assignee.DisplayName
+		assigneeID = raw.Fields.Assignee.AccountID
+	}
+
+	parentKey := ""
+	parentSummary := ""
+	if raw.Fields.Parent != nil {
+		parentKey = raw.Fields.Parent.Key
+		parentSummary = raw.Fields.Parent.Fields.Summary
+	}
+
 	return &IssueDetail{
-		Key:         raw.Key,
-		Summary:     raw.Fields.Summary,
-		Description: desc,
-		Status:      raw.Fields.Status.Name,
-		Priority:    pri,
-		Labels:      raw.Fields.Labels,
-		IssueType:   raw.Fields.Type.Name,
+		Key:           raw.Key,
+		Summary:       raw.Fields.Summary,
+		Description:   desc,
+		Status:        raw.Fields.Status.Name,
+		Priority:      pri,
+		Labels:        raw.Fields.Labels,
+		IssueType:     raw.Fields.Type.Name,
+		Assignee:      assignee,
+		AssigneeID:    assigneeID,
+		ParentKey:     parentKey,
+		ParentSummary: parentSummary,
 	}, nil
 }
 

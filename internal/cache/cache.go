@@ -131,6 +131,22 @@ func migrate(db *sql.DB) error {
 		slog.Info("cache migrated to v4", "added", "digest_log table")
 	}
 
+	// v5: add weekly_cache table for caching full weekly status results
+	if version < 5 {
+		_, err := db.Exec(`
+			CREATE TABLE IF NOT EXISTS weekly_cache (
+				cache_key   TEXT PRIMARY KEY,
+				result_json TEXT NOT NULL,
+				cached_at   DATETIME NOT NULL
+			);
+		`)
+		if err != nil {
+			slog.Warn("migrate v5: table may already exist", "error", err)
+		}
+		_, _ = db.Exec("PRAGMA user_version = 5")
+		slog.Info("cache migrated to v5", "added", "weekly_cache table")
+	}
+
 	return nil
 }
 
@@ -480,6 +496,29 @@ func (c *Cache) LogDigestRun(queryKey string) error {
 		"INSERT INTO digest_log (query_key, last_run) VALUES (?, ?) "+
 			"ON CONFLICT(query_key) DO UPDATE SET last_run = excluded.last_run",
 		queryKey, time.Now().UTC().Format(time.RFC3339),
+	)
+	return err
+}
+
+// GetWeeklyCache returns cached weekly status JSON and its cached_at time, if it exists.
+func (c *Cache) GetWeeklyCache(cacheKey string) (string, time.Time, bool) {
+	var resultJSON, cachedAt string
+	err := c.db.QueryRow(
+		"SELECT result_json, cached_at FROM weekly_cache WHERE cache_key = ?", cacheKey,
+	).Scan(&resultJSON, &cachedAt)
+	if err != nil {
+		return "", time.Time{}, false
+	}
+	t, _ := time.Parse(time.RFC3339, cachedAt)
+	return resultJSON, t, true
+}
+
+// SetWeeklyCache stores the weekly status JSON result.
+func (c *Cache) SetWeeklyCache(cacheKey, resultJSON string) error {
+	_, err := c.db.Exec(
+		"INSERT INTO weekly_cache (cache_key, result_json, cached_at) VALUES (?, ?, ?) "+
+			"ON CONFLICT(cache_key) DO UPDATE SET result_json = excluded.result_json, cached_at = excluded.cached_at",
+		cacheKey, resultJSON, time.Now().UTC().Format(time.RFC3339),
 	)
 	return err
 }

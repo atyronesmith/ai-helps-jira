@@ -13,6 +13,7 @@ type SummaryResult struct {
 	Boards     []jira.BoardInfo
 	OpenIssues []jira.Issue
 	Project    string
+	User       string
 	JiraServer string
 	FetchedAt  time.Time
 }
@@ -22,6 +23,7 @@ type QueryResultData struct {
 	Query      string
 	JQL        string
 	Issues     []jira.Issue
+	User       string
 	JiraServer string
 	QueriedAt  time.Time
 }
@@ -33,6 +35,7 @@ type DigestResultData struct {
 	ParentType    string
 	Digest        *format.DigestData
 	Links         []jira.IssueLink
+	User          string
 	JiraServer    string
 	GeneratedAt   time.Time
 }
@@ -52,4 +55,14 @@ type CreateEpicResultData struct {
 	Epic       *llm.EpicContent
 	JiraServer string
 	CreatedAt  time.Time
+}
+
+// WeeklyStatusResultData holds weekly status report data for the web template.
+type WeeklyStatusResultData struct {
+	UserName    string
+	StartDate   string
+	EndDate     string
+	Projects    []llm.WeeklyProjectItem
+	JiraServer  string
+	GeneratedAt time.Time
 }

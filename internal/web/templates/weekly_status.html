@@ -1,0 +1,23 @@
+{{template "layout" .}}
+
+{{define "title"}}Weekly Status: {{.Data.StartDate}} to {{.Data.EndDate}}{{end}}
+
+{{define "content"}}
+<hgroup>
+    <h1>Weekly Status Report</h1>
+    <p class="timestamp">{{.Data.UserName}} | {{.Data.StartDate}} to {{.Data.EndDate}} | Generated {{formatTime .Data.GeneratedAt}}</p>
+</hgroup>
+
+{{range .Data.Projects}}
+<article>
+    <h3><a href="{{issueURL $.Data.JiraServer .IssueKey}}" target="_blank">{{.IssueKey}}</a> — {{.ProjectName}}</h3>
+    <ul>
+    {{range .Bullets}}
+        <li>{{.}}</li>
+    {{end}}
+    </ul>
+</article>
+{{end}}
+{{end}}
+
+{{define "scripts"}}{{end}}

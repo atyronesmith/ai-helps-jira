@@ -5,13 +5,20 @@
 {{define "content"}}
 <h1>Results</h1>
 {{if .Results}}
+<div style="margin-bottom: 0.5em;">
+    <button id="bulk-delete-btn" class="outline secondary" style="display:none;" onclick="bulkDelete()">Delete Selected</button>
+</div>
 <table>
     <thead>
-        <tr><th>Type</th><th>Title</th><th>Time</th><th></th></tr>
+        <tr>
+            <th><input type="checkbox" id="select-all" title="Select all"></th>
+            <th>Type</th><th>Title</th><th>Time</th><th></th>
+        </tr>
     </thead>
     <tbody>
     {{range .Results}}
-        <tr>
+        <tr id="row-{{.ID}}">
+            <td><input type="checkbox" class="row-check" data-id="{{.ID}}"></td>
             <td><span class="badge badge-{{.Type}}">{{.Type}}</span></td>
             <td>{{.Title}}</td>
             <td class="timestamp">{{formatTime .CreatedAt}}</td>
@@ -23,4 +30,40 @@
 {{else}}
 <p>No results yet. Use Claude Code to call a jira-cli tool and results will appear here.</p>
 {{end}}
+{{end}}
+
+{{define "scripts"}}
+<script>
+const selectAll = document.getElementById('select-all');
+const bulkBtn = document.getElementById('bulk-delete-btn');
+const checks = document.querySelectorAll('.row-check');
+
+function updateBulkBtn() {
+    const any = [...checks].some(c => c.checked);
+    if (bulkBtn) bulkBtn.style.display = any ? '' : 'none';
+}
+
+if (selectAll) {
+    selectAll.addEventListener('change', function() {
+        checks.forEach(c => { c.checked = this.checked; });
+        updateBulkBtn();
+    });
+}
+checks.forEach(c => c.addEventListener('change', updateBulkBtn));
+
+async function bulkDelete() {
+    const selected = [...document.querySelectorAll('.row-check:checked')];
+    if (selected.length === 0) return;
+    if (!confirm('Delete ' + selected.length + ' result(s)?')) return;
+    for (const cb of selected) {
+        const id = cb.dataset.id;
+        const resp = await fetch('/api/result/' + id, { method: 'DELETE' });
+        if (resp.ok) {
+            document.getElementById('row-' + id).remove();
+        }
+    }
+    if (bulkBtn) bulkBtn.style.display = 'none';
+    if (selectAll) selectAll.checked = false;
+}
+</script>
 {{end}}

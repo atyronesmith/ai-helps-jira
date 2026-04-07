@@ -15,13 +15,17 @@ type Issue struct {
 
 // IssueDetail holds full issue fields for enrichment/editing.
 type IssueDetail struct {
-	Key         string
-	Summary     string
-	Description string // plain text extracted from ADF
-	Status      string
-	Priority    string
-	Labels      []string
-	IssueType   string
+	Key           string
+	Summary       string
+	Description   string // plain text extracted from ADF
+	Status        string
+	Priority      string
+	Labels        []string
+	IssueType     string
+	Assignee      string // display name
+	AssigneeID    string // account ID for API operations
+	ParentKey     string // parent issue key (if any)
+	ParentSummary string // parent issue summary
 }
 
 // Comment represents a single JIRA issue comment.
@@ -43,6 +47,20 @@ type IssueLink struct {
 	TargetSummary string
 	TargetStatus  string
 	TargetType    string // issue type of target
+}
+
+// Transition represents an available workflow transition for an issue.
+type Transition struct {
+	ID   string
+	Name string
+	To   string // target status name
+}
+
+// User represents a JIRA user.
+type User struct {
+	AccountID    string
+	DisplayName  string
+	EmailAddress string
 }
 
 type BoardInfo struct {

@@ -38,6 +38,18 @@ func Run(webPort int) error {
 	s.AddTool(digestToolDef(), h.HandleDigest)
 	s.AddTool(enrichToolDef(), h.HandleEnrich)
 	s.AddTool(createEpicToolDef(), h.HandleCreateEpic)
+	s.AddTool(weeklyStatusToolDef(), h.HandleWeeklyStatus)
+
+	// CRUD tools
+	s.AddTool(getIssueToolDef(), h.HandleGetIssue)
+	s.AddTool(createIssueToolDef(), h.HandleCreateIssue)
+	s.AddTool(editIssueToolDef(), h.HandleEditIssue)
+	s.AddTool(getTransitionsToolDef(), h.HandleGetTransitions)
+	s.AddTool(transitionToolDef(), h.HandleTransition)
+	s.AddTool(addCommentToolDef(), h.HandleAddComment)
+	s.AddTool(lookupUserToolDef(), h.HandleLookupUser)
+	s.AddTool(linkIssuesToolDef(), h.HandleLinkIssues)
+	s.AddTool(attachFileToolDef(), h.HandleAttachFile)
 
 	slog.Info("MCP server ready, listening on stdio")
 	return server.ServeStdio(s)
