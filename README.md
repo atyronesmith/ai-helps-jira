@@ -21,15 +21,15 @@ Inspired by the [official Atlassian MCP server](https://github.com/atlassian/mcp
 
 ### Prerequisites
 
-- Go 1.21+
+- Go 1.23+
 - JIRA Cloud API token ([create one here](https://id.atlassian.com/manage-profile/security/api-tokens))
 - Google Cloud credentials for Vertex AI (for LLM features)
 
 ### Install
 
 ```sh
-git clone <your-repo-url>
-cd jira-cli
+git clone https://github.com/atyronesmith/ai-helps-jira.git
+cd ai-helps-jira
 cp .env.example .env   # edit with your credentials
 make install
 ```
