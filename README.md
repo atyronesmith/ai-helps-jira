@@ -1,12 +1,18 @@
-# ai-helps-jira
+# jira-cli
 
-A Go CLI tool for JIRA Cloud that provides daily work summaries and LLM-assisted issue creation. Uses SQLite caching to minimize API calls and avoid JIRA Cloud throttling.
+A Go CLI tool and MCP server for JIRA Cloud. Provides daily summaries, natural language search, AI-powered digest reports, ticket enrichment, weekly status generation, and full CRUD operations — all with SQLite caching and a rich web dashboard.
 
 ## Features
 
 - **Daily Summary** — Pull assigned issues from boards (Scrum sprints + Kanban) and display in terminal with color-coded status/priority. Outputs markdown (GitHub-flavored or Slack-compatible).
-- **SQLite Caching** — Delta fetches only changed issues after the first run. Supports `--cache-only` for fully offline summaries.
-- **LLM EPIC Creation** — Describe what you need in plain English; Claude generates a complete EPIC (summary, description, acceptance criteria, priority, labels) and creates it in JIRA.
+- **Natural Language Search** — Describe what you want in plain English; an LLM translates it to JQL and executes the search.
+- **Digest Reports** — Walk issue hierarchy (Initiative → Feature → Epic), fetch recent comments, and generate executive progress digests with AI.
+- **Ticket Enrichment** — Fill in sparse tickets with AI-generated descriptions, acceptance criteria, labels, and priority suggestions.
+- **Weekly Status** — Generate formatted weekly status reports from JIRA activity, optionally post to Confluence.
+- **JIRA CRUD** — Create, edit, transition, comment on, and link issues via MCP tools.
+- **MCP Server** — Exposes all features as Model Context Protocol tools for use with Claude Code and other MCP clients. Includes a rich web dashboard on port 18080.
+- **SQLite Caching** — Delta fetches only changed issues after the first run. Smart cache invalidation compares JIRA timestamps.
+- **Confluence Integration** — Post weekly status reports as child pages with automatic parent page indexing.
 - **Cross-platform** — Single static binary, no CGO. Builds for Linux and macOS (amd64/arm64).
 
 ## Quick Start
@@ -20,8 +26,8 @@ A Go CLI tool for JIRA Cloud that provides daily work summaries and LLM-assisted
 ### Install
 
 ```sh
-git clone git@github.com:yourorg/jira-cli.git
-cd ai-helps-jira
+git clone <your-repo-url>
+cd jira-cli
 cp .env.example .env   # edit with your credentials
 make install
 ```
@@ -72,6 +78,41 @@ jira-cli -o weekly-report.md summary
 jira-cli -u user@company.com -p MYPROJ summary
 ```
 
+### Natural Language Query
+
+```sh
+jira-cli query "show me all critical bugs from last week"
+jira-cli query "unresolved stories assigned to me" --show-jql
+jira-cli query "epics created this month" --max 10
+```
+
+### Digest
+
+```sh
+# By issue key
+jira-cli digest FEAT-123
+
+# By natural language
+jira-cli digest "Features targeting the next release"
+jira-cli digest "top 5 initiatives for my team"
+
+# With time window
+jira-cli digest FEAT-123 --days 14
+
+# Offline (cached data only)
+jira-cli digest FEAT-123 --cache-only
+```
+
+### Ticket Enrichment
+
+```sh
+# Preview suggestions
+jira-cli enrich PROJ-123
+
+# Apply to JIRA
+jira-cli enrich PROJ-123 --apply
+```
+
 ### Create EPIC
 
 ```sh
@@ -81,6 +122,47 @@ jira-cli create-epic
 # Non-interactive
 jira-cli create-epic -d "Build user onboarding flow" --no-interactive
 ```
+
+### MCP Server
+
+```sh
+# Start the MCP server (stdio transport for Claude Code)
+jira-cli mcp
+```
+
+Configure in your MCP client (e.g. `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "jira-cli": {
+      "command": "./jira-cli",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+#### Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `jira_summary` | Daily summary of assigned issues and sprint info |
+| `jira_query` | Natural language search translated to JQL |
+| `jira_digest` | Executive digest for Features/Initiatives |
+| `jira_enrich` | AI-generated enrichment for sparse tickets |
+| `jira_weekly_status` | Weekly status report with optional Confluence posting |
+| `jira_create_epic` | LLM-assisted EPIC creation |
+| `jira_get_issue` | Full issue details with comments and links |
+| `jira_create_issue` | Create any issue type |
+| `jira_edit_issue` | Update issue fields |
+| `jira_get_transitions` | List available workflow transitions |
+| `jira_transition` | Change issue workflow status |
+| `jira_add_comment` | Add a comment to an issue |
+| `jira_lookup_user` | Search users by name/email |
+| `jira_link_issues` | Create links between issues |
+
+The MCP server includes a web dashboard at `http://127.0.0.1:18080` showing stored results with charts and interactive views.
 
 ### Global Flags
 
@@ -95,53 +177,55 @@ jira-cli create-epic -d "Build user onboarding flow" --no-interactive
 
 ```
 cmd/
-  root.go            # Global flags, logging setup
-  summary.go         # Summary command with cache logic
-  create_epic.go     # LLM-assisted EPIC creation
+  root.go              # Global flags, logging setup
+  summary.go           # Summary command with cache logic
+  query.go             # Natural language query command
+  digest.go            # Digest command with hierarchy traversal
+  enrich.go            # Ticket enrichment command
+  create_epic.go       # LLM-assisted EPIC creation
+  mcp.go               # MCP server startup
 internal/
-  config/config.go   # .env loading, Config struct
+  config/config.go     # .env loading, Config struct
   jira/
-    client.go        # Raw HTTP client for JIRA REST API v3 + Agile v1.0
-    models.go        # Issue, BoardInfo structs
+    client.go          # HTTP client for JIRA REST API v3 + Agile v1.0
+    crud.go            # CRUD operations (create, edit, transition, comment, link)
+    models.go          # Issue, IssueDetail, Comment, Transition structs
+  confluence/
+    client.go          # Confluence Cloud REST API client
+    format.go          # XHTML storage format conversion
   llm/
-    llm.go           # Claude via Vertex AI
-    templates.go     # EPIC prompts and content structs
+    llm.go             # Claude via Vertex AI (JQL generation, EPIC content)
+    digest.go          # Digest report generation
+    weekly.go          # Weekly status generation
+    enrich.go          # Ticket enrichment
   cache/
-    cache.go         # SQLite: issues, board mappings, fetch log
+    cache.go           # SQLite: issues, comments, links, digest log
+  mcpserver/
+    server.go          # MCP server setup and tool registration
+    tools.go           # Core tool handlers (summary, query, digest, enrich, weekly)
+    crud_tools.go      # CRUD tool handlers (get, create, edit, transition, etc.)
+    store.go           # In-memory result store for web dashboard
+    webserver.go       # HTTP server for dashboard
   format/
-    terminal.go      # pterm tables, spinners, color
-    markdown.go      # GitHub + Slack markdown output
+    terminal.go        # pterm tables, spinners, color
+    markdown.go        # GitHub + Slack markdown output
+  web/
+    templates/         # HTML templates for web dashboard
 ```
 
 ### Cache Design
 
-The SQLite cache (`~/.jira-cli/cache.db`) stores issues and board memberships:
+The SQLite cache (`~/.jira-cli/cache.db`) stores issues, comments, links, and run history:
 
 - **First run**: Full fetch from JIRA, stores everything
 - **Subsequent runs**: Queries `updated >= "last_fetch"` for changes only, upserts into cache
+- **Weekly status**: Caches full LLM results; compares JIRA `updated` timestamps to skip re-generation when nothing changed
 - **Done issues**: Automatically pruned from cache after each fetch
 - **Board mappings**: Junction table supports issues appearing on multiple boards
 
 ### JIRA API
 
-Uses JIRA Cloud REST API v3 (`/rest/api/3/`) for search and issue creation, and Agile REST API v1.0 (`/rest/agile/1.0/`) for boards and sprints. Authentication via email + API token (Basic Auth).
-
-## Planned Features
-
-See [docs/features.md](docs/features.md) for detailed implementation plans.
-
-| # | Feature | Command | Description |
-|---|---------|---------|-------------|
-| 1 | Standup Prep | `standup` | Generate daily standup from recent activity |
-| 2 | Ticket Enrichment | `enrich <KEY>` | Fill in sparse tickets with AC, description, labels |
-| 3 | Natural Language JQL | `query "..."` | Plain English to JQL translation |
-| 4 | Comment Summarizer | `summarize-comments <KEY>` | Summarize long comment threads |
-| 5 | Sprint Retro | `retro` | Analyze completed sprint, generate retro report |
-| 6 | Release Notes | `release-notes` | Generate user-facing notes from a fix version |
-| 7 | Duplicate Detection | `find-similar <KEY>` | Find semantically similar issues |
-| 8 | Workload Analysis | `workload` | Flag risks, stale tickets, overload |
-| 9 | Smart Ticket Creation | `create-ticket` | Extract structured ticket from freeform text |
-| 10 | Dependency Mapper | `dependencies` | Surface implicit cross-issue dependencies |
+Uses JIRA Cloud REST API v3 (`/rest/api/3/`) for search, issue CRUD, comments, transitions, and linking. Uses Agile REST API v1.0 (`/rest/agile/1.0/`) for boards and sprints. Authentication via email + API token (Basic Auth).
 
 ## Development
 
@@ -151,10 +235,11 @@ make run ARGS="summary"  # Build and run
 make check          # Run tidy + fmt + vet
 make test           # Run tests
 make lint           # Run vet + staticcheck
+make restart-mcp    # Rebuild and restart MCP server
 make release        # Cross-compile for all platforms
 make help           # Show all targets
 ```
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
