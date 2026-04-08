@@ -1,4 +1,6 @@
 .env
 jira-cli
 *.db
+.mcp.json
+docs/status-*.md
 FIELDCTO.md

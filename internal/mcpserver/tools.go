@@ -20,7 +20,8 @@ import (
 )
 
 // defaultConfluenceParent is the page ID for the weekly status parent page.
-const defaultConfluenceParent = "CONFLUENCE_PAGE_ID"
+// Set via CONFLUENCE_PARENT_PAGE env var or confluence_parent_id tool parameter.
+const defaultConfluenceParent = ""
 
 // Handlers holds shared state for MCP tool handlers.
 type Handlers struct {
