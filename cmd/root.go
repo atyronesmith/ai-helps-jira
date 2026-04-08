@@ -18,20 +18,22 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "jira-cli",
-	Short: "JIRA CLI - daily summaries and LLM-assisted EPIC creation",
-	Long: `JIRA CLI - daily summaries, LLM-assisted features, and natural language search.
+	Short: "JIRA CLI - summaries, search, reports, and full CRUD",
+	Long: `JIRA CLI - daily summaries, natural language search, AI-powered reports, and full CRUD operations.
 
 Examples:
   jira-cli summary
   jira-cli query "show me all critical bugs from last week"
-  jira-cli query "tickets worked on by jsmith" --show-jql
-  jira-cli enrich PROJ-123
-  jira-cli enrich PROJ-123 --apply
   jira-cli digest FEAT-123
-  jira-cli digest "Features targeting release-2.0"
-  jira-cli digest "Features for release-2.0, changes in the last day"
-  jira-cli --slack-markdown summary
-  jira-cli -u user@company.com -p PROJ summary
+  jira-cli enrich PROJ-123 --apply
+  jira-cli weekly-status --start-date 2026-03-30 --end-date 2026-04-03
+  jira-cli get-issue PROJ-123
+  jira-cli create-issue --summary "Fix login bug" --type Bug
+  jira-cli edit-issue PROJ-123 --priority High
+  jira-cli add-comment PROJ-123 --body "Done."
+  jira-cli get-transitions PROJ-123
+  jira-cli transition PROJ-123 31
+  jira-cli lookup-user jsmith
   jira-cli create-epic -d "Build onboarding flow"`,
 }
 
