@@ -1,6 +1,14 @@
 .env
 jira-cli
 *.db
+*.log
 .mcp.json
+.claude/
+dist/
 docs/status-*.md
 FIELDCTO.md
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

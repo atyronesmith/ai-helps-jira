@@ -163,6 +163,7 @@ Configure in your MCP client (e.g. `.mcp.json`):
 | `jira_add_comment` | Add a comment to an issue |
 | `jira_lookup_user` | Search users by name/email |
 | `jira_link_issues` | Create links between issues |
+| `jira_attach_file` | Upload file attachments to issues |
 
 The MCP server includes a web dashboard at `http://127.0.0.1:18080` showing stored results with charts and interactive views.
 
