@@ -10,10 +10,11 @@ import (
 )
 
 var (
-	flagUser          string
-	flagProject       string
-	flagSlackMarkdown bool
-	flagOutfile       string
+	flagUser    string
+	flagProject string
+	flagFormat  string
+	flagOutfile string
+	flagVerbose int
 )
 
 var rootCmd = &cobra.Command{
@@ -42,10 +43,12 @@ func init() {
 		"JIRA user (user@company.com). Defaults to currentUser().")
 	rootCmd.PersistentFlags().StringVarP(&flagProject, "project", "p", "",
 		"JIRA project key. Overrides JIRA_PROJECT env var.")
-	rootCmd.PersistentFlags().BoolVar(&flagSlackMarkdown, "slack-markdown", false,
-		"Output Slack-compatible mrkdwn instead of full markdown.")
+	rootCmd.PersistentFlags().StringVarP(&flagFormat, "format", "f", "markdown",
+		`Output format: markdown, slack, text, pretty.`)
 	rootCmd.PersistentFlags().StringVarP(&flagOutfile, "outfile", "o", "",
 		"Output file path. Defaults to {project}.md.")
+	rootCmd.PersistentFlags().CountVarP(&flagVerbose, "verbose", "v",
+		"Increase verbosity (-v, -vv, etc.). Level 2 shows cache diagnostics.")
 }
 
 func SetVersionInfo(version, commit, date string) {

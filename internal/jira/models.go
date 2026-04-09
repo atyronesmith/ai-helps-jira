@@ -22,10 +22,11 @@ type IssueDetail struct {
 	Priority      string
 	Labels        []string
 	IssueType     string
-	Assignee      string // display name
-	AssigneeID    string // account ID for API operations
-	ParentKey     string // parent issue key (if any)
-	ParentSummary string // parent issue summary
+	Assignee      string    // display name
+	AssigneeID    string    // account ID for API operations
+	ParentKey     string    // parent issue key (if any)
+	ParentSummary string    // parent issue summary
+	Updated       time.Time // last update time from JIRA
 }
 
 // Comment represents a single JIRA issue comment.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -129,10 +130,24 @@ func (h *Handlers) HandleGetIssue(ctx context.Context, req mcp.CallToolRequest) 
 		return errorResult(err.Error()), nil
 	}
 
-	// Fetch issue with links
-	detail, links, err := client.GetIssueWithLinks(key)
-	if err != nil {
-		return errorResult(err.Error()), nil
+	// Check detail cache first
+	detail, cached := h.cache.GetIssueDetail(key, time.Time{})
+	var links []jira.IssueLink
+
+	if cached {
+		slog.Info("cache hit for issue detail", "key", key)
+		links, _ = h.cache.GetIssueLinks(key)
+	}
+
+	if !cached {
+		detail, links, err = client.GetIssueWithLinks(key)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		h.cache.UpsertIssueDetail(detail)
+		if len(links) > 0 {
+			h.cache.UpsertIssueLinks(links)
+		}
 	}
 
 	var text strings.Builder
@@ -170,10 +185,16 @@ func (h *Handlers) HandleGetIssue(ctx context.Context, req mcp.CallToolRequest) 
 		includeComments = v
 	}
 	if includeComments {
-		comments, err := client.GetComments(key)
-		if err != nil {
-			slog.Warn("failed to fetch comments", "key", key, "error", err)
-		} else if len(comments) > 0 {
+		comments, _ := h.cache.GetCommentsByKeys([]string{key}, time.Time{})
+		if len(comments) == 0 {
+			comments, err = client.GetComments(key)
+			if err != nil {
+				slog.Warn("failed to fetch comments", "key", key, "error", err)
+			} else if len(comments) > 0 {
+				h.cache.UpsertComments(comments)
+			}
+		}
+		if len(comments) > 0 {
 			fmt.Fprintf(&text, "\n### Comments (%d)\n", len(comments))
 			for _, c := range comments {
 				fmt.Fprintf(&text, "\n**%s** (%s):\n%s\n", c.AuthorName, c.Created.Format("2006-01-02 15:04"), c.Body)

@@ -2,10 +2,12 @@ package cache
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -145,6 +147,32 @@ func migrate(db *sql.DB) error {
 		}
 		_, _ = db.Exec("PRAGMA user_version = 5")
 		slog.Info("cache migrated to v5", "added", "weekly_cache table")
+	}
+
+	// v6: add issue_details table for caching full IssueDetail
+	if version < 6 {
+		_, err := db.Exec(`
+			CREATE TABLE IF NOT EXISTS issue_details (
+				key            TEXT PRIMARY KEY,
+				summary        TEXT NOT NULL,
+				description    TEXT NOT NULL DEFAULT '',
+				status         TEXT NOT NULL,
+				priority       TEXT NOT NULL DEFAULT '',
+				issue_type     TEXT NOT NULL DEFAULT '',
+				labels         TEXT NOT NULL DEFAULT '[]',
+				assignee_name  TEXT NOT NULL DEFAULT '',
+				assignee_id    TEXT NOT NULL DEFAULT '',
+				parent_key     TEXT NOT NULL DEFAULT '',
+				parent_summary TEXT NOT NULL DEFAULT '',
+				updated        DATETIME NOT NULL,
+				fetched_at     DATETIME NOT NULL
+			);
+		`)
+		if err != nil {
+			slog.Warn("migrate v6: table may already exist", "error", err)
+		}
+		_, _ = db.Exec("PRAGMA user_version = 6")
+		slog.Info("cache migrated to v6", "added", "issue_details table")
 	}
 
 	return nil
@@ -521,6 +549,176 @@ func (c *Cache) SetWeeklyCache(cacheKey, resultJSON string) error {
 		cacheKey, resultJSON, time.Now().UTC().Format(time.RFC3339),
 	)
 	return err
+}
+
+// UpsertIssueDetail caches a full IssueDetail.
+func (c *Cache) UpsertIssueDetail(detail *jira.IssueDetail) error {
+	labelsJSON, _ := json.Marshal(detail.Labels)
+	_, err := c.db.Exec(`
+		INSERT INTO issue_details (key, summary, description, status, priority, issue_type,
+			labels, assignee_name, assignee_id, parent_key, parent_summary, updated, fetched_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			summary = excluded.summary,
+			description = excluded.description,
+			status = excluded.status,
+			priority = excluded.priority,
+			issue_type = excluded.issue_type,
+			labels = excluded.labels,
+			assignee_name = excluded.assignee_name,
+			assignee_id = excluded.assignee_id,
+			parent_key = excluded.parent_key,
+			parent_summary = excluded.parent_summary,
+			updated = excluded.updated,
+			fetched_at = excluded.fetched_at`,
+		detail.Key, detail.Summary, detail.Description, detail.Status, detail.Priority,
+		detail.IssueType, string(labelsJSON), detail.Assignee, detail.AssigneeID,
+		detail.ParentKey, detail.ParentSummary,
+		detail.Updated.Format(time.RFC3339),
+		time.Now().UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert issue detail %s: %w", detail.Key, err)
+	}
+	return nil
+}
+
+// GetIssueDetail returns a cached IssueDetail if it exists and is fresh
+// (i.e. the issue hasn't been updated since we cached it).
+// knownUpdated is the issue's current updated timestamp from a search result.
+// If knownUpdated is zero, the cached detail is returned regardless of age.
+func (c *Cache) GetIssueDetail(key string, knownUpdated time.Time) (*jira.IssueDetail, bool) {
+	var summary, description, status, priority, issueType string
+	var labelsJSON, assigneeName, assigneeID, parentKey, parentSummary string
+	var updatedStr string
+
+	err := c.db.QueryRow(`
+		SELECT summary, description, status, priority, issue_type, labels,
+			assignee_name, assignee_id, parent_key, parent_summary, updated
+		FROM issue_details WHERE key = ?`, key,
+	).Scan(&summary, &description, &status, &priority, &issueType, &labelsJSON,
+		&assigneeName, &assigneeID, &parentKey, &parentSummary, &updatedStr)
+	if err != nil {
+		return nil, false
+	}
+
+	cachedUpdated, _ := time.Parse(time.RFC3339, updatedStr)
+
+	// If we know the current updated time, check freshness
+	if !knownUpdated.IsZero() && knownUpdated.After(cachedUpdated) {
+		return nil, false
+	}
+
+	var labels []string
+	_ = json.Unmarshal([]byte(labelsJSON), &labels)
+
+	return &jira.IssueDetail{
+		Key:           key,
+		Summary:       summary,
+		Description:   description,
+		Status:        status,
+		Priority:      priority,
+		Labels:        labels,
+		IssueType:     issueType,
+		Assignee:      assigneeName,
+		AssigneeID:    assigneeID,
+		ParentKey:     parentKey,
+		ParentSummary: parentSummary,
+		Updated:       cachedUpdated,
+	}, true
+}
+
+// UpsertIssueDetails caches multiple IssueDetails in a single transaction.
+func (c *Cache) UpsertIssueDetails(details []*jira.IssueDetail) error {
+	if len(details) == 0 {
+		return nil
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO issue_details (key, summary, description, status, priority, issue_type,
+			labels, assignee_name, assignee_id, parent_key, parent_summary, updated, fetched_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			summary = excluded.summary,
+			description = excluded.description,
+			status = excluded.status,
+			priority = excluded.priority,
+			issue_type = excluded.issue_type,
+			labels = excluded.labels,
+			assignee_name = excluded.assignee_name,
+			assignee_id = excluded.assignee_id,
+			parent_key = excluded.parent_key,
+			parent_summary = excluded.parent_summary,
+			updated = excluded.updated,
+			fetched_at = excluded.fetched_at`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, d := range details {
+		labelsJSON, _ := json.Marshal(d.Labels)
+		_, err := stmt.Exec(d.Key, d.Summary, d.Description, d.Status, d.Priority,
+			d.IssueType, string(labelsJSON), d.Assignee, d.AssigneeID,
+			d.ParentKey, d.ParentSummary, d.Updated.Format(time.RFC3339), now)
+		if err != nil {
+			return fmt.Errorf("upsert issue detail %s: %w", d.Key, err)
+		}
+	}
+
+	slog.Info("cache upserted issue details", "count", len(details))
+	return tx.Commit()
+}
+
+// GetIssueDetailKeys returns the keys of all cached issue details that are
+// still fresh based on the given updated timestamps from search results.
+func (c *Cache) GetFreshDetailKeys(updatedByKey map[string]time.Time) map[string]bool {
+	fresh := make(map[string]bool)
+	if len(updatedByKey) == 0 {
+		return fresh
+	}
+
+	var keys []string
+	for k := range updatedByKey {
+		keys = append(keys, k)
+	}
+
+	placeholders := strings.Repeat("?,", len(keys))
+	placeholders = placeholders[:len(placeholders)-1]
+
+	args := make([]any, len(keys))
+	for i, k := range keys {
+		args[i] = k
+	}
+
+	rows, err := c.db.Query(
+		fmt.Sprintf("SELECT key, updated FROM issue_details WHERE key IN (%s)", placeholders),
+		args...,
+	)
+	if err != nil {
+		return fresh
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var key, updatedStr string
+		if err := rows.Scan(&key, &updatedStr); err != nil {
+			continue
+		}
+		cachedUpdated, _ := time.Parse(time.RFC3339, updatedStr)
+		if knownUpdated, ok := updatedByKey[key]; ok {
+			if !knownUpdated.After(cachedUpdated) {
+				fresh[key] = true
+			}
+		}
+	}
+	return fresh
 }
 
 // Clear removes all cached data for a project.

@@ -347,6 +347,7 @@ type apiDetailFields struct {
 	Type        apiName      `json:"issuetype"`
 	Assignee    *apiAssignee `json:"assignee"`
 	Parent      *apiParent   `json:"parent"`
+	Updated     string       `json:"updated"`
 }
 
 type apiParent struct {
@@ -356,7 +357,7 @@ type apiParent struct {
 
 // GetIssue fetches full issue details including description.
 func (c *Client) GetIssue(key string) (*IssueDetail, error) {
-	path := fmt.Sprintf("/rest/api/3/issue/%s?fields=summary,description,status,priority,labels,issuetype,assignee,parent", key)
+	path := fmt.Sprintf("/rest/api/3/issue/%s?fields=summary,description,status,priority,labels,issuetype,assignee,parent,updated", key)
 	slog.Info("fetching issue", "key", key)
 
 	var raw apiIssueDetail
@@ -385,6 +386,8 @@ func (c *Client) GetIssue(key string) (*IssueDetail, error) {
 		parentSummary = raw.Fields.Parent.Fields.Summary
 	}
 
+	updated, _ := time.Parse("2006-01-02T15:04:05.000-0700", raw.Fields.Updated)
+
 	return &IssueDetail{
 		Key:           raw.Key,
 		Summary:       raw.Fields.Summary,
@@ -397,6 +400,7 @@ func (c *Client) GetIssue(key string) (*IssueDetail, error) {
 		AssigneeID:    assigneeID,
 		ParentKey:     parentKey,
 		ParentSummary: parentSummary,
+		Updated:       updated,
 	}, nil
 }
 

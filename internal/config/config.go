@@ -25,8 +25,6 @@ func Load(userOverride, projectOverride string) (*Config, error) {
 		"JIRA_SERVER",
 		"JIRA_EMAIL",
 		"JIRA_API_TOKEN",
-		"ANTHROPIC_VERTEX_PROJECT_ID",
-		"CLOUD_ML_REGION",
 	}
 	// JIRA_PROJECT is only required if no override provided
 	if projectOverride == "" {

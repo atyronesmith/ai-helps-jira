@@ -7,9 +7,6 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/vertex"
-
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
 )
@@ -70,9 +67,10 @@ func GenerateDigest(cfg *config.Config, parent *jira.IssueDetail, links []jira.I
 
 	slog.Info("generating digest", "parent", parent.Key, "links", len(links), "comments", len(comments))
 
-	client := anthropic.NewClient(
-		vertex.WithGoogleAuth(ctx, cfg.VertexRegion, cfg.VertexProjectID),
-	)
+	provider, err := NewProvider(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create LLM provider: %w", err)
+	}
 
 	// Build user message with all context
 	var parts []string
@@ -110,40 +108,14 @@ func GenerateDigest(cfg *config.Config, parent *jira.IssueDetail, links []jira.I
 
 	userMessage := strings.Join(parts, "\n")
 
-	resp, err := client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     "claude-sonnet-4-6",
-		MaxTokens: 8192,
-		System: []anthropic.TextBlockParam{
-			{Text: DigestSystemPrompt},
-		},
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(
-				anthropic.NewTextBlock(userMessage),
-			),
-		},
-	})
+	text, err := provider.Complete(ctx, DigestSystemPrompt, userMessage, 8192)
 	if err != nil {
-		return nil, fmt.Errorf("claude api: %w", err)
-	}
-
-	slog.Info("digest LLM response",
-		"input_tokens", resp.Usage.InputTokens,
-		"output_tokens", resp.Usage.OutputTokens)
-
-	var text string
-	for _, block := range resp.Content {
-		if block.Type == "text" {
-			text = block.Text
-			break
-		}
-	}
-	if text == "" {
-		return nil, fmt.Errorf("no text in claude response")
+		return nil, fmt.Errorf("LLM api: %w", err)
 	}
 	slog.Debug("raw LLM response", "text", text)
 
 	var result DigestContent
-	if err := json.Unmarshal([]byte(text), &result); err != nil {
+	if err := json.Unmarshal([]byte(cleanJSON(text)), &result); err != nil {
 		return nil, fmt.Errorf("failed to parse LLM response as JSON: %w\nResponse:\n%s", err, text)
 	}
 

@@ -39,8 +39,8 @@ Examples:
 }
 
 func init() {
-	weeklyStatusCmd.Flags().StringVar(&flagWSStartDate, "start-date", "", "Start of period (YYYY-MM-DD). Defaults to Monday of current week.")
-	weeklyStatusCmd.Flags().StringVar(&flagWSEndDate, "end-date", "", "End of period (YYYY-MM-DD). Defaults to Friday of current week.")
+	weeklyStatusCmd.Flags().StringVar(&flagWSStartDate, "start-date", "", "Start of period (YYYY-MM-DD). Defaults to 7 days ago.")
+	weeklyStatusCmd.Flags().StringVar(&flagWSEndDate, "end-date", "", "End of period (YYYY-MM-DD). Defaults to today.")
 	weeklyStatusCmd.Flags().BoolVar(&flagWSConfluence, "confluence", false, "Post report to Confluence.")
 	weeklyStatusCmd.Flags().StringVar(&flagWSConfluenceParent, "confluence-parent-id", "", "Confluence parent page ID.")
 	rootCmd.AddCommand(weeklyStatusCmd)
@@ -53,26 +53,16 @@ func runWeeklyStatus(cmd *cobra.Command, args []string) error {
 	}
 	setupLogging()
 
-	// Default date range to current week Mon-Fri
+	// Default date range: 7 days ago through today
 	startStr := flagWSStartDate
 	endStr := flagWSEndDate
 	now := time.Now()
 
-	if startStr == "" {
-		weekday := int(now.Weekday())
-		if weekday == 0 {
-			weekday = 7
-		}
-		monday := now.AddDate(0, 0, -(weekday - 1))
-		startStr = monday.Format("2006-01-02")
-	}
 	if endStr == "" {
-		weekday := int(now.Weekday())
-		if weekday == 0 {
-			weekday = 7
-		}
-		friday := now.AddDate(0, 0, 5-weekday)
-		endStr = friday.Format("2006-01-02")
+		endStr = now.Format("2006-01-02")
+	}
+	if startStr == "" {
+		startStr = now.AddDate(0, 0, -7).Format("2006-01-02")
 	}
 
 	startTime, err := time.Parse("2006-01-02", startStr)
@@ -95,6 +85,10 @@ func runWeeklyStatus(cmd *cobra.Command, args []string) error {
 
 	// Check cache
 	cacheKey := fmt.Sprintf("weekly:%s:%s:%s", cfg.JiraProject, startStr, endStr)
+
+	if flagVerbose >= 2 {
+		pterm.FgLightCyan.Printfln("cache: key=%s", cacheKey)
+	}
 
 	client, err := jira.NewClient(cfg)
 	if err != nil {
@@ -130,36 +124,96 @@ func runWeeklyStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if flagVerbose >= 2 {
+		pterm.FgLightCyan.Printfln("cache: latest JIRA update=%s", latestUpdate.Format(time.RFC3339))
+	}
+
 	var status *llm.WeeklyStatusContent
 	if cachedJSON, cachedAt, ok := db.GetWeeklyCache(cacheKey); ok {
+		if flagVerbose >= 2 {
+			pterm.FgLightCyan.Printfln("cache: found entry, cached_at=%s", cachedAt.Format(time.RFC3339))
+		}
 		if !latestUpdate.After(cachedAt) {
 			if err := json.Unmarshal([]byte(cachedJSON), &status); err == nil {
+				if flagVerbose >= 2 {
+					pterm.FgLightGreen.Println("cache: HIT (no JIRA changes since cached_at)")
+				}
 				pterm.FgLightWhite.Println("Using cached result (no JIRA changes since last run)")
 			} else {
+				if flagVerbose >= 2 {
+					pterm.FgLightRed.Printfln("cache: corrupt entry, discarding: %v", err)
+				}
 				status = nil
 			}
+		} else {
+			if flagVerbose >= 2 {
+				pterm.FgLightYellow.Printfln("cache: MISS (JIRA updated %s > cached %s)",
+					latestUpdate.Format(time.RFC3339), cachedAt.Format(time.RFC3339))
+			}
+		}
+	} else {
+		if flagVerbose >= 2 {
+			pterm.FgLightYellow.Println("cache: MISS (no cached entry)")
 		}
 	}
 
 	if status == nil {
 		db.UpsertIssues(cfg.JiraProject, issues)
 
+		// Build map of issue updated times for cache freshness checks
+		updatedByKey := make(map[string]time.Time, len(issues))
+		for _, issue := range issues {
+			updatedByKey[issue.Key] = issue.Updated
+		}
+		freshKeys := db.GetFreshDetailKeys(updatedByKey)
+
 		var items []llm.IssueWithComments
+		var cachedDetails []*jira.IssueDetail
+		var fetchedDetails []*jira.IssueDetail
 		for i, issue := range issues {
-			spinner := format.StatusPrinter(fmt.Sprintf("Fetching details (%d/%d) %s...", i+1, len(issues), issue.Key))
-			detail, err := client.GetIssue(issue.Key)
-			spinner.Stop()
-			if err != nil {
-				slog.Warn("failed to get issue details", "key", issue.Key, "error", err)
-				continue
+			var detail *jira.IssueDetail
+
+			if freshKeys[issue.Key] {
+				// Cache hit — use cached detail
+				if cached, ok := db.GetIssueDetail(issue.Key, issue.Updated); ok {
+					detail = cached
+					if flagVerbose >= 2 {
+						pterm.FgLightGreen.Printfln("cache: detail HIT %s", issue.Key)
+					}
+					cachedDetails = append(cachedDetails, detail)
+				}
 			}
 
-			comments, err := client.GetComments(issue.Key)
-			if err != nil {
-				slog.Warn("failed to get comments", "key", issue.Key, "error", err)
+			if detail == nil {
+				// Cache miss — fetch from API
+				spinner := format.StatusPrinter(fmt.Sprintf("Fetching details (%d/%d) %s...", i+1, len(issues), issue.Key))
+				var err error
+				detail, err = client.GetIssue(issue.Key)
+				spinner.Stop()
+				if err != nil {
+					slog.Warn("failed to get issue details", "key", issue.Key, "error", err)
+					continue
+				}
+				fetchedDetails = append(fetchedDetails, detail)
+				if flagVerbose >= 2 {
+					pterm.FgLightYellow.Printfln("cache: detail MISS %s (fetched from API)", issue.Key)
+				}
 			}
-			if len(comments) > 0 {
-				db.UpsertComments(comments)
+
+			// Comments: use cached if detail was cached, otherwise fetch
+			var comments []jira.Comment
+			if freshKeys[issue.Key] {
+				comments, _ = db.GetCommentsByKeys([]string{issue.Key}, startTime)
+			}
+			if len(comments) == 0 {
+				var err error
+				comments, err = client.GetComments(issue.Key)
+				if err != nil {
+					slog.Warn("failed to get comments", "key", issue.Key, "error", err)
+				}
+				if len(comments) > 0 {
+					db.UpsertComments(comments)
+				}
 			}
 
 			var relevantComments []jira.Comment
@@ -187,6 +241,14 @@ func runWeeklyStatus(cmd *cobra.Command, args []string) error {
 			items = append(items, item)
 		}
 
+		// Cache any newly fetched details
+		if len(fetchedDetails) > 0 {
+			db.UpsertIssueDetails(fetchedDetails)
+		}
+		if flagVerbose >= 2 {
+			pterm.FgLightCyan.Printfln("cache: details %d cached, %d fetched", len(cachedDetails), len(fetchedDetails))
+		}
+
 		if len(items) == 0 {
 			pterm.FgYellow.Println("No issues with activity found in the specified date range.")
 			return nil
@@ -200,18 +262,32 @@ func runWeeklyStatus(cmd *cobra.Command, args []string) error {
 		}
 
 		if resultJSON, err := json.Marshal(status); err == nil {
-			db.SetWeeklyCache(cacheKey, string(resultJSON))
+			if err := db.SetWeeklyCache(cacheKey, string(resultJSON)); err != nil {
+				slog.Warn("cache: failed to write", "key", cacheKey, "error", err)
+				if flagVerbose >= 2 {
+					pterm.FgLightRed.Printfln("cache: FILL FAILED key=%s: %v", cacheKey, err)
+				}
+			} else if flagVerbose >= 2 {
+				pterm.FgLightGreen.Printfln("cache: FILL key=%s (%d bytes)", cacheKey, len(resultJSON))
+			}
 		}
 	}
 
 	// Output
+	data := &format.WeeklyStatusData{UserName: status.UserName}
+	for _, p := range status.Projects {
+		data.Projects = append(data.Projects, format.WeeklyProject{
+			ProjectName: p.ProjectName,
+			IssueKey:    p.IssueKey,
+			Bullets:     p.Bullets,
+		})
+	}
+
 	fmt.Println()
-	fmt.Println(status.UserName)
-	for _, proj := range status.Projects {
-		fmt.Printf("* %s (%s — %s/browse/%s)\n", proj.ProjectName, proj.IssueKey, cfg.JiraServer, proj.IssueKey)
-		for _, bullet := range proj.Bullets {
-			fmt.Printf("  * %s\n", bullet)
-		}
+	if flagFormat == "pretty" {
+		format.DisplayWeeklyStatus(data, cfg.JiraServer)
+	} else {
+		fmt.Print(format.RenderWeeklyStatus(data, cfg.JiraServer, flagFormat))
 	}
 
 	// Confluence posting

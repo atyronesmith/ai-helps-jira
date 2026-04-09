@@ -6,11 +6,19 @@ import (
 	"os"
 
 	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/atyronesmith/ai-helps-jira/internal/cache"
 )
 
 // Run starts the MCP server on stdio and the web server on the given port.
 func Run(webPort int) error {
 	store := NewResultStore()
+
+	db, err := cache.Open()
+	if err != nil {
+		return fmt.Errorf("open cache: %w", err)
+	}
+	defer db.Close()
 
 	// Start web server in background
 	ws := NewWebServer(store, webPort)
@@ -30,7 +38,7 @@ func Run(webPort int) error {
 	)
 
 	// Create handlers
-	h := NewHandlers(store, webPort)
+	h := NewHandlers(store, db, webPort)
 
 	// Register tools
 	s.AddTool(summaryToolDef(), h.HandleSummary)

@@ -7,9 +7,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/vertex"
-
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
 )
 
@@ -47,9 +44,10 @@ func GenerateJQL(cfg *config.Config, naturalQuery string) (*QueryResult, error) 
 
 	slog.Info("generating JQL", "query", naturalQuery)
 
-	client := anthropic.NewClient(
-		vertex.WithGoogleAuth(ctx, cfg.VertexRegion, cfg.VertexProjectID),
-	)
+	provider, err := NewProvider(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create LLM provider: %w", err)
+	}
 
 	today := time.Now().Format("2006-01-02")
 	systemPrompt := fmt.Sprintf(QuerySystemPrompt,
@@ -57,40 +55,14 @@ func GenerateJQL(cfg *config.Config, naturalQuery string) (*QueryResult, error) 
 		cfg.JiraProject, cfg.Assignee(),
 	)
 
-	resp, err := client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     "claude-sonnet-4-6",
-		MaxTokens: 1024,
-		System: []anthropic.TextBlockParam{
-			{Text: systemPrompt},
-		},
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(
-				anthropic.NewTextBlock(naturalQuery),
-			),
-		},
-	})
+	text, err := provider.Complete(ctx, systemPrompt, naturalQuery, 1024)
 	if err != nil {
-		return nil, fmt.Errorf("claude api: %w", err)
-	}
-
-	slog.Info("query LLM response",
-		"input_tokens", resp.Usage.InputTokens,
-		"output_tokens", resp.Usage.OutputTokens)
-
-	var text string
-	for _, block := range resp.Content {
-		if block.Type == "text" {
-			text = block.Text
-			break
-		}
-	}
-	if text == "" {
-		return nil, fmt.Errorf("no text in claude response")
+		return nil, fmt.Errorf("LLM api: %w", err)
 	}
 	slog.Debug("raw LLM response", "text", text)
 
 	var result QueryResult
-	if err := json.Unmarshal([]byte(text), &result); err != nil {
+	if err := json.Unmarshal([]byte(cleanJSON(text)), &result); err != nil {
 		return nil, fmt.Errorf("failed to parse LLM response as JSON: %w\nResponse:\n%s", err, text)
 	}
 	if result.JQL == "" {

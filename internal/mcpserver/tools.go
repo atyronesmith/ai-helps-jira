@@ -26,12 +26,13 @@ const defaultConfluenceParent = ""
 // Handlers holds shared state for MCP tool handlers.
 type Handlers struct {
 	store   *ResultStore
+	cache   *cache.Cache
 	webPort int
 }
 
 // NewHandlers creates a new handler set.
-func NewHandlers(store *ResultStore, webPort int) *Handlers {
-	return &Handlers{store: store, webPort: webPort}
+func NewHandlers(store *ResultStore, db *cache.Cache, webPort int) *Handlers {
+	return &Handlers{store: store, cache: db, webPort: webPort}
 }
 
 func (h *Handlers) viewURL(id string) string {
@@ -86,8 +87,8 @@ func weeklyStatusToolDef() mcp.Tool {
 		mcp.WithDescription("Generate a formatted weekly status report from JIRA activity. Queries user's work for a date range, fetches issue details and comments, uses AI to produce narrative status bullets grouped by project/epic. Optionally posts to Confluence."),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
-		mcp.WithString("start_date", mcp.Description("Start of reporting period (YYYY-MM-DD). Defaults to Monday of current week.")),
-		mcp.WithString("end_date", mcp.Description("End of reporting period (YYYY-MM-DD). Defaults to Friday of current week.")),
+		mcp.WithString("start_date", mcp.Description("Start of reporting period (YYYY-MM-DD). Defaults to 7 days ago.")),
+		mcp.WithString("end_date", mcp.Description("End of reporting period (YYYY-MM-DD). Defaults to today.")),
 		mcp.WithBoolean("confluence", mcp.Description("Post report to Confluence. Default false.")),
 		mcp.WithString("confluence_parent_id", mcp.Description("Confluence parent page ID. Defaults to configured parent.")),
 	)
@@ -173,11 +174,7 @@ func (h *Handlers) HandleSummary(ctx context.Context, req mcp.CallToolRequest) (
 		return errorResult(err.Error()), nil
 	}
 
-	db, err := cache.Open()
-	if err != nil {
-		return errorResult(err.Error()), nil
-	}
-	defer db.Close()
+	db := h.cache
 
 	refresh := getBool(req, "refresh")
 	cacheOnly := getBool(req, "cache_only")
@@ -328,11 +325,7 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 
 	// Cache results
 	if len(issues) > 0 {
-		db, err := cache.Open()
-		if err == nil {
-			db.UpsertIssues(cfg.JiraProject, issues)
-			db.Close()
-		}
+		h.cache.UpsertIssues(cfg.JiraProject, issues)
 	}
 
 	// Store for web
@@ -371,11 +364,7 @@ func (h *Handlers) HandleDigest(ctx context.Context, req mcp.CallToolRequest) (*
 		return errorResult(err.Error()), nil
 	}
 
-	db, err := cache.Open()
-	if err != nil {
-		return errorResult(err.Error()), nil
-	}
-	defer db.Close()
+	db := h.cache
 
 	issuesArg := getString(req, "issues")
 	cacheOnly := getBool(req, "cache_only")
@@ -651,28 +640,16 @@ func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolReque
 		return errorResult(err.Error()), nil
 	}
 
-	// Parse date range — default to current week (Mon-Fri)
+	// Parse date range — default to 7 days ago through today
 	startStr := getString(req, "start_date")
 	endStr := getString(req, "end_date")
 
 	now := time.Now()
-	if startStr == "" {
-		// Find Monday of current week
-		weekday := int(now.Weekday())
-		if weekday == 0 {
-			weekday = 7
-		}
-		monday := now.AddDate(0, 0, -(weekday - 1))
-		startStr = monday.Format("2006-01-02")
-	}
 	if endStr == "" {
-		// Find Friday of current week
-		weekday := int(now.Weekday())
-		if weekday == 0 {
-			weekday = 7
-		}
-		friday := now.AddDate(0, 0, 5-weekday)
-		endStr = friday.Format("2006-01-02")
+		endStr = now.Format("2006-01-02")
+	}
+	if startStr == "" {
+		startStr = now.AddDate(0, 0, -7).Format("2006-01-02")
 	}
 
 	startTime, err := time.Parse("2006-01-02", startStr)
@@ -688,11 +665,7 @@ func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolReque
 
 	slog.Info("weekly status", "user", cfg.Assignee(), "start", startStr, "end", endStr)
 
-	db, err := cache.Open()
-	if err != nil {
-		return errorResult(err.Error()), nil
-	}
-	defer db.Close()
+	db := h.cache
 
 	// Always run the fast search query to get current updated timestamps
 	client, err := jira.NewClient(cfg)
@@ -752,20 +725,49 @@ func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolReque
 		// Cache miss or stale — fetch details, comments, and run LLM
 		db.UpsertIssues(cfg.JiraProject, issues)
 
-		var items []llm.IssueWithComments
+		// Check which issues have fresh cached details
+		updatedByKey := make(map[string]time.Time, len(issues))
 		for _, issue := range issues {
-			detail, err := client.GetIssue(issue.Key)
-			if err != nil {
-				slog.Warn("failed to get issue details", "key", issue.Key, "error", err)
-				continue
+			updatedByKey[issue.Key] = issue.Updated
+		}
+		freshKeys := db.GetFreshDetailKeys(updatedByKey)
+
+		var items []llm.IssueWithComments
+		var fetchedDetails []*jira.IssueDetail
+		for _, issue := range issues {
+			var detail *jira.IssueDetail
+
+			if freshKeys[issue.Key] {
+				if cached, ok := db.GetIssueDetail(issue.Key, issue.Updated); ok {
+					detail = cached
+					slog.Info("cache hit for issue detail", "key", issue.Key)
+				}
 			}
 
-			comments, err := client.GetComments(issue.Key)
-			if err != nil {
-				slog.Warn("failed to get comments", "key", issue.Key, "error", err)
+			if detail == nil {
+				var err error
+				detail, err = client.GetIssue(issue.Key)
+				if err != nil {
+					slog.Warn("failed to get issue details", "key", issue.Key, "error", err)
+					continue
+				}
+				fetchedDetails = append(fetchedDetails, detail)
 			}
-			if len(comments) > 0 {
-				db.UpsertComments(comments)
+
+			// Comments: use cached if detail was cached, otherwise fetch
+			var comments []jira.Comment
+			if freshKeys[issue.Key] {
+				comments, _ = db.GetCommentsByKeys([]string{issue.Key}, startTime)
+			}
+			if len(comments) == 0 {
+				var err error
+				comments, err = client.GetComments(issue.Key)
+				if err != nil {
+					slog.Warn("failed to get comments", "key", issue.Key, "error", err)
+				}
+				if len(comments) > 0 {
+					db.UpsertComments(comments)
+				}
 			}
 
 			// Filter comments to date range
@@ -792,6 +794,11 @@ func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolReque
 				}
 			}
 			items = append(items, item)
+		}
+
+		// Cache newly fetched details
+		if len(fetchedDetails) > 0 {
+			db.UpsertIssueDetails(fetchedDetails)
 		}
 
 		if len(items) == 0 {

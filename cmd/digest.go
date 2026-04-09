@@ -449,13 +449,21 @@ func runIssueDigest(cfg *config.Config, db *cache.Cache, issueKey string, since 
 		})
 	}
 
-	format.DisplayDigest(parent, displayDigest)
+	if flagFormat == "pretty" {
+		format.DisplayDigest(parent, displayDigest)
+	} else {
+		fmt.Println()
+		fmt.Print(format.RenderDigest(parent, displayDigest, cfg.JiraServer, flagFormat))
+	}
 
-	// Write markdown if outfile specified
+	// Write to file if outfile specified
 	outfile := flagOutfile
 	if outfile != "" {
-		return format.WriteDigestMarkdown(parent, displayDigest, outfile,
-			cfg.JiraServer, flagSlackMarkdown)
+		fileFormat := flagFormat
+		if fileFormat == "pretty" {
+			fileFormat = "markdown"
+		}
+		return format.WriteDigest(parent, displayDigest, outfile, cfg.JiraServer, fileFormat)
 	}
 
 	return nil

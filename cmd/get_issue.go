@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 
+	"github.com/atyronesmith/ai-helps-jira/internal/cache"
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
 )
@@ -35,6 +37,12 @@ func runGetIssue(cmd *cobra.Command, args []string) error {
 	}
 	setupLogging()
 
+	db, err := cache.Open()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
 	client, err := jira.NewClient(cfg)
 	if err != nil {
 		return err
@@ -42,9 +50,21 @@ func runGetIssue(cmd *cobra.Command, args []string) error {
 
 	issueKey := args[0]
 
-	detail, err := client.GetIssue(issueKey)
-	if err != nil {
-		return err
+	// Check detail cache first (zero time = return cached regardless of age)
+	detail, ok := db.GetIssueDetail(issueKey, time.Time{})
+	if ok {
+		if flagVerbose >= 2 {
+			pterm.FgLightGreen.Printfln("cache: detail HIT %s", issueKey)
+		}
+	} else {
+		if flagVerbose >= 2 {
+			pterm.FgLightYellow.Printfln("cache: detail MISS %s", issueKey)
+		}
+		detail, err = client.GetIssue(issueKey)
+		if err != nil {
+			return err
+		}
+		db.UpsertIssueDetail(detail)
 	}
 
 	pterm.FgLightWhite.Printfln("%s: %s", detail.Key, detail.Summary)
@@ -65,8 +85,17 @@ func runGetIssue(cmd *cobra.Command, args []string) error {
 	}
 
 	if !flagNoLinks {
-		_, links, err := client.GetIssueWithLinks(issueKey)
-		if err == nil && len(links) > 0 {
+		// Check link cache first
+		links, _ := db.GetIssueLinks(issueKey)
+		if len(links) == 0 {
+			_, links, err = client.GetIssueWithLinks(issueKey)
+			if err == nil && len(links) > 0 {
+				db.UpsertIssueLinks(links)
+			}
+		} else if flagVerbose >= 2 {
+			pterm.FgLightGreen.Printfln("cache: links HIT %s (%d links)", issueKey, len(links))
+		}
+		if len(links) > 0 {
 			fmt.Println()
 			pterm.FgLightWhite.Println("Linked Issues:")
 			for _, l := range links {
@@ -76,8 +105,17 @@ func runGetIssue(cmd *cobra.Command, args []string) error {
 	}
 
 	if !flagNoComments {
-		comments, err := client.GetComments(issueKey)
-		if err == nil && len(comments) > 0 {
+		// Check comment cache first
+		comments, _ := db.GetCommentsByKeys([]string{issueKey}, time.Time{})
+		if len(comments) == 0 {
+			comments, err = client.GetComments(issueKey)
+			if err == nil && len(comments) > 0 {
+				db.UpsertComments(comments)
+			}
+		} else if flagVerbose >= 2 {
+			pterm.FgLightGreen.Printfln("cache: comments HIT %s (%d comments)", issueKey, len(comments))
+		}
+		if len(comments) > 0 {
 			fmt.Println()
 			pterm.FgLightWhite.Printfln("Comments (%d):", len(comments))
 			for _, c := range comments {
