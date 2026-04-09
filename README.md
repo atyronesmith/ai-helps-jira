@@ -13,7 +13,8 @@ Inspired by the [official Atlassian MCP server](https://github.com/atlassian/mcp
 - **Weekly Status** — Generate formatted weekly status reports from JIRA activity, optionally post to Confluence.
 - **JIRA CRUD** — Create, edit, transition, comment on, and link issues via MCP tools.
 - **MCP Server** — Exposes all features as Model Context Protocol tools for use with Claude Code and other MCP clients. Includes a rich web dashboard on port 18080.
-- **SQLite Caching** — Delta fetches only changed issues after the first run. Smart cache invalidation compares JIRA timestamps.
+- **Multi-LLM Provider Support** — Use any LLM backend: Vertex AI (Claude), OpenAI-compatible APIs (DeepInfra, vLLM, etc.), or Ollama for fully local inference.
+- **SQLite Caching** — Delta fetches only changed issues after the first run. Smart cache invalidation compares JIRA timestamps. Per-issue detail caching means repeat runs skip re-fetching unchanged issues entirely.
 - **Confluence Integration** — Post weekly status reports as child pages with automatic parent page indexing.
 - **Cross-platform** — Single static binary, no CGO. Builds for Linux and macOS (amd64/arm64).
 
@@ -23,7 +24,7 @@ Inspired by the [official Atlassian MCP server](https://github.com/atlassian/mcp
 
 - Go 1.23+
 - JIRA Cloud API token ([create one here](https://id.atlassian.com/manage-profile/security/api-tokens))
-- Google Cloud credentials for Vertex AI (for LLM features)
+- An LLM provider for AI features (see [LLM Providers](#llm-providers) below)
 
 ### Install
 
@@ -43,15 +44,9 @@ JIRA_SERVER=https://yourcompany.atlassian.net
 JIRA_EMAIL=your.email@company.com
 JIRA_API_TOKEN=your-jira-api-token
 JIRA_PROJECT=PROJ
-ANTHROPIC_VERTEX_PROJECT_ID=your-gcp-project-id
-CLOUD_ML_REGION=us-east5
 ```
 
-For Vertex AI authentication:
-
-```sh
-gcloud auth application-default login
-```
+Then configure your LLM provider (see [LLM Providers](#llm-providers) below). See `.env.example` for full documentation of all environment variables.
 
 ## Usage
 
@@ -71,7 +66,10 @@ jira-cli summary --refresh
 jira-cli summary --cache-only
 
 # Slack-compatible markdown output
-jira-cli --slack-markdown summary
+jira-cli -f slack summary
+
+# Plain text output
+jira-cli -f text summary
 
 # Custom output file
 jira-cli -o weekly-report.md summary
@@ -125,6 +123,22 @@ jira-cli create-epic
 jira-cli create-epic -d "Build user onboarding flow" --no-interactive
 ```
 
+### Weekly Status
+
+```sh
+# Generate weekly status (defaults to last 7 days)
+jira-cli weekly-status
+
+# Custom date range
+jira-cli weekly-status --start 2026-03-01 --end 2026-03-31
+
+# Post to Confluence
+jira-cli weekly-status --confluence
+
+# With verbose cache diagnostics
+jira-cli -vv weekly-status
+```
+
 ### MCP Server
 
 ```sh
@@ -173,8 +187,42 @@ The MCP server includes a web dashboard at `http://127.0.0.1:18080` showing stor
 |------|-------|-------------|
 | `--user` | `-u` | JIRA user email (default: `currentUser()`) |
 | `--project` | `-p` | JIRA project key (default: `JIRA_PROJECT` env) |
-| `--slack-markdown` | | Slack-compatible mrkdwn output |
+| `--format` | `-f` | Output format: `markdown` (default), `slack`, `text`, `pretty` |
 | `--outfile` | `-o` | Output file path (default: `{project}.md`) |
+| `--verbose` | `-v` | Increase verbosity (`-v` for verbose, `-vv` for debug with cache diagnostics) |
+
+## LLM Providers
+
+Set `LLM_PROVIDER` to choose your backend. All AI features (query, digest, enrich, weekly status, EPIC creation) work with any supported provider.
+
+| Provider | `LLM_PROVIDER` | Key env vars | Notes |
+|----------|----------------|--------------|-------|
+| Vertex AI (Claude) | `vertex` (default) | `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` | Requires `gcloud auth application-default login` |
+| OpenAI-compatible | `openai` | `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` | Works with OpenAI, DeepInfra, vLLM, etc. |
+| Ollama | `ollama` | `OLLAMA_BASE_URL`, `LLM_MODEL` | Local or remote; no API key needed |
+
+`ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` are only required when using the `vertex` provider.
+
+Example for DeepInfra:
+
+```
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://api.deepinfra.com/v1
+LLM_API_KEY=your-deepinfra-key
+LLM_MODEL=meta-llama/Llama-3.3-70B-Instruct-Turbo
+```
+
+Example for local Ollama:
+
+```
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+LLM_MODEL=llama3
+```
+
+LLM responses wrapped in JSON code fences are automatically stripped, improving compatibility with non-Claude models.
+
+See `.env.example` for full documentation of all provider options.
 
 ## Architecture
 
@@ -197,7 +245,7 @@ internal/
     client.go          # Confluence Cloud REST API client
     format.go          # XHTML storage format conversion
   llm/
-    llm.go             # Claude via Vertex AI (JQL generation, EPIC content)
+    llm.go             # Multi-provider LLM client (Vertex AI, OpenAI-compat, Ollama)
     digest.go          # Digest report generation
     weekly.go          # Weekly status generation
     enrich.go          # Ticket enrichment
@@ -222,6 +270,7 @@ The SQLite cache (`~/.jira-cli/cache.db`) stores issues, comments, links, and ru
 
 - **First run**: Full fetch from JIRA, stores everything
 - **Subsequent runs**: Queries `updated >= "last_fetch"` for changes only, upserts into cache
+- **Per-issue details**: Individual issue details (description, labels, parent, assignee, etc.) are cached. On repeat runs, only issues whose JIRA `updated` timestamp changed are re-fetched. This dramatically reduces API calls — e.g., `weekly-status` with 25 issues goes from 50+ API calls to near-zero on cache hit. The `get-issue` command also checks cache first.
 - **Weekly status**: Caches full LLM results; compares JIRA `updated` timestamps to skip re-generation when nothing changed
 - **Done issues**: Automatically pruned from cache after each fetch
 - **Board mappings**: Junction table supports issues appearing on multiple boards

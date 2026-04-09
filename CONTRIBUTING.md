@@ -35,6 +35,61 @@ make restart-mcp    # Rebuild and restart MCP server (for testing MCP tools)
 - Credentials must come from environment variables, never hardcoded
 - Don't commit `.env`, `*.db`, or generated output files
 
+## Configuration
+
+`config.Load()` loads all settings (JIRA + LLM provider). It no longer requires
+Vertex environment variables at load time — those are validated lazily by
+`llm.NewProvider()` only when the vertex provider is actually used.
+
+For commands that don't need an LLM, use `config.LoadJIRAOnly()` instead.
+
+## LLM Provider Pattern
+
+All LLM calls go through the provider abstraction in `internal/llm/`:
+
+```go
+provider := llm.NewProvider(cfg)
+result, err := provider.Complete(ctx, systemPrompt, userPrompt, maxTokens)
+```
+
+Do not import the Anthropic SDK directly — it is isolated inside `provider.go`.
+
+LLM responses sometimes arrive wrapped in markdown code fences. Always call
+`cleanJSON()` on the response before passing it to `json.Unmarshal`.
+
+## Per-Issue Caching
+
+When fetching issue details, check the cache first:
+
+```go
+detail, err := db.GetIssueDetail(key, knownUpdated)
+```
+
+If the cache misses (or the issue has been updated), fetch from the API and
+store the result:
+
+```go
+err = db.UpsertIssueDetail(detail)
+```
+
+The `IssueDetail` struct includes an `Updated` field used for freshness checks.
+
+## Output Format Support
+
+New commands should accept the `--format` flag (`markdown`, `slack`, `text`,
+`pretty`). Use the helpers in `internal/format/`:
+
+- `format.Render*` functions — produce markdown, slack, or plain-text strings.
+- `format.Display*` functions — render pretty terminal output via pterm.
+
+See `cmd/weekly_status.go` for a complete example of the pattern.
+
+## MCP Handlers
+
+MCP tool handlers live on the `*Handlers` struct in `internal/mcpserver/`.
+Use the shared cache available as `h.cache` rather than calling `cache.Open()`
+inside each handler.
+
 ## Project Structure
 
 - `cmd/` — CLI command definitions (cobra)
