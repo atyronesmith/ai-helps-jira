@@ -3,12 +3,29 @@ package mcpserver
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/cache"
 )
+
+// noAuthMiddleware wraps an http.Handler to intercept OAuth discovery
+// requests. MCP clients probe /.well-known/ paths before connecting;
+// returning a clean JSON 404 prevents parse errors in the client SDK.
+func noAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/.well-known/") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"error":"not_found"}`)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // Config holds MCP server configuration.
 type Config struct {
@@ -89,9 +106,18 @@ func Run(cfg Config) error {
 			server.WithKeepAlive(true),
 		)
 
+		// Wrap SSE server with middleware that handles OAuth discovery
+		// endpoints. Claude Code probes /.well-known/* before connecting;
+		// without this, the default 404 body isn't valid JSON and the
+		// client fails with "Invalid OAuth error response".
+		srv := &http.Server{
+			Addr:    sseAddr,
+			Handler: noAuthMiddleware(sseServer),
+		}
+
 		fmt.Fprintf(os.Stderr, "MCP SSE server: %s/sse\n", baseURL)
 		slog.Info("MCP server ready", "transport", "sse", "addr", sseAddr)
-		return sseServer.Start(sseAddr)
+		return srv.ListenAndServe()
 
 	default: // stdio
 		slog.Info("MCP server ready", "transport", "stdio")
