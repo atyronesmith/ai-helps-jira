@@ -41,6 +41,8 @@ cp .env.example .env
 
 ### Build and start the container
 
+Requires `podman` (or `docker`). Run:
+
 ```sh
 make container-run
 ```
@@ -185,6 +187,8 @@ Browse `http://localhost:18080` to see rich HTML views of MCP tool results (char
 ## Troubleshooting
 
 **"Connection refused"** — Container isn't running. Check `podman ps`.
+
+**"SDK auth failed" / "needs authentication"** — Claude Code is attempting OAuth discovery. Ensure your `.mcp.json` includes `"oauth": {}` to disable it. The server also handles this server-side, but both sides help.
 
 **"Missing required env vars"** — The container's `.env` file is incomplete. Check with the project owner.
 
