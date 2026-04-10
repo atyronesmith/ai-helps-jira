@@ -37,7 +37,7 @@ Generate a ready-to-paste standup update from recent JIRA activity.
 
 ---
 
-## 2. Ticket Enrichment / Refinement
+## 2. Ticket Enrichment / Refinement ✅
 
 Take a sparse ticket (by key) and generate missing fields: acceptance criteria,
 fuller description, story points estimate, suggested labels.
@@ -71,7 +71,7 @@ fuller description, story points estimate, suggested labels.
 
 ---
 
-## 3. Natural Language JQL
+## 3. Natural Language JQL ✅
 
 Type queries in plain English, LLM translates to JQL, executes, shows results.
 
@@ -102,7 +102,7 @@ Type queries in plain English, LLM translates to JQL, executes, shows results.
 
 ---
 
-## 4. Comment Thread Summarizer
+## 4. Comment Thread Summarizer ✅
 
 Summarize long comment threads on an issue into key decisions and action items.
 

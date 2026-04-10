@@ -11,8 +11,11 @@ Inspired by the [official Atlassian MCP server](https://github.com/atlassian/mcp
 - **Digest Reports** — Walk issue hierarchy (Initiative → Feature → Epic), fetch recent comments, and generate executive progress digests with AI.
 - **Ticket Enrichment** — Fill in sparse tickets with AI-generated descriptions, acceptance criteria, labels, and priority suggestions.
 - **Weekly Status** — Generate formatted weekly status reports from JIRA activity, optionally post to Confluence.
-- **JIRA CRUD** — Create, edit, transition, comment on, and link issues via MCP tools.
-- **MCP Server** — Exposes all features as Model Context Protocol tools for use with Claude Code and other MCP clients. Includes a rich web dashboard on port 18080.
+- **Comment Summarizer** — Summarize long comment threads into key decisions, action items, and open questions.
+- **Backlog Health Check** — Rule-based analysis (stale tickets, missing descriptions, orphaned issues, unassigned active, missing labels) with optional LLM executive summary.
+- **JIRA CRUD** — Create, edit, transition, comment on, link issues, look up users, and attach files — all from CLI or MCP.
+- **MCP Server** — Exposes all 17 tools as Model Context Protocol tools for Claude Code and other MCP clients. Supports stdio and SSE transports. Includes a rich web dashboard.
+- **Container Support** — Run as a shared MCP server in podman/docker with SSE transport. Multiple Claude Code instances can connect simultaneously. Red Hat UBI minimal base image with health checks and persistent cache volume.
 - **Multi-LLM Provider Support** — Use any LLM backend: Vertex AI (Claude), OpenAI-compatible APIs (DeepInfra, vLLM, etc.), or Ollama for fully local inference.
 - **SQLite Caching** — Delta fetches only changed issues after the first run. Smart cache invalidation compares JIRA timestamps. Per-issue detail caching means repeat runs skip re-fetching unchanged issues entirely.
 - **Confluence Integration** — Post weekly status reports as child pages with automatic parent page indexing.
@@ -139,11 +142,66 @@ jira-cli weekly-status --confluence
 jira-cli -vv weekly-status
 ```
 
+### Comment Summarizer
+
+```sh
+# Summarize comment thread on an issue
+jira-cli summarize-comments PROJ-123
+```
+
+### Backlog Health Check
+
+```sh
+# Run backlog health analysis with LLM summary
+jira-cli backlog-health
+
+# Rule-based checks only (no LLM)
+jira-cli backlog-health --no-llm
+
+# Custom stale threshold
+jira-cli backlog-health --stale-days 30
+```
+
+### Configuration
+
+```sh
+# Show JIRA settings, LLM provider, and cache stats
+jira-cli config
+```
+
+### JIRA CRUD
+
+```sh
+# Get full issue details
+jira-cli get-issue PROJ-123
+
+# Create an issue
+jira-cli create-issue --summary "Fix login bug" --type Bug --priority High
+
+# Edit an issue
+jira-cli edit-issue PROJ-123 --priority Critical --assignee user@example.com
+
+# Transition an issue
+jira-cli get-transitions PROJ-123          # list available transitions
+jira-cli transition PROJ-123 31            # transition by ID
+
+# Comments, links, attachments
+jira-cli add-comment PROJ-123 --body "Done"
+jira-cli link-issues --inward PROJ-123 --outward PROJ-456 --type Blocks
+jira-cli attach-file PROJ-123 report.pdf
+
+# Look up users
+jira-cli lookup-user jsmith
+```
+
 ### MCP Server
 
 ```sh
-# Start the MCP server (stdio transport for Claude Code)
+# Stdio transport (default, for single Claude Code instance)
 jira-cli mcp
+
+# SSE transport (for containers / multiple clients)
+jira-cli mcp --transport sse --sse-port 8081
 ```
 
 Configure in your MCP client (e.g. `.mcp.json`):
@@ -159,6 +217,18 @@ Configure in your MCP client (e.g. `.mcp.json`):
 }
 ```
 
+For SSE (container or shared server):
+
+```json
+{
+  "mcpServers": {
+    "jira-cli": {
+      "url": "http://localhost:8081/sse"
+    }
+  }
+}
+```
+
 #### Available MCP Tools
 
 | Tool | Description |
@@ -169,6 +239,8 @@ Configure in your MCP client (e.g. `.mcp.json`):
 | `jira_enrich` | AI-generated enrichment for sparse tickets |
 | `jira_weekly_status` | Weekly status report with optional Confluence posting |
 | `jira_create_epic` | LLM-assisted EPIC creation |
+| `jira_summarize_comments` | AI summary of issue comment threads |
+| `jira_backlog_health` | Backlog health analysis with findings and recommendations |
 | `jira_get_issue` | Full issue details with comments and links |
 | `jira_create_issue` | Create any issue type |
 | `jira_edit_issue` | Update issue fields |
@@ -179,7 +251,35 @@ Configure in your MCP client (e.g. `.mcp.json`):
 | `jira_link_issues` | Create links between issues |
 | `jira_attach_file` | Upload file attachments to issues |
 
-The MCP server includes a web dashboard at `http://127.0.0.1:18080` showing stored results with charts and interactive views.
+The MCP server includes a web dashboard at `http://localhost:18080` showing stored results with charts and interactive views. A `/healthz` endpoint is available for container health checks.
+
+### Container Deployment
+
+Run as a shared MCP server in podman/docker so multiple Claude Code instances can connect via SSE:
+
+```sh
+# Build and run
+make container-run
+
+# Or manually:
+podman build --format docker -t jira-cli .
+podman run -d --name jira-cli-mcp \
+  -p 8081:8081 -p 18080:18080 \
+  -v jira-cli-cache:/root/.jira-cli:Z \
+  --env-file .env \
+  jira-cli
+
+# Check health
+curl http://localhost:18080/healthz
+
+# View logs
+podman logs jira-cli-mcp
+
+# Stop
+make container-stop
+```
+
+The container uses Red Hat UBI 9 minimal as the base image. Cache is persisted via a named volume (`jira-cli-cache`). The server binds to `0.0.0.0` inside the container for port mapping.
 
 ### Global Flags
 
@@ -234,7 +334,20 @@ cmd/
   digest.go            # Digest command with hierarchy traversal
   enrich.go            # Ticket enrichment command
   create_epic.go       # LLM-assisted EPIC creation
-  mcp.go               # MCP server startup
+  weekly_status.go     # Weekly status report with Confluence support
+  summarize_comments.go # Comment thread summarizer
+  backlog_health.go    # Backlog health check
+  config.go            # Show settings and cache stats
+  get_issue.go         # Get issue details
+  create_issue.go      # Create issues
+  edit_issue.go        # Edit issues
+  get_transitions.go   # List workflow transitions
+  transition.go        # Transition issue status
+  add_comment.go       # Add comments
+  lookup_user.go       # Search users
+  link_issues.go       # Link issues
+  attach_file.go       # Upload attachments
+  mcp.go               # MCP server startup (stdio + SSE)
 internal/
   config/config.go     # .env loading, Config struct
   jira/
@@ -249,14 +362,17 @@ internal/
     digest.go          # Digest report generation
     weekly.go          # Weekly status generation
     enrich.go          # Ticket enrichment
+    comments.go        # Comment thread summarization
+    health.go          # Backlog health rules + LLM summary
   cache/
     cache.go           # SQLite: issues, comments, links, digest log
+    fetcher.go         # Fetcher interface for testable cache-aware logic
   mcpserver/
-    server.go          # MCP server setup and tool registration
-    tools.go           # Core tool handlers (summary, query, digest, enrich, weekly)
+    server.go          # MCP server setup, tool registration, SSE/stdio transport
+    tools.go           # Tool handlers (summary, query, digest, enrich, weekly, health, comments)
     crud_tools.go      # CRUD tool handlers (get, create, edit, transition, etc.)
     store.go           # In-memory result store for web dashboard
-    webserver.go       # HTTP server for dashboard
+    webserver.go       # HTTP server for dashboard + /healthz endpoint
   format/
     terminal.go        # pterm tables, spinners, color
     markdown.go        # GitHub + Slack markdown output
@@ -288,6 +404,9 @@ make check          # Run tidy + fmt + vet
 make test           # Run tests
 make lint           # Run vet + staticcheck
 make restart-mcp    # Rebuild and restart MCP server
+make container      # Build container image
+make container-run  # Build and run MCP container (SSE + dashboard)
+make container-stop # Stop and remove container
 make release        # Cross-compile for all platforms
 make help           # Show all targets
 ```

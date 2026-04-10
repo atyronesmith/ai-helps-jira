@@ -9,22 +9,25 @@ make build          # Build the jira-cli binary
 make check          # Run go mod tidy + gofmt + go vet
 make test           # Run all tests
 go build ./...      # Quick compile check
+make container      # Build container image (podman)
+make container-run  # Run MCP container with SSE transport + dashboard
+make container-stop # Stop and remove container
 ```
 
 Always run `go build ./...` after making changes to verify compilation.
 
 ## Project Overview
 
-Go CLI tool and MCP server for JIRA Cloud. Provides daily summaries, natural language search, AI digest reports, ticket enrichment, weekly status reports, full CRUD operations, and Confluence integration. All features are exposed both as CLI commands and MCP tools.
+Go CLI tool and MCP server for JIRA Cloud. Provides daily summaries, natural language search, AI digest reports, ticket enrichment, weekly status reports, comment summarization, backlog health checks, full CRUD operations, and Confluence integration. All features are exposed both as CLI commands and 17 MCP tools. Supports stdio and SSE transports, with container deployment for shared multi-client access.
 
 ## Architecture
 
 - **`cmd/`** — CLI entry points using cobra. Each file is one subcommand.
 - **`internal/jira/`** — JIRA REST API v3 client. `client.go` has the HTTP client and read operations. `crud.go` has write operations (create, edit, transition, comment, link). `models.go` has all data types.
 - **`internal/confluence/`** — Confluence Cloud REST API client. Uses both v1 (for space keys) and v2 (for page CRUD) APIs.
-- **`internal/llm/`** — LLM integration via the `Provider` interface defined in `provider.go`. `NewProvider(cfg)` is the factory; all feature files (`llm.go`, `query.go`, `weekly.go`, `enrich.go`, `digest.go`) call `NewProvider()` instead of using the Anthropic SDK directly. The SDK import is isolated to `provider.go` only.
-- **`internal/cache/`** — SQLite cache at `~/.jira-cli/cache.db`. Schema migrations are versioned (v1-v6). Stores issues, comments, links, digest run history, weekly status results, and per-issue detail structs (`issue_details` table, added in v6). Key detail-cache methods: `UpsertIssueDetail`, `GetIssueDetail(key, knownUpdated)`, `GetFreshDetailKeys(updatedByKey)`.
-- **`internal/mcpserver/`** — MCP server using mcp-go. `tools.go` has core tool handlers. `crud_tools.go` has CRUD tool handlers. `server.go` registers all tools and opens a shared `*cache.Cache` on the `Handlers` struct (individual handlers no longer call `cache.Open()`). `store.go` is the in-memory result store. `webserver.go` serves the HTML dashboard on port 18080.
+- **`internal/llm/`** — LLM integration via the `Provider` interface defined in `provider.go`. `NewProvider(cfg)` is the factory; all feature files (`llm.go`, `query.go`, `weekly.go`, `enrich.go`, `digest.go`, `comments.go`, `health.go`) call `NewProvider()` instead of using the Anthropic SDK directly. The SDK import is isolated to `provider.go` only. `health.go` has rule-based checks (pure Go, no LLM) plus an optional LLM executive summary. `health_test.go` and `provider_test.go` have unit tests.
+- **`internal/cache/`** — SQLite cache at `~/.jira-cli/cache.db`. Schema migrations are versioned (v1-v6). Stores issues, comments, links, digest run history, weekly status results, and per-issue detail structs (`issue_details` table, added in v6). Key detail-cache methods: `UpsertIssueDetail`, `GetIssueDetail(key, knownUpdated)`, `GetFreshDetailKeys(updatedByKey)`. `fetcher.go` defines the `Fetcher` interface for testable cache-aware logic. `cache_test.go` and `fetcher_test.go` have comprehensive tests using in-memory SQLite.
+- **`internal/mcpserver/`** — MCP server using mcp-go. `tools.go` has core tool handlers (summary, query, digest, enrich, weekly, health, comments). `crud_tools.go` has CRUD tool handlers. `server.go` registers all 17 tools, supports stdio and SSE transports via `Config.Transport`. `store.go` is the in-memory result store. `webserver.go` serves the HTML dashboard and `/healthz` health check endpoint.
 - **`internal/config/`** — Configuration from `.env` file. `Load()` requires LLM env vars. `LoadJIRAOnly()` only requires JIRA credentials.
 - **`internal/format/`** — Terminal output (pterm), markdown, and multi-format rendering. `weekly.go` provides `RenderWeeklyStatus` and `DisplayWeeklyStatus`. `markdown.go` has `RenderSummary`/`RenderDigest` (return strings) and `WriteSummary`/`WriteDigest` (write to file). All support 4 output formats: markdown, slack, text, pretty.
 - **`internal/web/templates/`** — HTML templates for the web dashboard (Chart.js, Mermaid diagrams).

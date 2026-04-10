@@ -17,6 +17,9 @@ make check          # Run tidy + fmt + vet
 make test           # Run tests
 make lint           # Run vet + staticcheck
 make restart-mcp    # Rebuild and restart MCP server (for testing MCP tools)
+make container      # Build container image
+make container-run  # Run MCP container with SSE transport
+make container-stop # Stop and remove container
 ```
 
 ## Making Changes
@@ -95,11 +98,25 @@ inside each handler.
 - `cmd/` — CLI command definitions (cobra)
 - `internal/jira/` — JIRA REST API client
 - `internal/confluence/` — Confluence REST API client
-- `internal/llm/` — LLM integration (Claude via Vertex AI)
+- `internal/llm/` — LLM integration (Vertex AI, OpenAI-compat, Ollama)
 - `internal/cache/` — SQLite caching layer
 - `internal/mcpserver/` — MCP server, tool handlers, web dashboard
 - `internal/format/` — Terminal and markdown output formatting
 - `internal/web/templates/` — HTML templates for the web dashboard
+
+## Container Testing
+
+The container runs the MCP server with SSE transport:
+
+```sh
+make container-run          # Build image + start container
+curl localhost:18080/healthz  # Verify health
+curl -N localhost:8081/sse    # Verify SSE endpoint
+make container-stop         # Clean up
+```
+
+The container uses Red Hat UBI 9 minimal. Cache is persisted via a named volume.
+Build uses `--format docker` for HEALTHCHECK support in podman.
 
 ## Adding a New MCP Tool
 
