@@ -1,16 +1,42 @@
 package mcpserver
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/cache"
 )
+
+// serveWithGracefulShutdown starts an HTTP server and shuts it down
+// cleanly on SIGTERM/SIGINT, draining connections for up to 5 seconds.
+func serveWithGracefulShutdown(srv *http.Server) error {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
+
+	select {
+	case sig := <-quit:
+		slog.Info("shutting down", "signal", sig)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(ctx)
+	case err := <-errCh:
+		return err
+	}
+}
 
 // noAuthMiddleware wraps an http.Handler to intercept OAuth discovery
 // requests. MCP clients probe /.well-known/ paths before connecting;
@@ -117,7 +143,7 @@ func Run(cfg Config) error {
 
 		fmt.Fprintf(os.Stderr, "MCP SSE server: %s/sse\n", baseURL)
 		slog.Info("MCP server ready", "transport", "sse", "addr", sseAddr)
-		return srv.ListenAndServe()
+		return serveWithGracefulShutdown(srv)
 
 	default: // stdio
 		slog.Info("MCP server ready", "transport", "stdio")

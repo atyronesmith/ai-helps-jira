@@ -79,7 +79,9 @@ container:  ## Build container image
 container-run: container  ## Run MCP server in container (SSE on :8081, dashboard on :18080)
 	podman run -d --name $(CONTAINER) \
 		-p 8081:8081 -p 18080:18080 \
-		-v jira-cli-cache:/root/.jira-cli:Z \
+		-v jira-cli-cache:/home/jira-cli/.jira-cli:Z \
+		--read-only --tmpfs /tmp \
+		--cap-drop=ALL \
 		--env-file .env \
 		$(IMAGE)
 	@echo "MCP SSE:     http://localhost:8081/sse"
