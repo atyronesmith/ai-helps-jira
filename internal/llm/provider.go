@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -47,32 +46,32 @@ type OpenAIProvider struct {
 //   - LLM_PROVIDER=vertex  → Claude on Vertex AI (existing behavior)
 //   - (default)            → Vertex AI if ANTHROPIC_VERTEX_PROJECT_ID is set, else error
 func NewProvider(cfg *config.Config) (Provider, error) {
-	provider := os.Getenv("LLM_PROVIDER")
+	provider := config.GetEnvOrSecret("LLM_PROVIDER")
 
 	switch provider {
 	case "openai":
-		baseURL := os.Getenv("LLM_BASE_URL")
+		baseURL := config.GetEnvOrSecret("LLM_BASE_URL")
 		if baseURL == "" {
 			return nil, fmt.Errorf("LLM_BASE_URL required when LLM_PROVIDER=openai")
 		}
-		model := os.Getenv("LLM_MODEL")
+		model := config.GetEnvOrSecret("LLM_MODEL")
 		if model == "" {
 			return nil, fmt.Errorf("LLM_MODEL required when LLM_PROVIDER=openai")
 		}
 		slog.Info("using OpenAI-compatible provider", "base_url", baseURL, "model", model)
 		return &OpenAIProvider{
 			baseURL: baseURL,
-			apiKey:  os.Getenv("LLM_API_KEY"),
+			apiKey:  config.GetEnvOrSecret("LLM_API_KEY"),
 			model:   model,
 			http:    &http.Client{Timeout: 120 * time.Second},
 		}, nil
 
 	case "ollama":
-		baseURL := os.Getenv("OLLAMA_BASE_URL")
+		baseURL := config.GetEnvOrSecret("OLLAMA_BASE_URL")
 		if baseURL == "" {
 			baseURL = "http://localhost:11434"
 		}
-		model := os.Getenv("LLM_MODEL")
+		model := config.GetEnvOrSecret("LLM_MODEL")
 		if model == "" {
 			return nil, fmt.Errorf("LLM_MODEL required when LLM_PROVIDER=ollama")
 		}
@@ -90,7 +89,7 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 			}
 			return nil, fmt.Errorf("no LLM provider configured — set LLM_PROVIDER (openai, ollama, vertex)")
 		}
-		model := os.Getenv("LLM_MODEL")
+		model := config.GetEnvOrSecret("LLM_MODEL")
 		if model == "" {
 			model = "claude-sonnet-4-6"
 		}

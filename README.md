@@ -269,7 +269,9 @@ make container-run
 podman build --format docker -t jira-cli .
 podman run -d --name jira-cli-mcp \
   -p 8081:8081 -p 18080:18080 \
-  -v jira-cli-cache:/root/.jira-cli:Z \
+  -v jira-cli-cache:/home/jira-cli/.jira-cli:Z \
+  --read-only --tmpfs /tmp \
+  --cap-drop=ALL \
   --env-file .env \
   jira-cli
 
@@ -283,7 +285,41 @@ podman logs jira-cli-mcp
 make container-stop
 ```
 
-The container uses Red Hat UBI 9 minimal as the base image. Cache is persisted via a named volume (`jira-cli-cache`). The server binds to `0.0.0.0` inside the container for port mapping.
+The container uses Red Hat UBI 9 minimal as the base image. It runs as non-root (UID 1001), with a read-only root filesystem, all capabilities dropped, and SUID/SGID binaries stripped. Cache is persisted via a named volume (`jira-cli-cache`).
+
+#### Secrets
+
+By default, credentials are passed via `--env-file .env`. For production deployments, mount secret files instead — env vars are visible in `podman inspect`:
+
+```sh
+podman run -d --name jira-cli-mcp \
+  -p 8081:8081 -p 18080:18080 \
+  -v jira-cli-cache:/home/jira-cli/.jira-cli:Z \
+  -v ./secrets:/run/secrets:ro,Z \
+  --read-only --tmpfs /tmp \
+  --cap-drop=ALL \
+  jira-cli
+```
+
+Create one file per secret in `./secrets/` (e.g. `JIRA_API_TOKEN`, `JIRA_SERVER`). The application checks `/run/secrets/<NAME>` before falling back to environment variables.
+
+#### TLS
+
+The MCP server does not terminate TLS. For network-exposed deployments, place it behind a reverse proxy:
+
+```
+[Claude Code] → HTTPS → [nginx/HAProxy] → HTTP → [jira-cli :8081]
+```
+
+For local podman usage on localhost, TLS is not required.
+
+#### Supply Chain
+
+```sh
+make container-scan   # CVE scan with Trivy
+make container-sign   # Sign image with cosign (Sigstore)
+make container-sbom   # Generate SBOM with syft (SPDX format)
+```
 
 ### Global Flags
 
@@ -411,6 +447,9 @@ make restart-mcp    # Rebuild and restart MCP server
 make container      # Build container image
 make container-run  # Build and run MCP container (SSE + dashboard)
 make container-stop # Stop and remove container
+make container-scan # CVE scan with Trivy
+make container-sign # Sign image with cosign
+make container-sbom # Generate SBOM (SPDX)
 make release        # Cross-compile for all platforms
 make help           # Show all targets
 ```

@@ -17,7 +17,8 @@ IMAGE     := jira-cli
 CONTAINER := jira-cli-mcp
 
 .PHONY: all build clean install uninstall test lint fmt vet tidy run \
-        release check restart-mcp container container-run container-stop help
+        release check restart-mcp container container-run container-stop \
+        container-scan container-sign container-sbom help
 
 all: check build  ## Run checks then build
 
@@ -93,6 +94,20 @@ container-run: container  ## Run MCP server in container (SSE on :8081, dashboar
 container-stop:  ## Stop and remove the MCP container
 	podman stop $(CONTAINER) 2>/dev/null || true
 	podman rm $(CONTAINER) 2>/dev/null || true
+
+container-scan: container  ## Scan container image for CVEs (requires trivy)
+	@which trivy >/dev/null 2>&1 || { echo "trivy not installed: brew install trivy"; exit 1; }
+	trivy image --severity HIGH,CRITICAL $(IMAGE)
+
+container-sign: container  ## Sign container image (requires cosign)
+	@which cosign >/dev/null 2>&1 || { echo "cosign not installed: brew install cosign"; exit 1; }
+	cosign sign --yes localhost/$(IMAGE):latest
+
+container-sbom: container  ## Generate SBOM for container image (requires syft)
+	@which syft >/dev/null 2>&1 || { echo "syft not installed: brew install syft"; exit 1; }
+	@mkdir -p dist
+	syft localhost/$(IMAGE):latest -o spdx-json=dist/sbom.spdx.json
+	@echo "SBOM written to dist/sbom.spdx.json"
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \
