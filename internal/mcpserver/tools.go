@@ -25,18 +25,23 @@ const defaultConfluenceParent = ""
 
 // Handlers holds shared state for MCP tool handlers.
 type Handlers struct {
-	store   *ResultStore
-	cache   *cache.Cache
-	webPort int
+	store    *ResultStore
+	cache    *cache.Cache
+	webPort  int
+	bindHost string
 }
 
 // NewHandlers creates a new handler set.
-func NewHandlers(store *ResultStore, db *cache.Cache, webPort int) *Handlers {
-	return &Handlers{store: store, cache: db, webPort: webPort}
+func NewHandlers(store *ResultStore, db *cache.Cache, webPort int, bindHost string) *Handlers {
+	return &Handlers{store: store, cache: db, webPort: webPort, bindHost: bindHost}
 }
 
 func (h *Handlers) viewURL(id string) string {
-	return fmt.Sprintf("http://127.0.0.1:%d/view/%s", h.webPort, id)
+	host := h.bindHost
+	if host == "0.0.0.0" {
+		host = "127.0.0.1"
+	}
+	return fmt.Sprintf("http://%s:%d/view/%s", host, h.webPort, id)
 }
 
 // --- Tool Definitions ---

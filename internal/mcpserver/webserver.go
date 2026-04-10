@@ -73,6 +73,7 @@ func NewWebServer(store *ResultStore, port int, bindHost string) *WebServer {
 // Start begins listening on the configured port (localhost only).
 func (ws *WebServer) Start() error {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", ws.handleHealthz)
 	mux.HandleFunc("GET /", ws.handleIndex)
 	mux.HandleFunc("GET /view/{id}", ws.handleView)
 	mux.HandleFunc("GET /api/result/{id}", ws.handleAPIResult)
@@ -135,6 +136,13 @@ func (ws *WebServer) handleAPIResult(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result.Data)
+}
+
+// handleHealthz returns 200 OK for container/orchestrator health checks.
+func (ws *WebServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, `{"status":"ok"}`)
 }
 
 // handleDeleteResult removes a result by ID.

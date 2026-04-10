@@ -74,11 +74,12 @@ restart-mcp: build  ## Rebuild and restart the MCP server
 	@echo "MCP server restarted (will be relaunched on next tool call)"
 
 container:  ## Build container image
-	podman build -t $(IMAGE) .
+	podman build --format docker -t $(IMAGE) .
 
 container-run: container  ## Run MCP server in container (SSE on :8081, dashboard on :18080)
 	podman run -d --name $(CONTAINER) \
 		-p 8081:8081 -p 18080:18080 \
+		-v jira-cli-cache:/root/.jira-cli:Z \
 		--env-file .env \
 		$(IMAGE)
 	@echo "MCP SSE:     http://localhost:8081/sse"

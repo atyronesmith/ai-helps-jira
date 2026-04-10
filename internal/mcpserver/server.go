@@ -56,7 +56,7 @@ func Run(cfg Config) error {
 	)
 
 	// Create handlers
-	h := NewHandlers(store, db, cfg.WebPort)
+	h := NewHandlers(store, db, cfg.WebPort, bindHost)
 
 	// Register tools
 	s.AddTool(summaryToolDef(), h.HandleSummary)
