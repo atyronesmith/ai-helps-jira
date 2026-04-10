@@ -110,6 +110,7 @@ func Run(cfg Config) error {
 	s.AddTool(weeklyStatusToolDef(), h.HandleWeeklyStatus)
 	s.AddTool(summarizeCommentsToolDef(), h.HandleSummarizeComments)
 	s.AddTool(backlogHealthToolDef(), h.HandleBacklogHealth)
+	s.AddTool(findSimilarToolDef(), h.HandleFindSimilar)
 
 	// CRUD tools
 	s.AddTool(getIssueToolDef(), h.HandleGetIssue)

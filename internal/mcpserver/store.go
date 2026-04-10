@@ -24,6 +24,7 @@ const (
 	ResultEnrich       ResultType = "enrich"
 	ResultCreateEpic   ResultType = "create_epic"
 	ResultWeeklyStatus ResultType = "weekly_status"
+	ResultFindSimilar  ResultType = "find_similar"
 )
 
 // StoredResult holds a tool result for the web server.
@@ -152,6 +153,9 @@ func deserializeData(typ ResultType, data []byte) (any, error) {
 		return &v, json.Unmarshal(data, &v)
 	case ResultWeeklyStatus:
 		var v WeeklyStatusResultData
+		return &v, json.Unmarshal(data, &v)
+	case ResultFindSimilar:
+		var v FindSimilarResultData
 		return &v, json.Unmarshal(data, &v)
 	default:
 		return nil, fmt.Errorf("unknown result type: %s", typ)

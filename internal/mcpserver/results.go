@@ -3,9 +3,10 @@ package mcpserver
 import (
 	"time"
 
-	"github.com/atyronesmith/ai-helps-jira/internal/format"
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
+
+	"github.com/atyronesmith/ai-helps-jira/internal/format"
 )
 
 // SummaryResult holds summary data for the web template.
@@ -65,4 +66,13 @@ type WeeklyStatusResultData struct {
 	Projects    []llm.WeeklyProjectItem
 	JiraServer  string
 	GeneratedAt time.Time
+}
+
+// FindSimilarResultData holds similarity analysis results for the web template.
+type FindSimilarResultData struct {
+	TargetKey  string
+	TargetText string
+	Matches    []llm.SimilarIssue
+	JiraServer string
+	FoundAt    time.Time
 }

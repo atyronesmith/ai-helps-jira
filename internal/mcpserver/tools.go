@@ -118,6 +118,18 @@ func summarizeCommentsToolDef() mcp.Tool {
 	)
 }
 
+func findSimilarToolDef() mcp.Tool {
+	return mcp.NewTool("jira_find_similar",
+		mcp.WithDescription("Find duplicate or related JIRA issues using AI similarity analysis. Provide an issue key or freeform text to compare against open project issues."),
+		mcp.WithString("issue_key", mcp.Description("JIRA issue key to find similar issues for (e.g. PROJ-123).")),
+		mcp.WithString("text", mcp.Description("Freeform text to find similar issues for (alternative to issue_key).")),
+		mcp.WithString("user", mcp.Description("JIRA user email.")),
+		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		mcp.WithNumber("threshold", mcp.Description("Minimum confidence threshold (0.0-1.0). Default 0.5.")),
+		mcp.WithNumber("max_candidates", mcp.Description("Maximum candidate issues to compare. Default 200.")),
+	)
+}
+
 func createEpicToolDef() mcp.Tool {
 	return mcp.NewTool("jira_create_epic",
 		mcp.WithDescription("Create a JIRA EPIC with LLM-generated content from a brief description."),
@@ -1201,6 +1213,122 @@ func (h *Handlers) HandleCreateEpic(ctx context.Context, req mcp.CallToolRequest
 	fmt.Fprintf(&text, "---\nRich dashboard: %s\n", h.viewURL(resultID))
 
 	return textResult(text.String()), nil
+}
+
+func (h *Handlers) HandleFindSimilar(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	cfg, err := loadConfig(req)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	issueKey := getString(req, "issue_key")
+	text := getString(req, "text")
+	threshold := getFloat(req, "threshold")
+	maxCandidates := int(getFloat(req, "max_candidates"))
+
+	if issueKey == "" && text == "" {
+		return errorResult("either issue_key or text is required"), nil
+	}
+	if threshold <= 0 {
+		threshold = 0.5
+	}
+	if maxCandidates <= 0 {
+		maxCandidates = 200
+	}
+
+	slog.Info("find-similar", "issue_key", issueKey, "text_len", len(text), "threshold", threshold)
+
+	client, err := jira.NewClient(cfg)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	provider, err := llm.NewProvider(cfg)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	// Fetch candidate issues
+	jql := fmt.Sprintf(
+		"project = %s AND status NOT IN (Done, Closed, Resolved) ORDER BY updated DESC",
+		cfg.JiraProject,
+	)
+	issues, err := client.SearchJQL(jql, maxCandidates)
+	if err != nil {
+		return errorResult(fmt.Sprintf("JIRA search failed: %v", err)), nil
+	}
+
+	// Fetch details for candidates
+	var candidates []*jira.IssueDetail
+	for _, issue := range issues {
+		detail, err := client.GetIssue(issue.Key)
+		if err != nil {
+			slog.Warn("failed to get issue details", "key", issue.Key, "error", err)
+			continue
+		}
+		candidates = append(candidates, detail)
+	}
+
+	var result *llm.SimilarityResult
+
+	if issueKey != "" {
+		// Find target in candidates or fetch separately
+		var target *jira.IssueDetail
+		for _, c := range candidates {
+			if c.Key == issueKey {
+				target = c
+				break
+			}
+		}
+		if target == nil {
+			target, err = client.GetIssue(issueKey)
+			if err != nil {
+				return errorResult(fmt.Sprintf("get issue %s: %v", issueKey, err)), nil
+			}
+		}
+
+		filtered := llm.PrepareCandidates(issueKey, candidates)
+		result, err = llm.FindSimilar(provider, target, filtered, threshold)
+		if err != nil {
+			return errorResult(fmt.Sprintf("similarity analysis: %v", err)), nil
+		}
+	} else {
+		result, err = llm.FindSimilarByText(provider, text, candidates, threshold)
+		if err != nil {
+			return errorResult(fmt.Sprintf("similarity analysis: %v", err)), nil
+		}
+	}
+
+	// Store for web dashboard
+	resultID := h.store.Save(ResultFindSimilar, fmt.Sprintf("Similar: %s", issueKey+text), &FindSimilarResultData{
+		TargetKey:  result.TargetKey,
+		TargetText: result.TargetText,
+		Matches:    result.Matches,
+		JiraServer: cfg.JiraServer,
+		FoundAt:    time.Now(),
+	})
+
+	// Build text response
+	var out strings.Builder
+	targetLabel := result.TargetKey
+	if targetLabel == "" {
+		targetLabel = fmt.Sprintf("%q", result.TargetText)
+	}
+	fmt.Fprintf(&out, "## Similar Issues: %s\n\n", targetLabel)
+
+	if len(result.Matches) == 0 {
+		out.WriteString("No similar issues found.\n")
+	} else {
+		fmt.Fprintf(&out, "**%d matches found:**\n\n", len(result.Matches))
+		for _, m := range result.Matches {
+			fmt.Fprintf(&out, "- [%s](%s/browse/%s) **%.0f%%** (%s) %s — %s\n",
+				m.Key, cfg.JiraServer, m.Key,
+				m.Confidence*100, m.Relation, m.Summary, m.Reason)
+		}
+	}
+	fmt.Fprintf(&out, "\n---\nRich dashboard: %s\n", h.viewURL(resultID))
+
+	return textResult(out.String()), nil
 }
 
 // --- Digest hierarchy traversal (reused from cmd/digest.go) ---

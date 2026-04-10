@@ -37,6 +37,8 @@ Examples:
   jira-cli lookup-user jsmith
   jira-cli create-epic -d "Build onboarding flow"
   jira-cli summarize-comments PROJ-123
+  jira-cli find-similar PROJ-123
+  jira-cli find-similar --text "login broken after reset"
   jira-cli backlog-health
   jira-cli config`,
 }
