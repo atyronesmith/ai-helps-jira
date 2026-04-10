@@ -18,11 +18,11 @@ import (
 type ResultType string
 
 const (
-	ResultSummary    ResultType = "summary"
-	ResultQuery      ResultType = "query"
-	ResultDigest     ResultType = "digest"
-	ResultEnrich     ResultType = "enrich"
-	ResultCreateEpic    ResultType = "create_epic"
+	ResultSummary      ResultType = "summary"
+	ResultQuery        ResultType = "query"
+	ResultDigest       ResultType = "digest"
+	ResultEnrich       ResultType = "enrich"
+	ResultCreateEpic   ResultType = "create_epic"
 	ResultWeeklyStatus ResultType = "weekly_status"
 )
 

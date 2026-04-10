@@ -241,6 +241,137 @@ func DisplayDigest(parent *jira.IssueDetail, digest *DigestData) {
 	fmt.Println()
 }
 
+// BacklogHealthData holds backlog health check results for display.
+type BacklogHealthData struct {
+	TotalIssues      int
+	HealthyCount     int
+	StaleDays        int
+	Categories       []HealthCategory
+	ExecutiveSummary string
+	Recommendations  []string
+}
+
+// HealthCategory groups health issues by problem type.
+type HealthCategory struct {
+	Name   string
+	Issues []HealthIssue
+}
+
+// HealthIssue is a single issue flagged in a health check.
+type HealthIssue struct {
+	Key     string
+	Summary string
+	Detail  string
+}
+
+// DisplayBacklogHealth renders a backlog health report with pterm.
+func DisplayBacklogHealth(report *BacklogHealthData, jiraServer string) {
+	// Header stats
+	problemCount := report.TotalIssues - report.HealthyCount
+	healthPct := 0
+	if report.TotalIssues > 0 {
+		healthPct = report.HealthyCount * 100 / report.TotalIssues
+	}
+
+	var healthColor pterm.Color
+	switch {
+	case healthPct >= 80:
+		healthColor = pterm.FgGreen
+	case healthPct >= 60:
+		healthColor = pterm.FgYellow
+	default:
+		healthColor = pterm.FgRed
+	}
+
+	pterm.DefaultBox.WithTitle("Backlog Health Check").
+		Println(fmt.Sprintf("%d open issues — %d healthy, %d with problems (%s)",
+			report.TotalIssues, report.HealthyCount, problemCount,
+			pterm.NewStyle(healthColor).Sprintf("%d%% healthy", healthPct)))
+
+	// Executive summary
+	if report.ExecutiveSummary != "" {
+		pterm.DefaultSection.Println("Executive Summary")
+		fmt.Println(report.ExecutiveSummary)
+		fmt.Println()
+	}
+
+	// Problem categories
+	for _, cat := range report.Categories {
+		data := [][]string{{"Key", "Summary", "Problem"}}
+		for _, issue := range cat.Issues {
+			summary := issue.Summary
+			if len(summary) > 45 {
+				summary = summary[:42] + "..."
+			}
+			data = append(data, []string{issue.Key, summary, issue.Detail})
+		}
+		pterm.DefaultSection.Printfln("%s (%d)", cat.Name, len(cat.Issues))
+		table, _ := pterm.DefaultTable.WithHasHeader(true).WithData(data).Srender()
+		fmt.Println(table)
+	}
+
+	// Recommendations
+	if len(report.Recommendations) > 0 {
+		items := make([]pterm.BulletListItem, len(report.Recommendations))
+		for i, r := range report.Recommendations {
+			items[i] = pterm.BulletListItem{Level: 0, Text: r}
+		}
+		pterm.DefaultSection.Println("Recommendations")
+		pterm.DefaultBulletList.WithItems(items).Render()
+	}
+
+	if len(report.Categories) == 0 {
+		pterm.FgGreen.Println("No problems found — backlog is healthy!")
+	}
+	fmt.Println()
+}
+
+// CommentSummaryData holds comment summary results for display.
+type CommentSummaryData struct {
+	Summary       string
+	KeyDecisions  []string
+	ActionItems   []string
+	OpenQuestions []string
+}
+
+// DisplayCommentSummary renders a comment thread summary with pterm.
+func DisplayCommentSummary(issue *jira.IssueDetail, summary *CommentSummaryData) {
+	pterm.DefaultBox.WithTitle(fmt.Sprintf("%s — %s", issue.Key, issue.IssueType)).
+		Println(issue.Summary)
+
+	pterm.DefaultSection.Println("Summary")
+	fmt.Println(summary.Summary)
+
+	if len(summary.KeyDecisions) > 0 {
+		items := make([]pterm.BulletListItem, len(summary.KeyDecisions))
+		for i, d := range summary.KeyDecisions {
+			items[i] = pterm.BulletListItem{Level: 0, Text: d}
+		}
+		pterm.DefaultSection.Println("Key Decisions")
+		pterm.DefaultBulletList.WithItems(items).Render()
+	}
+
+	if len(summary.ActionItems) > 0 {
+		items := make([]pterm.BulletListItem, len(summary.ActionItems))
+		for i, a := range summary.ActionItems {
+			items[i] = pterm.BulletListItem{Level: 0, Text: a}
+		}
+		pterm.DefaultSection.Println("Action Items")
+		pterm.DefaultBulletList.WithItems(items).Render()
+	}
+
+	if len(summary.OpenQuestions) > 0 {
+		items := make([]pterm.BulletListItem, len(summary.OpenQuestions))
+		for i, q := range summary.OpenQuestions {
+			items[i] = pterm.BulletListItem{Level: 0, Text: q}
+		}
+		pterm.DefaultSection.Println("Open Questions")
+		pterm.DefaultBulletList.WithItems(items).Render()
+	}
+
+	fmt.Println()
+}
+
 func StatusPrinter(msg string) *pterm.SpinnerPrinter {
 	s, _ := pterm.DefaultSpinner.Start(msg)
 	return s

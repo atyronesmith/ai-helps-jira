@@ -721,6 +721,37 @@ func (c *Cache) GetFreshDetailKeys(updatedByKey map[string]time.Time) map[string
 	return fresh
 }
 
+// CacheStats holds row counts for each cache table.
+type CacheStats struct {
+	Issues       int
+	IssueBoards  int
+	IssueDetails int
+	Comments     int
+	IssueLinks   int
+	WeeklyCache  int
+	DigestLog    int
+	FetchLog     int
+}
+
+// Stats returns row counts for all cache tables.
+func (c *Cache) Stats() CacheStats {
+	var s CacheStats
+	_ = c.db.QueryRow("SELECT COUNT(*) FROM issues").Scan(&s.Issues)
+	_ = c.db.QueryRow("SELECT COUNT(*) FROM issue_boards").Scan(&s.IssueBoards)
+	_ = c.db.QueryRow("SELECT COUNT(*) FROM issue_details").Scan(&s.IssueDetails)
+	_ = c.db.QueryRow("SELECT COUNT(*) FROM comments").Scan(&s.Comments)
+	_ = c.db.QueryRow("SELECT COUNT(*) FROM issue_links").Scan(&s.IssueLinks)
+	_ = c.db.QueryRow("SELECT COUNT(*) FROM weekly_cache").Scan(&s.WeeklyCache)
+	_ = c.db.QueryRow("SELECT COUNT(*) FROM digest_log").Scan(&s.DigestLog)
+	_ = c.db.QueryRow("SELECT COUNT(*) FROM fetch_log").Scan(&s.FetchLog)
+	return s
+}
+
+// Path returns the database file path.
+func (c *Cache) Path() string {
+	return filepath.Join(os.Getenv("HOME"), ".jira-cli", "cache.db")
+}
+
 // Clear removes all cached data for a project.
 func (c *Cache) Clear(project string) error {
 	_, _ = c.db.Exec(

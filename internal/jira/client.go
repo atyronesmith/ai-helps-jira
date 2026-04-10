@@ -520,13 +520,13 @@ func (c *Client) GetComments(key string) ([]Comment, error) {
 type apiIssueLinkResponse struct {
 	Key    string `json:"key"`
 	Fields struct {
-		Summary     string         `json:"summary"`
-		Description any            `json:"description"`
-		Status      apiName        `json:"status"`
-		Priority    *apiName       `json:"priority"`
-		Labels      []string       `json:"labels"`
-		Type        apiName        `json:"issuetype"`
-		IssueLinks  []apiIssueLink `json:"issuelinks"`
+		Summary     string           `json:"summary"`
+		Description any              `json:"description"`
+		Status      apiName          `json:"status"`
+		Priority    *apiName         `json:"priority"`
+		Labels      []string         `json:"labels"`
+		Type        apiName          `json:"issuetype"`
+		IssueLinks  []apiIssueLink   `json:"issuelinks"`
 		Subtasks    []apiLinkedIssue `json:"subtasks"`
 	} `json:"fields"`
 }

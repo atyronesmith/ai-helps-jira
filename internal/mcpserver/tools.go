@@ -12,8 +12,8 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/cache"
-	"github.com/atyronesmith/ai-helps-jira/internal/confluence"
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
+	"github.com/atyronesmith/ai-helps-jira/internal/confluence"
 	"github.com/atyronesmith/ai-helps-jira/internal/format"
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
@@ -91,6 +91,25 @@ func weeklyStatusToolDef() mcp.Tool {
 		mcp.WithString("end_date", mcp.Description("End of reporting period (YYYY-MM-DD). Defaults to today.")),
 		mcp.WithBoolean("confluence", mcp.Description("Post report to Confluence. Default false.")),
 		mcp.WithString("confluence_parent_id", mcp.Description("Confluence parent page ID. Defaults to configured parent.")),
+	)
+}
+
+func backlogHealthToolDef() mcp.Tool {
+	return mcp.NewTool("jira_backlog_health",
+		mcp.WithDescription("Check backlog health: find stale tickets, missing descriptions, orphaned issues (no parent epic), unassigned active issues, and missing labels. Returns categorized findings with AI-generated executive summary and recommendations."),
+		mcp.WithString("user", mcp.Description("JIRA user email.")),
+		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		mcp.WithNumber("stale_days", mcp.Description("Days without update before an active issue is stale. Default 14.")),
+		mcp.WithBoolean("no_llm", mcp.Description("Skip LLM summary, return rule-based checks only. Default false.")),
+	)
+}
+
+func summarizeCommentsToolDef() mcp.Tool {
+	return mcp.NewTool("jira_summarize_comments",
+		mcp.WithDescription("Summarize a JIRA issue's comment thread using AI. Returns key decisions, action items, open questions, and an overall summary."),
+		mcp.WithString("issue_key", mcp.Required(), mcp.Description("JIRA issue key (e.g. PROJ-123).")),
+		mcp.WithString("user", mcp.Description("JIRA user email.")),
+		mcp.WithString("project", mcp.Description("JIRA project key.")),
 	)
 }
 
@@ -910,6 +929,219 @@ func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolReque
 				slog.Info("parent page updated with link", "child", childPageID)
 			}
 		}
+	}
+
+	return textResult(text.String()), nil
+}
+
+func (h *Handlers) HandleBacklogHealth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	cfg, err := loadConfig(req)
+	if err != nil {
+		// Fall back to JIRA-only config if no LLM configured
+		cfg, err = loadJIRAConfig(req)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+	}
+
+	staleDays := int(getFloat(req, "stale_days"))
+	if staleDays <= 0 {
+		staleDays = 14
+	}
+	noLLM := getBool(req, "no_llm")
+
+	slog.Info("backlog-health", "project", cfg.JiraProject, "stale_days", staleDays)
+
+	client, err := jira.NewClient(cfg)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	issues, err := client.GetOpenIssues()
+	if err != nil {
+		return errorResult(fmt.Sprintf("JIRA search failed: %v", err)), nil
+	}
+
+	if len(issues) == 0 {
+		return textResult("No open issues found."), nil
+	}
+
+	// Fetch details for each issue (cache-aware)
+	updatedByKey := make(map[string]time.Time, len(issues))
+	for _, issue := range issues {
+		updatedByKey[issue.Key] = issue.Updated
+	}
+	freshKeys := h.cache.GetFreshDetailKeys(updatedByKey)
+
+	var details []*jira.IssueDetail
+	var fetchedDetails []*jira.IssueDetail
+	for _, issue := range issues {
+		var detail *jira.IssueDetail
+		if freshKeys[issue.Key] {
+			if cached, ok := h.cache.GetIssueDetail(issue.Key, issue.Updated); ok {
+				detail = cached
+			}
+		}
+		if detail == nil {
+			detail, err = client.GetIssue(issue.Key)
+			if err != nil {
+				slog.Warn("failed to get issue details", "key", issue.Key, "error", err)
+				continue
+			}
+			fetchedDetails = append(fetchedDetails, detail)
+		}
+		details = append(details, detail)
+	}
+	if len(fetchedDetails) > 0 {
+		h.cache.UpsertIssueDetails(fetchedDetails)
+	}
+
+	// Run checks
+	findings := llm.CheckBacklogHealth(details, staleDays)
+
+	// Count unique problem issues
+	seen := make(map[string]bool)
+	for _, f := range findings {
+		seen[f.Key] = true
+	}
+	healthyCount := len(details) - len(seen)
+	healthPct := 0
+	if len(details) > 0 {
+		healthPct = healthyCount * 100 / len(details)
+	}
+
+	// Build text output
+	var text strings.Builder
+	fmt.Fprintf(&text, "## Backlog Health Check\n\n")
+	fmt.Fprintf(&text, "**%d open issues** — %d healthy, %d with problems (%d%% healthy)\n\n",
+		len(details), healthyCount, len(seen), healthPct)
+
+	// Group findings
+	order := []string{"stale", "unassigned_active", "missing_description", "orphaned", "missing_labels"}
+	labels := map[string]string{
+		"stale":               "Stale Tickets",
+		"unassigned_active":   "Unassigned Active",
+		"missing_description": "Missing Description",
+		"orphaned":            "Orphaned (No Parent)",
+		"missing_labels":      "Missing Labels",
+	}
+	grouped := make(map[string][]llm.HealthFinding)
+	for _, f := range findings {
+		grouped[f.Category] = append(grouped[f.Category], f)
+	}
+	for _, cat := range order {
+		items := grouped[cat]
+		if len(items) == 0 {
+			continue
+		}
+		fmt.Fprintf(&text, "### %s (%d)\n", labels[cat], len(items))
+		for _, f := range items {
+			fmt.Fprintf(&text, "- **%s**: %s — %s\n", f.Key, f.Summary, f.Detail)
+		}
+		text.WriteString("\n")
+	}
+
+	// LLM summary
+	if !noLLM && len(findings) > 0 {
+		summary, recs, err := llm.GenerateHealthSummary(cfg, len(details), findings)
+		if err != nil {
+			slog.Warn("LLM health summary failed", "error", err)
+		} else {
+			fmt.Fprintf(&text, "### Executive Summary\n%s\n\n", summary)
+			if len(recs) > 0 {
+				text.WriteString("### Recommendations\n")
+				for _, r := range recs {
+					fmt.Fprintf(&text, "- %s\n", r)
+				}
+				text.WriteString("\n")
+			}
+		}
+	}
+
+	if len(findings) == 0 {
+		text.WriteString("No problems found — backlog is healthy!\n")
+	}
+
+	return textResult(text.String()), nil
+}
+
+func (h *Handlers) HandleSummarizeComments(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	cfg, err := loadConfig(req)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	issueKey := getString(req, "issue_key")
+	if issueKey == "" {
+		return errorResult("issue_key is required"), nil
+	}
+
+	slog.Info("summarize-comments", "key", issueKey)
+
+	// Fetch issue details (cache-aware)
+	detail, ok := h.cache.GetIssueDetail(issueKey, time.Time{})
+	if !ok {
+		client, err := jira.NewClient(cfg)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		detail, err = client.GetIssue(issueKey)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		h.cache.UpsertIssueDetail(detail)
+	}
+
+	// Fetch comments (cache-aware)
+	comments, _ := h.cache.GetCommentsByKeys([]string{issueKey}, time.Time{})
+	if len(comments) == 0 {
+		client, err := jira.NewClient(cfg)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		comments, err = client.GetComments(issueKey)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		if len(comments) > 0 {
+			h.cache.UpsertComments(comments)
+		}
+	}
+
+	if len(comments) == 0 {
+		return textResult(fmt.Sprintf("No comments found on %s.", issueKey)), nil
+	}
+
+	summary, err := llm.GenerateCommentSummary(cfg, detail, comments)
+	if err != nil {
+		return errorResult(fmt.Sprintf("LLM generation failed: %v", err)), nil
+	}
+
+	var text strings.Builder
+	fmt.Fprintf(&text, "## Comment Summary: %s — %s\n\n", detail.Key, detail.Summary)
+	fmt.Fprintf(&text, "**%d comments analyzed**\n\n", len(comments))
+	fmt.Fprintf(&text, "### Summary\n%s\n\n", summary.Summary)
+
+	if len(summary.KeyDecisions) > 0 {
+		text.WriteString("### Key Decisions\n")
+		for _, d := range summary.KeyDecisions {
+			fmt.Fprintf(&text, "- %s\n", d)
+		}
+		text.WriteString("\n")
+	}
+	if len(summary.ActionItems) > 0 {
+		text.WriteString("### Action Items\n")
+		for _, a := range summary.ActionItems {
+			fmt.Fprintf(&text, "- %s\n", a)
+		}
+		text.WriteString("\n")
+	}
+	if len(summary.OpenQuestions) > 0 {
+		text.WriteString("### Open Questions\n")
+		for _, q := range summary.OpenQuestions {
+			fmt.Fprintf(&text, "- %s\n", q)
+		}
+		text.WriteString("\n")
 	}
 
 	return textResult(text.String()), nil

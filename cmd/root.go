@@ -35,7 +35,10 @@ Examples:
   jira-cli get-transitions PROJ-123
   jira-cli transition PROJ-123 31
   jira-cli lookup-user jsmith
-  jira-cli create-epic -d "Build onboarding flow"`,
+  jira-cli create-epic -d "Build onboarding flow"
+  jira-cli summarize-comments PROJ-123
+  jira-cli backlog-health
+  jira-cli config`,
 }
 
 func init() {

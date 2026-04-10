@@ -10,17 +10,17 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/cache"
-	"github.com/atyronesmith/ai-helps-jira/internal/confluence"
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
+	"github.com/atyronesmith/ai-helps-jira/internal/confluence"
 	"github.com/atyronesmith/ai-helps-jira/internal/format"
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
 )
 
 var (
-	flagWSStartDate       string
-	flagWSEndDate         string
-	flagWSConfluence      bool
+	flagWSStartDate        string
+	flagWSEndDate          string
+	flagWSConfluence       bool
 	flagWSConfluenceParent string
 )
 
