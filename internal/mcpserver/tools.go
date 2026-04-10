@@ -1258,15 +1258,34 @@ func (h *Handlers) HandleFindSimilar(ctx context.Context, req mcp.CallToolReques
 		return errorResult(fmt.Sprintf("JIRA search failed: %v", err)), nil
 	}
 
-	// Fetch details for candidates
-	var candidates []*jira.IssueDetail
+	// Fetch details for candidates (cache-aware)
+	updatedByKey := make(map[string]time.Time, len(issues))
 	for _, issue := range issues {
-		detail, err := client.GetIssue(issue.Key)
-		if err != nil {
-			slog.Warn("failed to get issue details", "key", issue.Key, "error", err)
-			continue
+		updatedByKey[issue.Key] = issue.Updated
+	}
+	freshKeys := h.cache.GetFreshDetailKeys(updatedByKey)
+
+	var candidates []*jira.IssueDetail
+	var fetchedDetails []*jira.IssueDetail
+	for _, issue := range issues {
+		var detail *jira.IssueDetail
+		if freshKeys[issue.Key] {
+			if cached, ok := h.cache.GetIssueDetail(issue.Key, issue.Updated); ok {
+				detail = cached
+			}
+		}
+		if detail == nil {
+			detail, err = client.GetIssue(issue.Key)
+			if err != nil {
+				slog.Warn("failed to get issue details", "key", issue.Key, "error", err)
+				continue
+			}
+			fetchedDetails = append(fetchedDetails, detail)
 		}
 		candidates = append(candidates, detail)
+	}
+	if len(fetchedDetails) > 0 {
+		h.cache.UpsertIssueDetails(fetchedDetails)
 	}
 
 	var result *llm.SimilarityResult

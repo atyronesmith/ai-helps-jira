@@ -99,12 +99,17 @@ func RenderSimilarIssues(targetKey, targetText string, matches []llm.SimilarIssu
 			for _, m := range matches {
 				link := fmt.Sprintf("[%s](%s/browse/%s)", m.Key, jiraServer, m.Key)
 				fmt.Fprintf(&b, "| %s | %.0f%% | %s | %s | %s |\n",
-					link, m.Confidence*100, m.Relation, m.Summary, m.Reason)
+					link, m.Confidence*100, m.Relation,
+					escapePipe(m.Summary), escapePipe(m.Reason))
 			}
 		}
 	}
 
 	return b.String()
+}
+
+func escapePipe(s string) string {
+	return strings.ReplaceAll(s, "|", "\\|")
 }
 
 func truncate(s string, n int) string {
