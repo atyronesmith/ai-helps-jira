@@ -223,6 +223,7 @@ For SSE (container or shared server):
 {
   "mcpServers": {
     "jira-cli": {
+      "type": "sse",
       "url": "http://localhost:8081/sse"
     }
   }

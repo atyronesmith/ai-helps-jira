@@ -70,6 +70,7 @@ Add to your project's `.mcp.json` (create it if it doesn't exist):
 {
   "mcpServers": {
     "jira-cli": {
+      "type": "sse",
       "url": "http://localhost:8081/sse"
     }
   }
