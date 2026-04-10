@@ -14,13 +14,14 @@ import (
 
 // WebServer serves rich HTML dashboards for MCP tool results.
 type WebServer struct {
-	store *ResultStore
-	port  int
-	tmpls map[string]*template.Template
+	store    *ResultStore
+	port     int
+	bindHost string
+	tmpls    map[string]*template.Template
 }
 
 // NewWebServer creates a web server with parsed templates.
-func NewWebServer(store *ResultStore, port int) *WebServer {
+func NewWebServer(store *ResultStore, port int, bindHost string) *WebServer {
 	funcMap := template.FuncMap{
 		"statusClass": func(status string) string {
 			return strings.ReplaceAll(strings.ToLower(status), " ", "-")
@@ -78,7 +79,7 @@ func (ws *WebServer) Start() error {
 	mux.HandleFunc("DELETE /api/result/{id}", ws.handleDeleteResult)
 	mux.Handle("GET /static/", http.FileServerFS(web.StaticFS))
 
-	addr := fmt.Sprintf("127.0.0.1:%d", ws.port)
+	addr := fmt.Sprintf("%s:%d", ws.bindHost, ws.port)
 	slog.Info("web dashboard starting", "addr", addr)
 	return http.ListenAndServe(addr, mux)
 }

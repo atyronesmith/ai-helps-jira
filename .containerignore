@@ -1,0 +1,8 @@
+.git
+.env
+*.db
+jira-cli
+dist/
+docs/
+.claude/
+.mcp.json

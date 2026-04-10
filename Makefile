@@ -12,8 +12,12 @@ LDFLAGS   := -s -w \
 # Cross-compile targets
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 
+# Container
+IMAGE     := jira-cli
+CONTAINER := jira-cli-mcp
+
 .PHONY: all build clean install uninstall test lint fmt vet tidy run \
-        release check restart-mcp help
+        release check restart-mcp container container-run container-stop help
 
 all: check build  ## Run checks then build
 
@@ -68,6 +72,24 @@ release: clean  ## Build release binaries for all platforms
 restart-mcp: build  ## Rebuild and restart the MCP server
 	@pkill -f './$(BINARY) mcp' 2>/dev/null || true
 	@echo "MCP server restarted (will be relaunched on next tool call)"
+
+container:  ## Build container image
+	podman build -t $(IMAGE) .
+
+container-run: container  ## Run MCP server in container (SSE on :8081, dashboard on :18080)
+	podman run -d --name $(CONTAINER) \
+		-p 8081:8081 -p 18080:18080 \
+		--env-file .env \
+		$(IMAGE)
+	@echo "MCP SSE:     http://localhost:8081/sse"
+	@echo "Dashboard:   http://localhost:18080"
+	@echo ""
+	@echo "Claude Code .mcp.json:"
+	@echo '  {"mcpServers": {"jira-cli": {"url": "http://localhost:8081/sse"}}}'
+
+container-stop:  ## Stop and remove the MCP container
+	podman stop $(CONTAINER) 2>/dev/null || true
+	podman rm $(CONTAINER) 2>/dev/null || true
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | \

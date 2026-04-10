@@ -10,8 +10,16 @@ import (
 	"github.com/atyronesmith/ai-helps-jira/internal/cache"
 )
 
-// Run starts the MCP server on stdio and the web server on the given port.
-func Run(webPort int) error {
+// Config holds MCP server configuration.
+type Config struct {
+	WebPort   int
+	Transport string // "stdio" or "sse"
+	SSEPort   int    // port for SSE transport
+	BindHost  string // bind address: "127.0.0.1" (default) or "0.0.0.0" (container)
+}
+
+// Run starts the MCP server and web dashboard.
+func Run(cfg Config) error {
 	store := NewResultStore()
 
 	db, err := cache.Open()
@@ -20,15 +28,25 @@ func Run(webPort int) error {
 	}
 	defer db.Close()
 
+	bindHost := cfg.BindHost
+	if bindHost == "" {
+		bindHost = "127.0.0.1"
+	}
+
+	if bindHost != "127.0.0.1" && bindHost != "localhost" {
+		fmt.Fprintf(os.Stderr, "WARNING: Binding to %s — server is accessible on the network. "+
+			"Ensure JIRA credentials are not exposed to untrusted clients.\n", bindHost)
+	}
+
 	// Start web server in background
-	ws := NewWebServer(store, webPort)
+	ws := NewWebServer(store, cfg.WebPort, bindHost)
 	go func() {
 		if err := ws.Start(); err != nil {
 			slog.Error("web server failed", "error", err)
 		}
 	}()
 
-	fmt.Fprintf(os.Stderr, "Web dashboard: http://127.0.0.1:%d\n", webPort)
+	fmt.Fprintf(os.Stderr, "Web dashboard: http://%s:%d\n", bindHost, cfg.WebPort)
 
 	// Create MCP server
 	s := server.NewMCPServer(
@@ -38,7 +56,7 @@ func Run(webPort int) error {
 	)
 
 	// Create handlers
-	h := NewHandlers(store, db, webPort)
+	h := NewHandlers(store, db, cfg.WebPort)
 
 	// Register tools
 	s.AddTool(summaryToolDef(), h.HandleSummary)
@@ -47,6 +65,8 @@ func Run(webPort int) error {
 	s.AddTool(enrichToolDef(), h.HandleEnrich)
 	s.AddTool(createEpicToolDef(), h.HandleCreateEpic)
 	s.AddTool(weeklyStatusToolDef(), h.HandleWeeklyStatus)
+	s.AddTool(summarizeCommentsToolDef(), h.HandleSummarizeComments)
+	s.AddTool(backlogHealthToolDef(), h.HandleBacklogHealth)
 
 	// CRUD tools
 	s.AddTool(getIssueToolDef(), h.HandleGetIssue)
@@ -59,6 +79,22 @@ func Run(webPort int) error {
 	s.AddTool(linkIssuesToolDef(), h.HandleLinkIssues)
 	s.AddTool(attachFileToolDef(), h.HandleAttachFile)
 
-	slog.Info("MCP server ready, listening on stdio")
-	return server.ServeStdio(s)
+	switch cfg.Transport {
+	case "sse":
+		sseAddr := fmt.Sprintf("%s:%d", bindHost, cfg.SSEPort)
+		baseURL := fmt.Sprintf("http://%s:%d", bindHost, cfg.SSEPort)
+
+		sseServer := server.NewSSEServer(s,
+			server.WithBaseURL(baseURL),
+			server.WithKeepAlive(true),
+		)
+
+		fmt.Fprintf(os.Stderr, "MCP SSE server: %s/sse\n", baseURL)
+		slog.Info("MCP server ready", "transport", "sse", "addr", sseAddr)
+		return sseServer.Start(sseAddr)
+
+	default: // stdio
+		slog.Info("MCP server ready", "transport", "stdio")
+		return server.ServeStdio(s)
+	}
 }
