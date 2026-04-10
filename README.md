@@ -224,11 +224,14 @@ For SSE (container or shared server):
   "mcpServers": {
     "jira-cli": {
       "type": "sse",
-      "url": "http://localhost:8081/sse"
+      "url": "http://localhost:8081/sse",
+      "oauth": {}
     }
   }
 }
 ```
+
+The `"oauth": {}` disables OAuth discovery for servers without authentication.
 
 #### Available MCP Tools
 

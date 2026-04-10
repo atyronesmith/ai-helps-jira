@@ -86,7 +86,7 @@ container-run: container  ## Run MCP server in container (SSE on :8081, dashboar
 	@echo "Dashboard:   http://localhost:18080"
 	@echo ""
 	@echo "Claude Code .mcp.json:"
-	@echo '  {"mcpServers": {"jira-cli": {"type": "sse", "url": "http://localhost:8081/sse"}}}'
+	@echo '  {"mcpServers": {"jira-cli": {"type": "sse", "url": "http://localhost:8081/sse", "oauth": {}}}}'
 
 container-stop:  ## Stop and remove the MCP container
 	podman stop $(CONTAINER) 2>/dev/null || true

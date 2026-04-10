@@ -37,7 +37,7 @@ Claude Code .mcp.json for stdio:
   {"mcpServers": {"jira-cli": {"command": "jira-cli", "args": ["mcp"]}}}
 
 Claude Code .mcp.json for SSE:
-  {"mcpServers": {"jira-cli": {"type": "sse", "url": "http://localhost:8081/sse"}}}`,
+  {"mcpServers": {"jira-cli": {"type": "sse", "url": "http://localhost:8081/sse", "oauth": {}}}}`,
 	RunE: runMCP,
 }
 

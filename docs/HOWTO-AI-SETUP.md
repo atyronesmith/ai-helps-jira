@@ -71,11 +71,14 @@ Add to your project's `.mcp.json` (create it if it doesn't exist):
   "mcpServers": {
     "jira-cli": {
       "type": "sse",
-      "url": "http://localhost:8081/sse"
+      "url": "http://localhost:8081/sse",
+      "oauth": {}
     }
   }
 }
 ```
+
+The `"oauth": {}` disables OAuth discovery, which is required for servers without authentication.
 
 Claude Code will auto-detect this and connect on next startup.
 
