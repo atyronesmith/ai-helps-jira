@@ -124,6 +124,8 @@ func Run(cfg Config) error {
 	s.AddTool(confluenceListPagesToolDef(), h.HandleConfluenceListPages)
 	s.AddTool(confluenceGetCommentsToolDef(), h.HandleConfluenceGetComments)
 	s.AddTool(confluenceAddLabelToolDef(), h.HandleConfluenceAddLabel)
+	s.AddTool(confluenceCreatePageToolDef(), h.HandleConfluenceCreatePage)
+	s.AddTool(confluenceCreateBlogToolDef(), h.HandleConfluenceCreateBlog)
 
 	// CRUD tools
 	s.AddTool(getIssueToolDef(), h.HandleGetIssue)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -140,20 +141,24 @@ func confluenceAnalyticsToolDef() mcp.Tool {
 
 func confluenceUpdateToolDef() mcp.Tool {
 	return mcp.NewTool("jira_confluence_update",
-		mcp.WithDescription("Update an existing Confluence page. Finds the page by ID or title search, then replaces its body content. Returns the updated page URL."),
-		mcp.WithString("page_id", mcp.Description("Confluence page ID. If omitted, searches by title.")),
-		mcp.WithString("title", mcp.Description("Page title to search for. Used when page_id is not provided.")),
-		mcp.WithString("body", mcp.Required(), mcp.Description("New page body in Confluence storage format (XHTML).")),
+		mcp.WithDescription("Update an existing Confluence page or blog post. Finds content by ID or title search, then replaces its body. Use body_file for large content to avoid context limits."),
+		mcp.WithString("page_id", mcp.Description("Confluence content ID. If omitted, searches by title.")),
+		mcp.WithString("title", mcp.Description("Content title to search for. Used when page_id is not provided.")),
+		mcp.WithString("body", mcp.Description("New body in Confluence storage format (XHTML). Either body or body_file is required.")),
+		mcp.WithString("body_file", mcp.Description("Path to a local file containing the body. Use this instead of body for large content.")),
 		mcp.WithString("space_key", mcp.Description("Space key to narrow title search (e.g. 'ENG'). Optional.")),
+		mcp.WithString("content_type", mcp.Description("Content type: 'page' (default) or 'blog'.")),
 	)
 }
 
 func confluenceGetPageToolDef() mcp.Tool {
 	return mcp.NewTool("jira_confluence_get_page",
-		mcp.WithDescription("Read a Confluence page's content by ID or title search. Returns the page body in storage format (XHTML), title, version, and page ID."),
-		mcp.WithString("page_id", mcp.Description("Confluence page ID.")),
-		mcp.WithString("title", mcp.Description("Page title to search for. Used when page_id is not provided.")),
+		mcp.WithDescription("Read a Confluence page or blog post by ID or title search. Returns the body in storage format (XHTML), title, version, and ID. Use output_file to save large content to a file instead of returning it in context."),
+		mcp.WithString("page_id", mcp.Description("Confluence content ID.")),
+		mcp.WithString("title", mcp.Description("Content title to search for. Used when page_id is not provided.")),
 		mcp.WithString("space_key", mcp.Description("Space key to narrow title search.")),
+		mcp.WithString("content_type", mcp.Description("Content type: 'page' (default) or 'blog'.")),
+		mcp.WithString("output_file", mcp.Description("Write the body to this file path instead of returning it inline. Useful for large pages.")),
 	)
 }
 
@@ -185,6 +190,27 @@ func confluenceAddLabelToolDef() mcp.Tool {
 		mcp.WithDescription("Add a label to a Confluence page."),
 		mcp.WithString("page_id", mcp.Required(), mcp.Description("Confluence page ID.")),
 		mcp.WithString("label", mcp.Required(), mcp.Description("Label to add.")),
+	)
+}
+
+func confluenceCreatePageToolDef() mcp.Tool {
+	return mcp.NewTool("jira_confluence_create_page",
+		mcp.WithDescription("Create a new Confluence page under a parent page. Use body_file for large content to avoid context limits."),
+		mcp.WithString("space_id", mcp.Required(), mcp.Description("Confluence space ID.")),
+		mcp.WithString("parent_id", mcp.Required(), mcp.Description("Parent page ID.")),
+		mcp.WithString("title", mcp.Required(), mcp.Description("Page title.")),
+		mcp.WithString("body", mcp.Description("Page body in Confluence storage format (XHTML). Either body or body_file is required.")),
+		mcp.WithString("body_file", mcp.Description("Path to a local file containing the page body. Use this instead of body for large content.")),
+	)
+}
+
+func confluenceCreateBlogToolDef() mcp.Tool {
+	return mcp.NewTool("jira_confluence_create_blog",
+		mcp.WithDescription("Create a new Confluence blog post. Use body_file for large content to avoid context limits."),
+		mcp.WithString("space_id", mcp.Required(), mcp.Description("Confluence space ID.")),
+		mcp.WithString("title", mcp.Required(), mcp.Description("Blog post title.")),
+		mcp.WithString("body", mcp.Description("Blog post body in Confluence storage format (XHTML). Either body or body_file is required.")),
+		mcp.WithString("body_file", mcp.Description("Path to a local file containing the blog post body. Use this instead of body for large content.")),
 	)
 }
 
@@ -250,6 +276,25 @@ func getStringSlice(req mcp.CallToolRequest, key string) []string {
 		}
 	}
 	return result
+}
+
+// getBody resolves body content from either the "body" string parameter
+// or the "body_file" file path parameter. Returns the content or an error message.
+func getBody(req mcp.CallToolRequest) (string, string) {
+	body := getString(req, "body")
+	bodyFile := getString(req, "body_file")
+
+	if body == "" && bodyFile == "" {
+		return "", "either body or body_file is required"
+	}
+	if bodyFile != "" {
+		data, err := os.ReadFile(bodyFile)
+		if err != nil {
+			return "", fmt.Sprintf("read body_file %q: %v", bodyFile, err)
+		}
+		return string(data), ""
+	}
+	return body, ""
 }
 
 func errorResult(msg string) *mcp.CallToolResult {
@@ -1485,7 +1530,7 @@ func (h *Handlers) HandleConfluenceAnalytics(ctx context.Context, req mcp.CallTo
 	return textResult(out.String()), nil
 }
 
-// HandleConfluenceUpdate finds a Confluence page by ID or title and updates its body.
+// HandleConfluenceUpdate finds a Confluence page or blog post by ID or title and updates its body.
 func (h *Handlers) HandleConfluenceUpdate(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	cfg, err := loadJIRAConfig(req)
 	if err != nil {
@@ -1494,87 +1539,126 @@ func (h *Handlers) HandleConfluenceUpdate(ctx context.Context, req mcp.CallToolR
 
 	pageID := getString(req, "page_id")
 	title := getString(req, "title")
-	body := getString(req, "body")
 	spaceKey := getString(req, "space_key")
+	contentType := getString(req, "content_type")
+	if contentType == "" {
+		contentType = "page"
+	}
+
+	body, errMsg := getBody(req)
+	if errMsg != "" {
+		return errorResult(errMsg), nil
+	}
 
 	if pageID == "" && title == "" {
 		return errorResult("either page_id or title is required"), nil
 	}
-	if body == "" {
-		return errorResult("body is required"), nil
-	}
 
 	confClient := confluence.NewClient(cfg)
 
-	var page *confluence.Page
+	// Common struct to hold ID, title, version for both pages and blog posts
+	type contentInfo struct {
+		ID      string
+		Title   string
+		Version int
+	}
+	var content contentInfo
 
-	if pageID != "" {
-		// Fetch by ID to get current version
-		page, _, err = confClient.GetPageBody(pageID)
-		if err != nil {
-			return errorResult(fmt.Sprintf("get page %s: %v", pageID, err)), nil
+	if contentType == "blog" {
+		if pageID != "" {
+			post, _, err := confClient.GetBlogPostBody(pageID)
+			if err != nil {
+				return errorResult(fmt.Sprintf("get blog post %s: %v", pageID, err)), nil
+			}
+			content = contentInfo{ID: post.ID, Title: post.Title, Version: post.Version.Number}
+		} else {
+			posts, err := confClient.SearchBlogPostsByTitle(title)
+			if err != nil {
+				return errorResult(fmt.Sprintf("search blog posts: %v", err)), nil
+			}
+			if len(posts) == 0 {
+				return errorResult(fmt.Sprintf("no blog post found with title %q", title)), nil
+			}
+			if len(posts) > 1 {
+				var titles []string
+				for _, p := range posts {
+					titles = append(titles, fmt.Sprintf("%s (id=%s)", p.Title, p.ID))
+				}
+				return errorResult(fmt.Sprintf("multiple blog posts match title %q — provide page_id: %s", title, strings.Join(titles, ", "))), nil
+			}
+			content = contentInfo{ID: posts[0].ID, Title: posts[0].Title, Version: posts[0].Version.Number}
+		}
+
+		slog.Info("updating confluence blog post", "id", content.ID, "title", content.Title, "version", content.Version)
+		if err := confClient.UpdateBlogPost(content.ID, content.Title, body, content.Version); err != nil {
+			return errorResult(fmt.Sprintf("update blog post: %v", err)), nil
 		}
 	} else {
-		// Search by title
-		if spaceKey != "" {
-			// Need spaceID from space key — use v1 search
-			results, err := confClient.SearchPagesByTitle(title)
+		var page *confluence.Page
+		if pageID != "" {
+			page, _, err = confClient.GetPageBody(pageID)
 			if err != nil {
-				return errorResult(fmt.Sprintf("search pages: %v", err)), nil
+				return errorResult(fmt.Sprintf("get page %s: %v", pageID, err)), nil
 			}
-			// Filter by space if we can resolve the space
-			var matched []confluence.Page
-			for _, r := range results {
-				p, pErr := confClient.GetPage(r.ID)
-				if pErr != nil {
-					continue
-				}
-				if p.SpaceKey == spaceKey {
-					matched = append(matched, *p)
-				}
-			}
-			if len(matched) == 0 {
-				return errorResult(fmt.Sprintf("no page found with title %q in space %s", title, spaceKey)), nil
-			}
-			if len(matched) > 1 {
-				var titles []string
-				for _, m := range matched {
-					titles = append(titles, fmt.Sprintf("%s (id=%s)", m.Title, m.ID))
-				}
-				return errorResult(fmt.Sprintf("multiple pages match title %q: %s", title, strings.Join(titles, ", "))), nil
-			}
-			page = &matched[0]
 		} else {
-			results, err := confClient.SearchPagesByTitle(title)
-			if err != nil {
-				return errorResult(fmt.Sprintf("search pages: %v", err)), nil
-			}
-			if len(results) == 0 {
-				return errorResult(fmt.Sprintf("no page found with title %q", title)), nil
-			}
-			if len(results) > 1 {
-				var titles []string
-				for _, r := range results {
-					titles = append(titles, fmt.Sprintf("%s (id=%s)", r.Title, r.ID))
+			if spaceKey != "" {
+				results, err := confClient.SearchPagesByTitle(title)
+				if err != nil {
+					return errorResult(fmt.Sprintf("search pages: %v", err)), nil
 				}
-				return errorResult(fmt.Sprintf("multiple pages match title %q — provide page_id or space_key to disambiguate: %s", title, strings.Join(titles, ", "))), nil
+				var matched []confluence.Page
+				for _, r := range results {
+					p, pErr := confClient.GetPage(r.ID)
+					if pErr != nil {
+						continue
+					}
+					if p.SpaceKey == spaceKey {
+						matched = append(matched, *p)
+					}
+				}
+				if len(matched) == 0 {
+					return errorResult(fmt.Sprintf("no page found with title %q in space %s", title, spaceKey)), nil
+				}
+				if len(matched) > 1 {
+					var titles []string
+					for _, m := range matched {
+						titles = append(titles, fmt.Sprintf("%s (id=%s)", m.Title, m.ID))
+					}
+					return errorResult(fmt.Sprintf("multiple pages match title %q: %s", title, strings.Join(titles, ", "))), nil
+				}
+				page = &matched[0]
+			} else {
+				results, err := confClient.SearchPagesByTitle(title)
+				if err != nil {
+					return errorResult(fmt.Sprintf("search pages: %v", err)), nil
+				}
+				if len(results) == 0 {
+					return errorResult(fmt.Sprintf("no page found with title %q", title)), nil
+				}
+				if len(results) > 1 {
+					var titles []string
+					for _, r := range results {
+						titles = append(titles, fmt.Sprintf("%s (id=%s)", r.Title, r.ID))
+					}
+					return errorResult(fmt.Sprintf("multiple pages match title %q — provide page_id or space_key: %s", title, strings.Join(titles, ", "))), nil
+				}
+				page = &results[0]
 			}
-			page = &results[0]
+		}
+		content = contentInfo{ID: page.ID, Title: page.Title, Version: page.Version.Number}
+
+		slog.Info("updating confluence page", "id", content.ID, "title", content.Title, "version", content.Version)
+		if err := confClient.UpdatePage(content.ID, content.Title, body, content.Version); err != nil {
+			return errorResult(fmt.Sprintf("update page: %v", err)), nil
 		}
 	}
 
-	slog.Info("updating confluence page", "id", page.ID, "title", page.Title, "version", page.Version.Number)
-
-	if err := confClient.UpdatePage(page.ID, page.Title, body, page.Version.Number); err != nil {
-		return errorResult(fmt.Sprintf("update page: %v", err)), nil
-	}
-
-	pageURL := fmt.Sprintf("%s/wiki/pages/viewpage.action?pageId=%s", cfg.JiraServer, page.ID)
-	return textResult(fmt.Sprintf("Updated page [%s](%s) (version %d → %d)",
-		page.Title, pageURL, page.Version.Number, page.Version.Number+1)), nil
+	pageURL := fmt.Sprintf("%s/wiki/pages/viewpage.action?pageId=%s", cfg.JiraServer, content.ID)
+	return textResult(fmt.Sprintf("Updated %s [%s](%s) (version %d → %d)",
+		contentType, content.Title, pageURL, content.Version, content.Version+1)), nil
 }
 
-// HandleConfluenceGetPage reads a Confluence page's content by ID or title.
+// HandleConfluenceGetPage reads a Confluence page or blog post by ID or title.
 func (h *Handlers) HandleConfluenceGetPage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	cfg, err := loadJIRAConfig(req)
 	if err != nil {
@@ -1584,6 +1668,11 @@ func (h *Handlers) HandleConfluenceGetPage(ctx context.Context, req mcp.CallTool
 	pageID := getString(req, "page_id")
 	title := getString(req, "title")
 	spaceKey := getString(req, "space_key")
+	contentType := getString(req, "content_type")
+	outputFile := getString(req, "output_file")
+	if contentType == "" {
+		contentType = "page"
+	}
 
 	if pageID == "" && title == "" {
 		return errorResult("either page_id or title is required"), nil
@@ -1591,48 +1680,102 @@ func (h *Handlers) HandleConfluenceGetPage(ctx context.Context, req mcp.CallTool
 
 	confClient := confluence.NewClient(cfg)
 
-	if pageID == "" {
-		// Search by title
-		if spaceKey != "" {
-			results, searchErr := confClient.SearchCQL(
-				fmt.Sprintf("space = %q AND title = %q AND type = page", spaceKey, title), 5)
+	var contentID, contentTitle, contentSpaceID, body string
+	var contentVersion int
+
+	if contentType == "blog" {
+		if pageID == "" {
+			posts, searchErr := confClient.SearchBlogPostsByTitle(title)
 			if searchErr != nil {
 				return errorResult(fmt.Sprintf("search: %v", searchErr)), nil
 			}
-			if len(results) == 0 {
-				return errorResult(fmt.Sprintf("no page found with title %q in space %s", title, spaceKey)), nil
+			if len(posts) == 0 {
+				return errorResult(fmt.Sprintf("no blog post found with title %q", title)), nil
 			}
-			pageID = results[0].ID
-		} else {
-			results, searchErr := confClient.SearchPagesByTitle(title)
-			if searchErr != nil {
-				return errorResult(fmt.Sprintf("search: %v", searchErr)), nil
-			}
-			if len(results) == 0 {
-				return errorResult(fmt.Sprintf("no page found with title %q", title)), nil
-			}
-			if len(results) > 1 {
+			if len(posts) > 1 {
 				var names []string
-				for _, r := range results {
-					names = append(names, fmt.Sprintf("%s (id=%s)", r.Title, r.ID))
+				for _, p := range posts {
+					names = append(names, fmt.Sprintf("%s (id=%s)", p.Title, p.ID))
 				}
-				return errorResult(fmt.Sprintf("multiple pages match — provide page_id or space_key: %s",
+				return errorResult(fmt.Sprintf("multiple blog posts match — provide page_id: %s",
 					strings.Join(names, ", "))), nil
 			}
-			pageID = results[0].ID
+			pageID = posts[0].ID
 		}
+
+		post, postBody, err := confClient.GetBlogPostBody(pageID)
+		if err != nil {
+			return errorResult(fmt.Sprintf("get blog post: %v", err)), nil
+		}
+		contentID = post.ID
+		contentTitle = post.Title
+		contentSpaceID = post.SpaceID
+		contentVersion = post.Version.Number
+		body = postBody
+	} else {
+		if pageID == "" {
+			if spaceKey != "" {
+				results, searchErr := confClient.SearchCQL(
+					fmt.Sprintf("space = %q AND title = %q AND type = page", spaceKey, title), 5)
+				if searchErr != nil {
+					return errorResult(fmt.Sprintf("search: %v", searchErr)), nil
+				}
+				if len(results) == 0 {
+					return errorResult(fmt.Sprintf("no page found with title %q in space %s", title, spaceKey)), nil
+				}
+				pageID = results[0].ID
+			} else {
+				results, searchErr := confClient.SearchPagesByTitle(title)
+				if searchErr != nil {
+					return errorResult(fmt.Sprintf("search: %v", searchErr)), nil
+				}
+				if len(results) == 0 {
+					return errorResult(fmt.Sprintf("no page found with title %q", title)), nil
+				}
+				if len(results) > 1 {
+					var names []string
+					for _, r := range results {
+						names = append(names, fmt.Sprintf("%s (id=%s)", r.Title, r.ID))
+					}
+					return errorResult(fmt.Sprintf("multiple pages match — provide page_id or space_key: %s",
+						strings.Join(names, ", "))), nil
+				}
+				pageID = results[0].ID
+			}
+		}
+
+		page, pageBody, err := confClient.GetPageBody(pageID)
+		if err != nil {
+			return errorResult(fmt.Sprintf("get page: %v", err)), nil
+		}
+		contentID = page.ID
+		contentTitle = page.Title
+		contentSpaceID = page.SpaceID
+		contentVersion = page.Version.Number
+		body = pageBody
 	}
 
-	page, body, err := confClient.GetPageBody(pageID)
-	if err != nil {
-		return errorResult(fmt.Sprintf("get page: %v", err)), nil
+	// If output_file specified, write body to file instead of returning inline
+	if outputFile != "" {
+		if err := os.WriteFile(outputFile, []byte(body), 0o644); err != nil {
+			return errorResult(fmt.Sprintf("write output_file %q: %v", outputFile, err)), nil
+		}
+		var out strings.Builder
+		fmt.Fprintf(&out, "## %s\n\n", contentTitle)
+		fmt.Fprintf(&out, "- **Type:** %s\n", contentType)
+		fmt.Fprintf(&out, "- **ID:** %s\n", contentID)
+		fmt.Fprintf(&out, "- **Space ID:** %s\n", contentSpaceID)
+		fmt.Fprintf(&out, "- **Version:** %d\n", contentVersion)
+		fmt.Fprintf(&out, "- **Body written to:** %s (%d bytes)\n", outputFile, len(body))
+		return textResult(out.String()), nil
 	}
 
 	var out strings.Builder
-	fmt.Fprintf(&out, "## %s\n\n", page.Title)
-	fmt.Fprintf(&out, "- **Page ID:** %s\n", page.ID)
-	fmt.Fprintf(&out, "- **Space ID:** %s\n", page.SpaceID)
-	fmt.Fprintf(&out, "- **Version:** %d\n\n", page.Version.Number)
+	fmt.Fprintf(&out, "## %s\n\n", contentTitle)
+	fmt.Fprintf(&out, "- **Type:** %s\n", contentType)
+	fmt.Fprintf(&out, "- **ID:** %s\n", contentID)
+	fmt.Fprintf(&out, "- **Space ID:** %s\n", contentSpaceID)
+	fmt.Fprintf(&out, "- **Version:** %d\n\n", contentVersion)
 	fmt.Fprintf(&out, "### Body (storage format)\n\n```html\n%s\n```\n", body)
 
 	return textResult(out.String()), nil
@@ -1745,6 +1888,57 @@ func (h *Handlers) HandleConfluenceGetComments(ctx context.Context, req mcp.Call
 	}
 
 	return textResult(out.String()), nil
+}
+
+// HandleConfluenceCreatePage creates a new Confluence page.
+func (h *Handlers) HandleConfluenceCreatePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	cfg, err := loadJIRAConfig(req)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	spaceID := getString(req, "space_id")
+	parentID := getString(req, "parent_id")
+	title := getString(req, "title")
+
+	body, errMsg := getBody(req)
+	if errMsg != "" {
+		return errorResult(errMsg), nil
+	}
+
+	confClient := confluence.NewClient(cfg)
+	page, err := confClient.CreatePage(spaceID, parentID, title, body)
+	if err != nil {
+		return errorResult(fmt.Sprintf("create page: %v", err)), nil
+	}
+
+	pageURL := fmt.Sprintf("%s/wiki/pages/viewpage.action?pageId=%s", cfg.JiraServer, page.ID)
+	return textResult(fmt.Sprintf("Page created: [%s](%s) (ID: %s)", page.Title, pageURL, page.ID)), nil
+}
+
+// HandleConfluenceCreateBlog creates a new Confluence blog post.
+func (h *Handlers) HandleConfluenceCreateBlog(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	cfg, err := loadJIRAConfig(req)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	spaceID := getString(req, "space_id")
+	title := getString(req, "title")
+
+	body, errMsg := getBody(req)
+	if errMsg != "" {
+		return errorResult(errMsg), nil
+	}
+
+	confClient := confluence.NewClient(cfg)
+	post, err := confClient.CreateBlogPost(spaceID, title, body)
+	if err != nil {
+		return errorResult(fmt.Sprintf("create blog post: %v", err)), nil
+	}
+
+	pageURL := fmt.Sprintf("%s/wiki/pages/viewpage.action?pageId=%s", cfg.JiraServer, post.ID)
+	return textResult(fmt.Sprintf("Blog post created: [%s](%s) (ID: %s)", post.Title, pageURL, post.ID)), nil
 }
 
 // HandleConfluenceAddLabel adds a label to a Confluence page.

@@ -420,6 +420,119 @@ func (c *Client) GetPageComments(pageID string) ([]Comment, error) {
 	return comments, nil
 }
 
+// BlogPost represents a Confluence blog post.
+type BlogPost struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	SpaceID string `json:"spaceId"`
+	Version struct {
+		Number int `json:"number"`
+	} `json:"version"`
+}
+
+// CreateBlogPost creates a new blog post in a space.
+func (c *Client) CreateBlogPost(spaceID, title, body string) (*BlogPost, error) {
+	slog.Info("creating confluence blog post", "space", spaceID, "title", title)
+
+	payload := map[string]any{
+		"spaceId": spaceID,
+		"status":  "current",
+		"title":   title,
+		"body": map[string]any{
+			"representation": "storage",
+			"value":          body,
+		},
+	}
+
+	var post BlogPost
+	if err := c.doRequest("POST", "/api/v2/blogposts", payload, &post); err != nil {
+		return nil, fmt.Errorf("create blog post: %w", err)
+	}
+	slog.Info("confluence blog post created", "id", post.ID, "title", title)
+	return &post, nil
+}
+
+// UpdateBlogPost updates an existing blog post's content.
+func (c *Client) UpdateBlogPost(postID, title, body string, version int) error {
+	slog.Info("updating confluence blog post", "id", postID, "title", title, "version", version)
+
+	payload := map[string]any{
+		"id":     postID,
+		"status": "current",
+		"title":  title,
+		"version": map[string]any{
+			"number": version + 1,
+		},
+		"body": map[string]any{
+			"representation": "storage",
+			"value":          body,
+		},
+	}
+
+	if err := c.doRequest("PUT", "/api/v2/blogposts/"+postID, payload, nil); err != nil {
+		return fmt.Errorf("update blog post %s: %w", postID, err)
+	}
+	slog.Info("confluence blog post updated", "id", postID)
+	return nil
+}
+
+// GetBlogPostBody fetches a blog post with its storage body.
+func (c *Client) GetBlogPostBody(postID string) (*BlogPost, string, error) {
+	slog.Info("fetching confluence blog post body", "id", postID)
+
+	var resp struct {
+		BlogPost
+		Body struct {
+			Storage struct {
+				Value string `json:"value"`
+			} `json:"storage"`
+		} `json:"body"`
+	}
+	path := fmt.Sprintf("/api/v2/blogposts/%s?body-format=storage", postID)
+	if err := c.doRequest("GET", path, nil, &resp); err != nil {
+		return nil, "", fmt.Errorf("get blog post body %s: %w", postID, err)
+	}
+	post := &BlogPost{
+		ID:      resp.ID,
+		Title:   resp.Title,
+		SpaceID: resp.SpaceID,
+		Version: resp.Version,
+	}
+	return post, resp.Body.Storage.Value, nil
+}
+
+// SearchBlogPostsByTitle finds blog posts by title across all spaces.
+func (c *Client) SearchBlogPostsByTitle(title string) ([]BlogPost, error) {
+	slog.Info("searching confluence blog posts", "title", title)
+
+	cql := fmt.Sprintf("type = blogpost AND title = %q", title)
+	path := fmt.Sprintf("/rest/api/content/search?cql=%s&limit=10&expand=version",
+		url.QueryEscape(cql))
+
+	var resp struct {
+		Results []struct {
+			ID      string `json:"id"`
+			Title   string `json:"title"`
+			Version struct {
+				Number int `json:"number"`
+			} `json:"version"`
+		} `json:"results"`
+	}
+	if err := c.doRequest("GET", path, nil, &resp); err != nil {
+		return nil, fmt.Errorf("search blog posts: %w", err)
+	}
+
+	posts := make([]BlogPost, len(resp.Results))
+	for i, r := range resp.Results {
+		posts[i] = BlogPost{
+			ID:      r.ID,
+			Title:   r.Title,
+			Version: r.Version,
+		}
+	}
+	return posts, nil
+}
+
 // AddLabel adds a label to a page.
 func (c *Client) AddLabel(pageID, label string) error {
 	slog.Info("adding label", "page_id", pageID, "label", label)
