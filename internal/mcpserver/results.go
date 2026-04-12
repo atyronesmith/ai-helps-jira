@@ -76,3 +76,19 @@ type FindSimilarResultData struct {
 	JiraServer string
 	FoundAt    time.Time
 }
+
+// ConfluenceAnalyticsResultData holds Confluence page view analytics for the web template.
+type ConfluenceAnalyticsResultData struct {
+	ParentTitle string
+	Pages       []ConfluencePageStats
+	JiraServer  string
+	FetchedAt   time.Time
+}
+
+// ConfluencePageStats holds view stats for a single Confluence page.
+type ConfluencePageStats struct {
+	PageID        string
+	Title         string
+	TotalViews    int
+	UniqueViewers int
+}

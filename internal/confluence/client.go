@@ -212,6 +212,92 @@ func (c *Client) GetPageBody(pageID string) (*Page, string, error) {
 	return page, resp.Body.Storage.Value, nil
 }
 
+// SearchPagesByTitle finds pages by title across all spaces.
+func (c *Client) SearchPagesByTitle(title string) ([]Page, error) {
+	slog.Info("searching confluence pages", "title", title)
+	path := fmt.Sprintf("/api/v2/pages?title=%s&status=current", url.QueryEscape(title))
+
+	var resp struct {
+		Results []Page `json:"results"`
+	}
+	if err := c.doRequest("GET", path, nil, &resp); err != nil {
+		return nil, fmt.Errorf("search pages: %w", err)
+	}
+	return resp.Results, nil
+}
+
+// PageAnalytics holds view statistics for a Confluence page.
+type PageAnalytics struct {
+	PageID        string
+	Title         string
+	TotalViews    int
+	UniqueViewers int
+}
+
+// GetChildPages returns the direct child pages of a parent page.
+func (c *Client) GetChildPages(parentID string) ([]Page, error) {
+	slog.Info("fetching child pages", "parent", parentID)
+
+	var resp struct {
+		Results []Page `json:"results"`
+	}
+	path := fmt.Sprintf("/api/v2/pages/%s/children?limit=250", parentID)
+	if err := c.doRequest("GET", path, nil, &resp); err != nil {
+		return nil, fmt.Errorf("get child pages %s: %w", parentID, err)
+	}
+	return resp.Results, nil
+}
+
+// GetPageViews returns the total view count for a page.
+func (c *Client) GetPageViews(pageID string) (int, error) {
+	var resp struct {
+		Count int `json:"count"`
+	}
+	path := fmt.Sprintf("/rest/api/analytics/content/%s/views", pageID)
+	if err := c.doRequest("GET", path, nil, &resp); err != nil {
+		return 0, fmt.Errorf("get page views %s: %w", pageID, err)
+	}
+	return resp.Count, nil
+}
+
+// GetPageViewers returns the unique viewer count for a page.
+func (c *Client) GetPageViewers(pageID string) (int, error) {
+	var resp struct {
+		Count int `json:"count"`
+	}
+	path := fmt.Sprintf("/rest/api/analytics/content/%s/viewers", pageID)
+	if err := c.doRequest("GET", path, nil, &resp); err != nil {
+		return 0, fmt.Errorf("get page viewers %s: %w", pageID, err)
+	}
+	return resp.Count, nil
+}
+
+// GetPageAnalytics fetches a page's title, total views, and unique viewers.
+func (c *Client) GetPageAnalytics(pageID string) (*PageAnalytics, error) {
+	// Get page title via v2 API (lightweight, no body fetch)
+	var page Page
+	if err := c.doRequest("GET", "/api/v2/pages/"+pageID, nil, &page); err != nil {
+		return nil, fmt.Errorf("get page %s: %w", pageID, err)
+	}
+
+	views, err := c.GetPageViews(pageID)
+	if err != nil {
+		return nil, err
+	}
+
+	viewers, err := c.GetPageViewers(pageID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &PageAnalytics{
+		PageID:        pageID,
+		Title:         page.Title,
+		TotalViews:    views,
+		UniqueViewers: viewers,
+	}, nil
+}
+
 // ResolveContentID fetches the content ID from a v1 API content lookup.
 // Used to resolve tiny links like /wiki/x/tZILFw to a real page ID.
 func (c *Client) ResolveContentID(contentID string) (*Page, error) {
@@ -239,4 +325,108 @@ func (c *Client) ResolveContentID(contentID string) (*Page, error) {
 			Number int `json:"number"`
 		}{Number: resp.Version.Number},
 	}, nil
+}
+
+// Comment represents a Confluence page comment.
+type Comment struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Body   string `json:"-"` // populated from nested response
+	Author string `json:"-"` // populated from nested response
+}
+
+// SearchCQL searches Confluence content using CQL (Confluence Query Language).
+func (c *Client) SearchCQL(cql string, limit int) ([]Page, error) {
+	slog.Info("searching confluence", "cql", cql, "limit", limit)
+	if limit <= 0 {
+		limit = 25
+	}
+	path := fmt.Sprintf("/rest/api/content/search?cql=%s&limit=%d&expand=version",
+		url.QueryEscape(cql), limit)
+
+	var resp struct {
+		Results []struct {
+			ID    string `json:"id"`
+			Title string `json:"title"`
+			Space struct {
+				Key string `json:"key"`
+			} `json:"space"`
+			Version struct {
+				Number int `json:"number"`
+			} `json:"version"`
+		} `json:"results"`
+	}
+	if err := c.doRequest("GET", path, nil, &resp); err != nil {
+		return nil, fmt.Errorf("search CQL: %w", err)
+	}
+
+	pages := make([]Page, len(resp.Results))
+	for i, r := range resp.Results {
+		pages[i] = Page{
+			ID:       r.ID,
+			Title:    r.Title,
+			SpaceKey: r.Space.Key,
+			Version:  r.Version,
+		}
+	}
+	return pages, nil
+}
+
+// GetPagesInSpace lists pages in a space, optionally filtered by title substring.
+func (c *Client) GetPagesInSpace(spaceKey string, limit int) ([]Page, error) {
+	slog.Info("listing pages in space", "space", spaceKey, "limit", limit)
+	if limit <= 0 {
+		limit = 25
+	}
+
+	cql := fmt.Sprintf("space = %q AND type = page ORDER BY lastModified DESC", spaceKey)
+	return c.SearchCQL(cql, limit)
+}
+
+// GetPageComments fetches footer comments on a page.
+func (c *Client) GetPageComments(pageID string) ([]Comment, error) {
+	slog.Info("fetching page comments", "page_id", pageID)
+
+	var resp struct {
+		Results []struct {
+			ID    string `json:"id"`
+			Title string `json:"title"`
+			Body  struct {
+				View struct {
+					Value string `json:"value"`
+				} `json:"view"`
+			} `json:"body"`
+			Version struct {
+				By struct {
+					DisplayName string `json:"displayName"`
+				} `json:"by"`
+			} `json:"version"`
+		} `json:"results"`
+	}
+	path := fmt.Sprintf("/rest/api/content/%s/child/comment?expand=body.view,version", pageID)
+	if err := c.doRequest("GET", path, nil, &resp); err != nil {
+		return nil, fmt.Errorf("get comments %s: %w", pageID, err)
+	}
+
+	comments := make([]Comment, len(resp.Results))
+	for i, r := range resp.Results {
+		comments[i] = Comment{
+			ID:     r.ID,
+			Title:  r.Title,
+			Body:   r.Body.View.Value,
+			Author: r.Version.By.DisplayName,
+		}
+	}
+	return comments, nil
+}
+
+// AddLabel adds a label to a page.
+func (c *Client) AddLabel(pageID, label string) error {
+	slog.Info("adding label", "page_id", pageID, "label", label)
+
+	payload := []map[string]string{
+		{"prefix": "global", "name": label},
+	}
+	path := fmt.Sprintf("/rest/api/content/%s/label", pageID)
+	return c.doRequest("POST", path, payload, nil)
 }

@@ -77,7 +77,8 @@ restart-mcp: build  ## Rebuild and restart the MCP server
 container:  ## Build container image
 	podman build --format docker -t $(IMAGE) .
 
-container-run: container  ## Run MCP server in container (SSE on :8081, dashboard on :18080)
+container-run: container-stop  ## Run MCP server in container (SSE on :8081, dashboard on :18080)
+	podman build --no-cache --format docker -t $(IMAGE) .
 	podman run -d --name $(CONTAINER) \
 		-p 8081:8081 -p 18080:18080 \
 		-v jira-cli-cache:/home/jira-cli/.jira-cli:Z \

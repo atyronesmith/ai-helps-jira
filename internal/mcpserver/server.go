@@ -39,11 +39,17 @@ func serveWithGracefulShutdown(srv *http.Server) error {
 }
 
 // noAuthMiddleware wraps an http.Handler to intercept OAuth discovery
-// requests. MCP clients probe /.well-known/ paths before connecting;
-// returning a clean JSON 404 prevents parse errors in the client SDK.
+// and auth endpoint requests. MCP clients (Claude Code SDK) probe
+// /.well-known/, /authorize, /token, and /register before connecting;
+// returning a clean JSON response prevents parse errors in the client SDK.
 func noAuthMiddleware(next http.Handler) http.Handler {
+	authPaths := map[string]bool{
+		"/authorize": true,
+		"/token":     true,
+		"/register":  true,
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/.well-known/") {
+		if strings.HasPrefix(r.URL.Path, "/.well-known/") || authPaths[r.URL.Path] {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"error":"not_found"}`)
@@ -111,6 +117,13 @@ func Run(cfg Config) error {
 	s.AddTool(summarizeCommentsToolDef(), h.HandleSummarizeComments)
 	s.AddTool(backlogHealthToolDef(), h.HandleBacklogHealth)
 	s.AddTool(findSimilarToolDef(), h.HandleFindSimilar)
+	s.AddTool(confluenceAnalyticsToolDef(), h.HandleConfluenceAnalytics)
+	s.AddTool(confluenceUpdateToolDef(), h.HandleConfluenceUpdate)
+	s.AddTool(confluenceGetPageToolDef(), h.HandleConfluenceGetPage)
+	s.AddTool(confluenceSearchToolDef(), h.HandleConfluenceSearch)
+	s.AddTool(confluenceListPagesToolDef(), h.HandleConfluenceListPages)
+	s.AddTool(confluenceGetCommentsToolDef(), h.HandleConfluenceGetComments)
+	s.AddTool(confluenceAddLabelToolDef(), h.HandleConfluenceAddLabel)
 
 	// CRUD tools
 	s.AddTool(getIssueToolDef(), h.HandleGetIssue)
@@ -126,7 +139,13 @@ func Run(cfg Config) error {
 	switch cfg.Transport {
 	case "sse":
 		sseAddr := fmt.Sprintf("%s:%d", bindHost, cfg.SSEPort)
-		baseURL := fmt.Sprintf("http://%s:%d", bindHost, cfg.SSEPort)
+		// Use localhost for baseURL when binding to 0.0.0.0, since clients
+		// connect from the host machine and 0.0.0.0 won't resolve there.
+		baseHost := bindHost
+		if baseHost == "0.0.0.0" {
+			baseHost = "localhost"
+		}
+		baseURL := fmt.Sprintf("http://%s:%d", baseHost, cfg.SSEPort)
 
 		sseServer := server.NewSSEServer(s,
 			server.WithBaseURL(baseURL),
