@@ -14,7 +14,7 @@ Inspired by the [official Atlassian MCP server](https://github.com/atlassian/mcp
 - **Comment Summarizer** — Summarize long comment threads into key decisions, action items, and open questions.
 - **Backlog Health Check** — Rule-based analysis (stale tickets, missing descriptions, orphaned issues, unassigned active, missing labels) with optional LLM executive summary.
 - **JIRA CRUD** — Create, edit, transition, comment on, link issues, look up users, and attach files — all from CLI or MCP.
-- **MCP Server** — Exposes all 17 tools as Model Context Protocol tools for Claude Code and other MCP clients. Supports stdio and SSE transports. Includes a rich web dashboard.
+- **MCP Server** — Exposes all 27 tools as Model Context Protocol tools for Claude Code and other MCP clients. Supports stdio and SSE transports. Includes a rich web dashboard.
 - **Container Support** — Run as a shared MCP server in podman/docker with SSE transport. Multiple Claude Code instances can connect simultaneously. Red Hat UBI minimal base image with health checks and persistent cache volume.
 - **Multi-LLM Provider Support** — Use any LLM backend: Vertex AI (Claude), OpenAI-compatible APIs (DeepInfra, vLLM, etc.), or Ollama for fully local inference.
 - **SQLite Caching** — Delta fetches only changed issues after the first run. Smart cache invalidation compares JIRA timestamps. Per-issue detail caching means repeat runs skip re-fetching unchanged issues entirely.
@@ -23,13 +23,51 @@ Inspired by the [official Atlassian MCP server](https://github.com/atlassian/mcp
 
 ## Quick Start
 
-### Prerequisites
+### Option A: Container image (recommended)
 
-- Go 1.23+
-- JIRA Cloud API token ([create one here](https://id.atlassian.com/manage-profile/security/api-tokens))
-- An LLM provider for AI features (see [LLM Providers](#llm-providers) below)
+The fastest way to get running. No Go toolchain needed.
 
-### Install
+```sh
+# 1. Create a .env file with your credentials
+cat > .env <<'EOF'
+JIRA_SERVER=https://yourcompany.atlassian.net
+JIRA_EMAIL=your.email@company.com
+JIRA_API_TOKEN=your-jira-api-token
+JIRA_PROJECT=PROJ
+EOF
+
+# 2. Run the MCP server
+podman run -d --name jira-cli-mcp \
+  -p 8081:8081 -p 18080:18080 \
+  -v jira-cli-cache:/home/jira-cli/.jira-cli:Z \
+  --read-only --tmpfs /tmp \
+  --cap-drop=ALL \
+  --env-file .env \
+  quay.io/aasmith/jira-cli:latest
+
+# 3. Verify it's running
+curl -sf http://localhost:18080/healthz
+```
+
+Then add to your project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "jira-cli": {
+      "type": "sse",
+      "url": "http://localhost:8081/sse",
+      "oauth": {}
+    }
+  }
+}
+```
+
+See [Creating a JIRA API Token](#creating-a-jira-api-token) for how to get your token. For AI features, also configure an [LLM provider](#llm-providers) in your `.env`.
+
+### Option B: Build from source
+
+Requires Go 1.25+.
 
 ```sh
 git clone https://github.com/atyronesmith/ai-helps-jira.git
@@ -196,44 +234,76 @@ jira-cli lookup-user jsmith
 
 ### MCP Server
 
-```sh
-# Stdio transport (default, for single Claude Code instance)
-jira-cli mcp
+The MCP server exposes all 27 tools to Claude Code and other MCP-compatible clients. There are two ways to run it:
 
-# SSE transport (for containers / multiple clients)
-jira-cli mcp --transport sse --sse-port 8081
+#### Option A: Local binary (stdio)
+
+Best for a single Claude Code instance on your machine.
+
+1. Build the binary:
+   ```sh
+   make build
+   ```
+
+2. Add to your project's `.mcp.json`:
+   ```json
+   {
+     "mcpServers": {
+       "jira-cli": {
+         "command": "/path/to/jira-cli",
+         "args": ["mcp"]
+       }
+     }
+   }
+   ```
+
+3. Claude Code will auto-detect the config on next startup.
+
+#### Option B: Container with SSE
+
+Best for shared or remote setups where multiple clients connect simultaneously.
+
+1. Build and start:
+   ```sh
+   make container-run
+   ```
+
+2. Verify it's running:
+   ```sh
+   curl -sf http://localhost:18080/healthz
+   # {"status":"ok"}
+   ```
+
+3. Add to your project's `.mcp.json`:
+   ```json
+   {
+     "mcpServers": {
+       "jira-cli": {
+         "type": "sse",
+         "url": "http://localhost:8081/sse",
+         "oauth": {}
+       }
+     }
+   }
+   ```
+
+The `"oauth": {}` disables OAuth discovery, which is required for servers without authentication. See [Container Deployment](#container-deployment) below for production hardening.
+
+#### Verifying the connection
+
+Ask Claude Code to run any tool, e.g.:
+
+```
+Use jira_summary to show my current issues
 ```
 
-Configure in your MCP client (e.g. `.mcp.json`):
+You should see 27 tools available. The web dashboard at `http://localhost:18080` shows stored results with charts and interactive views.
 
-```json
-{
-  "mcpServers": {
-    "jira-cli": {
-      "command": "./jira-cli",
-      "args": ["mcp"]
-    }
-  }
-}
-```
+For a more detailed setup guide (including troubleshooting), see [docs/HOWTO-AI-SETUP.md](docs/HOWTO-AI-SETUP.md).
 
-For SSE (container or shared server):
+#### Available MCP Tools (27)
 
-```json
-{
-  "mcpServers": {
-    "jira-cli": {
-      "type": "sse",
-      "url": "http://localhost:8081/sse",
-      "oauth": {}
-    }
-  }
-}
-```
-
-The `"oauth": {}` disables OAuth discovery for servers without authentication.
-
-#### Available MCP Tools
+**Core & AI-powered**
 
 | Tool | Description |
 |------|-------------|
@@ -245,6 +315,26 @@ The `"oauth": {}` disables OAuth discovery for servers without authentication.
 | `jira_create_epic` | LLM-assisted EPIC creation |
 | `jira_summarize_comments` | AI summary of issue comment threads |
 | `jira_backlog_health` | Backlog health analysis with findings and recommendations |
+| `jira_find_similar` | Find duplicate or related issues using AI similarity analysis |
+
+**Confluence**
+
+| Tool | Description |
+|------|-------------|
+| `jira_confluence_get_page` | Read a page or blog post by ID or title |
+| `jira_confluence_search` | Search Confluence using CQL |
+| `jira_confluence_list_pages` | List pages in a space |
+| `jira_confluence_get_comments` | Read footer comments on a page |
+| `jira_confluence_analytics` | Page view stats for a page and its children |
+| `jira_confluence_create_page` | Create a new page under a parent |
+| `jira_confluence_create_blog` | Create a new blog post |
+| `jira_confluence_update` | Update an existing page or blog post body |
+| `jira_confluence_add_label` | Add a label to a page |
+
+**CRUD**
+
+| Tool | Description |
+|------|-------------|
 | `jira_get_issue` | Full issue details with comments and links |
 | `jira_create_issue` | Create any issue type |
 | `jira_edit_issue` | Update issue fields |
@@ -255,25 +345,28 @@ The `"oauth": {}` disables OAuth discovery for servers without authentication.
 | `jira_link_issues` | Create links between issues |
 | `jira_attach_file` | Upload file attachments to issues |
 
-The MCP server includes a web dashboard at `http://localhost:18080` showing stored results with charts and interactive views. A `/healthz` endpoint is available for container health checks.
-
 ### Container Deployment
 
-Run as a shared MCP server in podman/docker so multiple Claude Code instances can connect via SSE:
+A pre-built multi-arch image (amd64 + arm64) is available on Quay.io:
 
 ```sh
-# Build and run
-make container-run
+podman pull quay.io/aasmith/jira-cli:latest
+```
 
-# Or manually:
-podman build --format docker -t jira-cli .
+Run as a shared MCP server so multiple Claude Code instances can connect via SSE:
+
+```sh
+# Using the pre-built image
 podman run -d --name jira-cli-mcp \
   -p 8081:8081 -p 18080:18080 \
   -v jira-cli-cache:/home/jira-cli/.jira-cli:Z \
   --read-only --tmpfs /tmp \
   --cap-drop=ALL \
   --env-file .env \
-  jira-cli
+  quay.io/aasmith/jira-cli:latest
+
+# Or build and run from source
+make container-run
 
 # Check health
 curl http://localhost:18080/healthz
@@ -282,7 +375,8 @@ curl http://localhost:18080/healthz
 podman logs jira-cli-mcp
 
 # Stop
-make container-stop
+podman stop jira-cli-mcp && podman rm jira-cli-mcp
+# or: make container-stop
 ```
 
 The container uses Red Hat UBI 9 minimal as the base image. It runs as non-root (UID 1001), with a read-only root filesystem, all capabilities dropped, and SUID/SGID binaries stripped. Cache is persisted via a named volume (`jira-cli-cache`).
@@ -330,6 +424,16 @@ make container-sbom   # Generate SBOM with syft (SPDX format)
 | `--format` | `-f` | Output format: `markdown` (default), `slack`, `text`, `pretty` |
 | `--outfile` | `-o` | Output file path (default: `{project}.md`) |
 | `--verbose` | `-v` | Increase verbosity (`-v` for verbose, `-vv` for debug with cache diagnostics) |
+
+## Creating a JIRA API Token
+
+1. Log in to [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens)
+2. Click **Create API token**
+3. Give it a label (e.g. "jira-cli") and click **Create**
+4. Copy the token immediately — it won't be shown again
+5. Paste it into your `.env` file as `JIRA_API_TOKEN`
+
+Your `JIRA_SERVER` is the URL you use to access JIRA (e.g. `https://yourcompany.atlassian.net`). Your `JIRA_EMAIL` is the email address associated with your Atlassian account.
 
 ## LLM Providers
 

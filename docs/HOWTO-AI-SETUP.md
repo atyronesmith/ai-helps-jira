@@ -92,7 +92,13 @@ Ask Claude Code to list available tools or run:
 Use jira_summary to show my current issues
 ```
 
-You should see 17 tools available: `jira_summary`, `jira_query`, `jira_digest`, `jira_enrich`, `jira_weekly_status`, `jira_create_epic`, `jira_summarize_comments`, `jira_backlog_health`, `jira_get_issue`, `jira_create_issue`, `jira_edit_issue`, `jira_get_transitions`, `jira_transition`, `jira_add_comment`, `jira_lookup_user`, `jira_link_issues`, `jira_attach_file`.
+You should see 27 tools available:
+
+**Core & AI-powered:** `jira_summary`, `jira_query`, `jira_digest`, `jira_enrich`, `jira_weekly_status`, `jira_create_epic`, `jira_summarize_comments`, `jira_backlog_health`, `jira_find_similar`
+
+**Confluence:** `jira_confluence_analytics`, `jira_confluence_update`, `jira_confluence_get_page`, `jira_confluence_search`, `jira_confluence_list_pages`, `jira_confluence_get_comments`, `jira_confluence_add_label`, `jira_confluence_create_page`, `jira_confluence_create_blog`
+
+**CRUD:** `jira_get_issue`, `jira_create_issue`, `jira_edit_issue`, `jira_get_transitions`, `jira_transition`, `jira_add_comment`, `jira_lookup_user`, `jira_link_issues`, `jira_attach_file`
 
 ## Available Tools
 
@@ -116,6 +122,21 @@ You should see 17 tools available: `jira_summary`, `jira_query`, `jira_digest`, 
 | `jira_summarize_comments` | You want a summary of a long comment thread |
 | `jira_backlog_health` | You want to find stale, orphaned, or under-specified issues |
 | `jira_create_epic` | You need to create an EPIC with LLM-generated content |
+| `jira_find_similar` | You want to find duplicate or related issues using AI similarity analysis |
+
+### Confluence
+
+| Tool | Use When |
+|------|----------|
+| `jira_confluence_get_page` | You need to read a Confluence page or blog post by ID or title |
+| `jira_confluence_search` | You want to search Confluence using CQL |
+| `jira_confluence_list_pages` | You need to list pages in a Confluence space |
+| `jira_confluence_get_comments` | You need to read footer comments on a Confluence page |
+| `jira_confluence_analytics` | You want page view stats for a page and its children |
+| `jira_confluence_create_page` | You need to create a new Confluence page |
+| `jira_confluence_create_blog` | You need to create a new Confluence blog post |
+| `jira_confluence_update` | You need to update an existing page or blog post body |
+| `jira_confluence_add_label` | You need to add a label to a Confluence page |
 
 ### Write operations
 
