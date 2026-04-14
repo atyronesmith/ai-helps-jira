@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -35,6 +36,22 @@ func newTestHandlers(t *testing.T) *Handlers {
 
 	store := &ResultStore{results: make(map[string]*StoredResult)}
 	return NewHandlers(store, db, 18080, "127.0.0.1")
+}
+
+// setTestJIRAEnv sets the minimum env vars for handlers that call loadJIRAConfig.
+func setTestJIRAEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("JIRA_SERVER", "https://test.atlassian.net")
+	t.Setenv("JIRA_EMAIL", "test@test.com")
+	t.Setenv("JIRA_API_TOKEN", "fake-token")
+	t.Setenv("JIRA_PROJECT", "TEST")
+}
+
+// setTestFullEnv sets env vars for handlers that call loadConfig (JIRA + LLM).
+func setTestFullEnv(t *testing.T) {
+	t.Helper()
+	setTestJIRAEnv(t)
+	t.Setenv("LLM_PROVIDER", "ollama")
 }
 
 // --- Helper function tests ---
@@ -249,11 +266,7 @@ func TestHandleEditIssue_MissingKey(t *testing.T) {
 
 func TestHandleEditIssue_NoFields(t *testing.T) {
 	h := newTestHandlers(t)
-	// Set env vars so config loads but no fields provided
-	t.Setenv("JIRA_SERVER", "https://test.atlassian.net")
-	t.Setenv("JIRA_EMAIL", "test@test.com")
-	t.Setenv("JIRA_API_TOKEN", "fake-token")
-	t.Setenv("JIRA_PROJECT", "TEST")
+	setTestJIRAEnv(t)
 
 	result, err := h.HandleEditIssue(context.Background(), makeRequest(map[string]any{
 		"issue_key": "TEST-1",
@@ -327,12 +340,7 @@ func TestHandleAttachFile_MissingFields(t *testing.T) {
 
 func TestHandleSummarizeComments_MissingKey(t *testing.T) {
 	h := newTestHandlers(t)
-	// Need config env for this handler (it loads config before checking key)
-	t.Setenv("JIRA_SERVER", "https://test.atlassian.net")
-	t.Setenv("JIRA_EMAIL", "test@test.com")
-	t.Setenv("JIRA_API_TOKEN", "fake-token")
-	t.Setenv("JIRA_PROJECT", "TEST")
-	t.Setenv("LLM_PROVIDER", "ollama")
+	setTestFullEnv(t)
 
 	result, err := h.HandleSummarizeComments(context.Background(), makeRequest(map[string]any{}))
 	if err != nil {
@@ -344,11 +352,7 @@ func TestHandleSummarizeComments_MissingKey(t *testing.T) {
 
 func TestHandleFindSimilar_MissingKeyAndText(t *testing.T) {
 	h := newTestHandlers(t)
-	t.Setenv("JIRA_SERVER", "https://test.atlassian.net")
-	t.Setenv("JIRA_EMAIL", "test@test.com")
-	t.Setenv("JIRA_API_TOKEN", "fake-token")
-	t.Setenv("JIRA_PROJECT", "TEST")
-	t.Setenv("LLM_PROVIDER", "ollama")
+	setTestFullEnv(t)
 
 	result, err := h.HandleFindSimilar(context.Background(), makeRequest(map[string]any{}))
 	if err != nil {
@@ -360,10 +364,7 @@ func TestHandleFindSimilar_MissingKeyAndText(t *testing.T) {
 
 func TestHandleConfluenceSearch_MissingCQL(t *testing.T) {
 	h := newTestHandlers(t)
-	t.Setenv("JIRA_SERVER", "https://test.atlassian.net")
-	t.Setenv("JIRA_EMAIL", "test@test.com")
-	t.Setenv("JIRA_API_TOKEN", "fake-token")
-	t.Setenv("JIRA_PROJECT", "TEST")
+	setTestJIRAEnv(t)
 
 	result, err := h.HandleConfluenceSearch(context.Background(), makeRequest(map[string]any{}))
 	if err != nil {
@@ -375,10 +376,7 @@ func TestHandleConfluenceSearch_MissingCQL(t *testing.T) {
 
 func TestHandleConfluenceListPages_MissingSpaceKey(t *testing.T) {
 	h := newTestHandlers(t)
-	t.Setenv("JIRA_SERVER", "https://test.atlassian.net")
-	t.Setenv("JIRA_EMAIL", "test@test.com")
-	t.Setenv("JIRA_API_TOKEN", "fake-token")
-	t.Setenv("JIRA_PROJECT", "TEST")
+	setTestJIRAEnv(t)
 
 	result, err := h.HandleConfluenceListPages(context.Background(), makeRequest(map[string]any{}))
 	if err != nil {
@@ -390,10 +388,7 @@ func TestHandleConfluenceListPages_MissingSpaceKey(t *testing.T) {
 
 func TestHandleConfluenceGetComments_MissingPageID(t *testing.T) {
 	h := newTestHandlers(t)
-	t.Setenv("JIRA_SERVER", "https://test.atlassian.net")
-	t.Setenv("JIRA_EMAIL", "test@test.com")
-	t.Setenv("JIRA_API_TOKEN", "fake-token")
-	t.Setenv("JIRA_PROJECT", "TEST")
+	setTestJIRAEnv(t)
 
 	result, err := h.HandleConfluenceGetComments(context.Background(), makeRequest(map[string]any{}))
 	if err != nil {
@@ -405,10 +400,7 @@ func TestHandleConfluenceGetComments_MissingPageID(t *testing.T) {
 
 func TestHandleConfluenceAddLabel_MissingFields(t *testing.T) {
 	h := newTestHandlers(t)
-	t.Setenv("JIRA_SERVER", "https://test.atlassian.net")
-	t.Setenv("JIRA_EMAIL", "test@test.com")
-	t.Setenv("JIRA_API_TOKEN", "fake-token")
-	t.Setenv("JIRA_PROJECT", "TEST")
+	setTestJIRAEnv(t)
 
 	// missing both
 	result, err := h.HandleConfluenceAddLabel(context.Background(), makeRequest(map[string]any{}))
@@ -431,10 +423,7 @@ func TestHandleConfluenceAddLabel_MissingFields(t *testing.T) {
 
 func TestHandleConfluenceAnalytics_MissingPageID(t *testing.T) {
 	h := newTestHandlers(t)
-	t.Setenv("JIRA_SERVER", "https://test.atlassian.net")
-	t.Setenv("JIRA_EMAIL", "test@test.com")
-	t.Setenv("JIRA_API_TOKEN", "fake-token")
-	t.Setenv("JIRA_PROJECT", "TEST")
+	setTestJIRAEnv(t)
 
 	result, err := h.HandleConfluenceAnalytics(context.Background(), makeRequest(map[string]any{}))
 	if err != nil {
@@ -446,10 +435,7 @@ func TestHandleConfluenceAnalytics_MissingPageID(t *testing.T) {
 
 func TestHandleConfluenceGetPage_MissingIDAndTitle(t *testing.T) {
 	h := newTestHandlers(t)
-	t.Setenv("JIRA_SERVER", "https://test.atlassian.net")
-	t.Setenv("JIRA_EMAIL", "test@test.com")
-	t.Setenv("JIRA_API_TOKEN", "fake-token")
-	t.Setenv("JIRA_PROJECT", "TEST")
+	setTestJIRAEnv(t)
 
 	result, err := h.HandleConfluenceGetPage(context.Background(), makeRequest(map[string]any{}))
 	if err != nil {
@@ -461,10 +447,7 @@ func TestHandleConfluenceGetPage_MissingIDAndTitle(t *testing.T) {
 
 func TestHandleConfluenceUpdate_MissingIDAndTitle(t *testing.T) {
 	h := newTestHandlers(t)
-	t.Setenv("JIRA_SERVER", "https://test.atlassian.net")
-	t.Setenv("JIRA_EMAIL", "test@test.com")
-	t.Setenv("JIRA_API_TOKEN", "fake-token")
-	t.Setenv("JIRA_PROJECT", "TEST")
+	setTestJIRAEnv(t)
 
 	result, err := h.HandleConfluenceUpdate(context.Background(), makeRequest(map[string]any{
 		"body": "<p>test</p>",
@@ -478,10 +461,7 @@ func TestHandleConfluenceUpdate_MissingIDAndTitle(t *testing.T) {
 
 func TestHandleConfluenceUpdate_MissingBody(t *testing.T) {
 	h := newTestHandlers(t)
-	t.Setenv("JIRA_SERVER", "https://test.atlassian.net")
-	t.Setenv("JIRA_EMAIL", "test@test.com")
-	t.Setenv("JIRA_API_TOKEN", "fake-token")
-	t.Setenv("JIRA_PROJECT", "TEST")
+	setTestJIRAEnv(t)
 
 	result, err := h.HandleConfluenceUpdate(context.Background(), makeRequest(map[string]any{
 		"page_id": "123",
@@ -646,14 +626,7 @@ func assertIsError(t *testing.T, r *mcp.CallToolResult) {
 
 func assertContains(t *testing.T, s, substr string) {
 	t.Helper()
-	if len(s) == 0 {
-		t.Errorf("empty string, expected to contain %q", substr)
-		return
+	if !strings.Contains(s, substr) {
+		t.Errorf("string %q does not contain %q", s, substr)
 	}
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return
-		}
-	}
-	t.Errorf("string %q does not contain %q", s, substr)
 }

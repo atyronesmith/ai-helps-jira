@@ -177,17 +177,45 @@ podman pull quay.io/aasmith/jira-cli:latest
 
 ### Auto-start on boot
 
-**Fedora / Linux (systemd)**
+**Fedora / Linux (systemd with Quadlet)**
+
+Create a Quadlet `.container` unit file:
 
 ```sh
-mkdir -p ~/.config/systemd/user
-podman generate systemd --name jira-cli-mcp --files --new
-mv container-jira-cli-mcp.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable container-jira-cli-mcp.service
+mkdir -p ~/.config/containers/systemd
+cat > ~/.config/containers/systemd/jira-cli-mcp.container <<'EOF'
+[Container]
+Image=quay.io/aasmith/jira-cli:latest
+ContainerName=jira-cli-mcp
+PublishPort=8081:8081
+PublishPort=18080:18080
+Volume=jira-cli-cache:/home/jira-cli/.jira-cli:Z
+EnvironmentFile=%h/.config/jira-cli/.env
+ReadOnly=true
+Tmpfs=/tmp
+DropCapability=ALL
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+EOF
 ```
 
-This creates a user-level systemd unit that starts the container on login. `--new` means systemd will recreate the container from the image each time (so `podman pull` + `systemctl --user restart` picks up updates).
+Then enable and start:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now jira-cli-mcp
+```
+
+To update to a new image version, pull and restart:
+
+```sh
+podman pull quay.io/aasmith/jira-cli:latest
+systemctl --user restart jira-cli-mcp
+```
 
 **macOS**
 
