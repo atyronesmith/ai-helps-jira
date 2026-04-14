@@ -25,7 +25,7 @@ Inspired by the [official Atlassian MCP server](https://github.com/atlassian/mcp
 
 ### Option A: Container image (recommended)
 
-The fastest way to get running. No Go toolchain needed.
+The fastest way to get running. No Go toolchain needed. For detailed platform-specific instructions (including Fedora/Linux and macOS setup, auto-start, Ollama integration), see [docs/CONTAINER-SETUP.md](docs/CONTAINER-SETUP.md).
 
 ```sh
 # 1. Create a .env file with your credentials
