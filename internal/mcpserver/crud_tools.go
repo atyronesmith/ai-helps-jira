@@ -101,6 +101,18 @@ func attachFileToolDef() mcp.Tool {
 	)
 }
 
+func addWorklogToolDef() mcp.Tool {
+	return mcp.NewTool("jira_add_worklog",
+		mcp.WithDescription("Add a worklog entry to a JIRA issue to record time spent."),
+		mcp.WithString("issue_key", mcp.Required(), mcp.Description("JIRA issue key (e.g. PROJ-123).")),
+		mcp.WithString("time_spent", mcp.Required(), mcp.Description("Time spent in Jira format (e.g. '2h 30m', '1d', '45m').")),
+		mcp.WithString("comment", mcp.Description("Worklog comment describing what was done.")),
+		mcp.WithString("started", mcp.Description("When the work started in ISO 8601 format (e.g. '2024-01-15T09:00:00.000+0000'). Defaults to now.")),
+		mcp.WithString("user", mcp.Description("JIRA user email.")),
+		mcp.WithString("project", mcp.Description("JIRA project key.")),
+	)
+}
+
 func linkIssuesToolDef() mcp.Tool {
 	return mcp.NewTool("jira_link_issues",
 		mcp.WithDescription("Create a link between two JIRA issues."),
@@ -418,6 +430,32 @@ func (h *Handlers) HandleLookupUser(ctx context.Context, req mcp.CallToolRequest
 	}
 
 	return textResult(text.String()), nil
+}
+
+func (h *Handlers) HandleAddWorklog(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	key := getString(req, "issue_key")
+	timeSpent := getString(req, "time_spent")
+	if key == "" || timeSpent == "" {
+		return errorResult("issue_key and time_spent are required"), nil
+	}
+
+	cfg, err := loadJIRAConfig(req)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	client, err := jira.NewClient(cfg)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	wl, err := client.AddWorklog(key, timeSpent, getString(req, "comment"), getString(req, "started"))
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	return textResult(fmt.Sprintf("Worklog added to %s: %s (ID: %s, started: %s).",
+		key, wl.TimeSpent, wl.ID, wl.Started.Format("2006-01-02 15:04"))), nil
 }
 
 func (h *Handlers) HandleLinkIssues(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

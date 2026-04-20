@@ -135,6 +135,7 @@ func Run(cfg Config) error {
 	s.AddTool(transitionToolDef(), h.HandleTransition)
 	s.AddTool(addCommentToolDef(), h.HandleAddComment)
 	s.AddTool(lookupUserToolDef(), h.HandleLookupUser)
+	s.AddTool(addWorklogToolDef(), h.HandleAddWorklog)
 	s.AddTool(linkIssuesToolDef(), h.HandleLinkIssues)
 	s.AddTool(attachFileToolDef(), h.HandleAttachFile)
 

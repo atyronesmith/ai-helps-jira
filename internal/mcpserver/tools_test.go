@@ -200,12 +200,13 @@ func TestAllToolDefsHaveDescriptions(t *testing.T) {
 		{"transition", transitionToolDef()},
 		{"addComment", addCommentToolDef()},
 		{"lookupUser", lookupUserToolDef()},
+		{"addWorklog", addWorklogToolDef()},
 		{"linkIssues", linkIssuesToolDef()},
 		{"attachFile", attachFileToolDef()},
 	}
 
-	if len(defs) != 27 {
-		t.Errorf("expected 27 tool definitions, got %d", len(defs))
+	if len(defs) != 28 {
+		t.Errorf("expected 28 tool definitions, got %d", len(defs))
 	}
 
 	for _, d := range defs {
@@ -326,6 +327,16 @@ func TestHandleLinkIssues_MissingFields(t *testing.T) {
 	}
 	assertIsError(t, result)
 	assertContains(t, resultText(result), "inward_issue, outward_issue, and link_type are required")
+}
+
+func TestHandleAddWorklog_MissingFields(t *testing.T) {
+	h := newTestHandlers(t)
+	result, err := h.HandleAddWorklog(context.Background(), makeRequest(map[string]any{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsError(t, result)
+	assertContains(t, resultText(result), "issue_key and time_spent are required")
 }
 
 func TestHandleAttachFile_MissingFields(t *testing.T) {

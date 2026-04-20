@@ -308,3 +308,45 @@ func (c *Client) AttachFile(key, filePath string) (string, error) {
 	slog.Info("file attached", "key", key, "file", filepath.Base(filePath))
 	return filepath.Base(filePath), nil
 }
+
+// --- Worklog ---
+
+type apiAddWorklogResponse struct {
+	ID               string      `json:"id"`
+	Author           apiAssignee `json:"author"`
+	TimeSpent        string      `json:"timeSpent"`
+	TimeSpentSeconds int         `json:"timeSpentSeconds"`
+	Started          string      `json:"started"`
+}
+
+// AddWorklog adds a worklog entry to an issue.
+func (c *Client) AddWorklog(key, timeSpent, comment, started string) (*Worklog, error) {
+	path := fmt.Sprintf("/rest/api/3/issue/%s/worklog", key)
+	slog.Info("adding worklog", "key", key, "timeSpent", timeSpent)
+
+	reqBody := map[string]any{
+		"timeSpent": timeSpent,
+	}
+	if comment != "" {
+		reqBody["comment"] = textToADF(comment)
+	}
+	if started != "" {
+		reqBody["started"] = started
+	}
+
+	var resp apiAddWorklogResponse
+	if err := c.doRequest("POST", path, reqBody, &resp); err != nil {
+		return nil, fmt.Errorf("add worklog to %s: %w", key, err)
+	}
+
+	startedTime, _ := time.Parse("2006-01-02T15:04:05.000-0700", resp.Started)
+	slog.Info("worklog added", "key", key, "id", resp.ID, "timeSpent", resp.TimeSpent)
+	return &Worklog{
+		ID:               resp.ID,
+		IssueKey:         key,
+		AuthorName:       resp.Author.DisplayName,
+		TimeSpent:        resp.TimeSpent,
+		TimeSpentSeconds: resp.TimeSpentSeconds,
+		Started:          startedTime,
+	}, nil
+}

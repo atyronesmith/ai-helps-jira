@@ -70,3 +70,14 @@ type BoardInfo struct {
 	SprintName string // empty if kanban
 	Issues     []Issue
 }
+
+// Worklog represents a single JIRA worklog entry.
+type Worklog struct {
+	ID               string
+	IssueKey         string
+	AuthorName       string
+	TimeSpent        string
+	TimeSpentSeconds int
+	Started          time.Time
+	Comment          string
+}
