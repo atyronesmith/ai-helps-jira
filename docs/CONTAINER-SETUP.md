@@ -147,7 +147,7 @@ Create a `.mcp.json` file in your project directory (or home directory for globa
 
 The `"oauth": {}` is required — it tells Claude Code not to attempt OAuth discovery on this server.
 
-Restart Claude Code (or start a new session). You should see 27 JIRA tools available. Test with:
+Restart Claude Code (or start a new session). You should see 35 JIRA tools available. Test with:
 
 ```
 Use jira_summary to show my current issues

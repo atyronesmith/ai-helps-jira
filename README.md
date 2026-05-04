@@ -14,7 +14,7 @@ Inspired by the [official Atlassian MCP server](https://github.com/atlassian/mcp
 - **Comment Summarizer** — Summarize long comment threads into key decisions, action items, and open questions.
 - **Backlog Health Check** — Rule-based analysis (stale tickets, missing descriptions, orphaned issues, unassigned active, missing labels) with optional LLM executive summary.
 - **JIRA CRUD** — Create, edit, transition, comment on, link issues, look up users, and attach files — all from CLI or MCP.
-- **MCP Server** — Exposes all 27 tools as Model Context Protocol tools for Claude Code and other MCP clients. Supports stdio and SSE transports. Includes a rich web dashboard.
+- **MCP Server** — Exposes all 35 tools as Model Context Protocol tools for Claude Code and other MCP clients. Supports stdio and SSE transports. Includes a rich web dashboard.
 - **Container Support** — Run as a shared MCP server in podman/docker with SSE transport. Multiple Claude Code instances can connect simultaneously. Red Hat UBI minimal base image with health checks and persistent cache volume.
 - **Multi-LLM Provider Support** — Use any LLM backend: Vertex AI (Claude), OpenAI-compatible APIs (DeepInfra, vLLM, etc.), or Ollama for fully local inference.
 - **SQLite Caching** — Delta fetches only changed issues after the first run. Smart cache invalidation compares JIRA timestamps. Per-issue detail caching means repeat runs skip re-fetching unchanged issues entirely.
@@ -234,7 +234,7 @@ jira-cli lookup-user jsmith
 
 ### MCP Server
 
-The MCP server exposes all 27 tools to Claude Code and other MCP-compatible clients. There are two ways to run it:
+The MCP server exposes all 35 tools to Claude Code and other MCP-compatible clients. There are two ways to run it:
 
 #### Option A: Local binary (stdio)
 
@@ -297,11 +297,11 @@ Ask Claude Code to run any tool, e.g.:
 Use jira_summary to show my current issues
 ```
 
-You should see 27 tools available. The web dashboard at `http://localhost:18080` shows stored results with charts and interactive views.
+You should see 35 tools available. The web dashboard at `http://localhost:18080` shows stored results with charts and interactive views.
 
 For a more detailed setup guide (including troubleshooting), see [docs/HOWTO-AI-SETUP.md](docs/HOWTO-AI-SETUP.md).
 
-#### Available MCP Tools (27)
+#### Available MCP Tools (35)
 
 **Core & AI-powered**
 
@@ -341,9 +341,17 @@ For a more detailed setup guide (including troubleshooting), see [docs/HOWTO-AI-
 | `jira_get_transitions` | List available workflow transitions |
 | `jira_transition` | Change issue workflow status |
 | `jira_add_comment` | Add a comment to an issue |
+| `jira_add_worklog` | Record time spent on an issue |
 | `jira_lookup_user` | Search users by name/email |
 | `jira_link_issues` | Create links between issues |
 | `jira_attach_file` | Upload file attachments to issues |
+| `jira_watch_issue` | Add yourself as a watcher on an issue |
+| `jira_unwatch_issue` | Remove yourself as a watcher |
+| `jira_add_labels` | Add labels to an issue without replacing existing |
+| `jira_remove_labels` | Remove labels from an issue |
+| `jira_list_sprints` | List sprints for the project's boards |
+| `jira_vote_issue` | Add your vote to an issue |
+| `jira_unvote_issue` | Remove your vote from an issue |
 
 ### Container Deployment
 

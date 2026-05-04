@@ -92,13 +92,13 @@ Ask Claude Code to list available tools or run:
 Use jira_summary to show my current issues
 ```
 
-You should see 27 tools available:
+You should see 35 tools available:
 
 **Core & AI-powered:** `jira_summary`, `jira_query`, `jira_digest`, `jira_enrich`, `jira_weekly_status`, `jira_create_epic`, `jira_summarize_comments`, `jira_backlog_health`, `jira_find_similar`
 
 **Confluence:** `jira_confluence_analytics`, `jira_confluence_update`, `jira_confluence_get_page`, `jira_confluence_search`, `jira_confluence_list_pages`, `jira_confluence_get_comments`, `jira_confluence_add_label`, `jira_confluence_create_page`, `jira_confluence_create_blog`
 
-**CRUD:** `jira_get_issue`, `jira_create_issue`, `jira_edit_issue`, `jira_get_transitions`, `jira_transition`, `jira_add_comment`, `jira_lookup_user`, `jira_link_issues`, `jira_attach_file`
+**CRUD:** `jira_get_issue`, `jira_create_issue`, `jira_edit_issue`, `jira_get_transitions`, `jira_transition`, `jira_add_comment`, `jira_add_worklog`, `jira_lookup_user`, `jira_link_issues`, `jira_attach_file`, `jira_watch_issue`, `jira_unwatch_issue`, `jira_add_labels`, `jira_remove_labels`, `jira_list_sprints`, `jira_vote_issue`, `jira_unvote_issue`
 
 ## Available Tools
 
@@ -111,6 +111,7 @@ You should see 27 tools available:
 | `jira_get_issue` | You need full details of a specific issue (description, comments, links) |
 | `jira_get_transitions` | You need to find the transition ID before changing an issue's status |
 | `jira_lookup_user` | You need to find a user's account ID for assignment |
+| `jira_list_sprints` | You need to see sprints for the project's boards |
 
 ### AI-powered (read-only)
 
@@ -148,6 +149,13 @@ You should see 27 tools available:
 | `jira_add_comment` | Adding a comment to an issue |
 | `jira_link_issues` | Creating a link between two issues |
 | `jira_attach_file` | Uploading a file to an issue |
+| `jira_add_worklog` | Recording time spent on an issue |
+| `jira_watch_issue` | Adding yourself as a watcher on an issue |
+| `jira_unwatch_issue` | Removing yourself as a watcher |
+| `jira_add_labels` | Adding labels to an issue without replacing existing |
+| `jira_remove_labels` | Removing labels from an issue |
+| `jira_vote_issue` | Adding your vote to an issue |
+| `jira_unvote_issue` | Removing your vote from an issue |
 | `jira_enrich` | Applying AI enrichment to JIRA (use `apply: true`) |
 
 ## Common Patterns
