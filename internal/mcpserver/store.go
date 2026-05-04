@@ -7,7 +7,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,13 +48,19 @@ type ResultStore struct {
 	db      *sql.DB
 }
 
-// NewResultStore creates a result store backed by SQLite.
+// NewResultStore creates a result store backed by a per-instance SQLite DB.
+// Each MCP server process gets its own results database so multiple instances
+// don't interfere with each other's dashboard views.
 func NewResultStore() *ResultStore {
 	s := &ResultStore{
 		results: make(map[string]*StoredResult),
 	}
 
-	db, err := openResultDB()
+	dir := resultDBDir()
+	cleanupStaleResultDBs(dir)
+
+	dbPath := filepath.Join(dir, fmt.Sprintf("results-%d.db", os.Getpid()))
+	db, err := openResultDB(dbPath)
 	if err != nil {
 		slog.Error("failed to open result store DB, using in-memory only", "error", err)
 		return s
@@ -62,12 +71,49 @@ func NewResultStore() *ResultStore {
 	return s
 }
 
-func openResultDB() (*sql.DB, error) {
-	dir := filepath.Join(os.Getenv("HOME"), ".jira-cli")
+func resultDBDir() string {
+	return filepath.Join(os.Getenv("HOME"), ".jira-cli")
+}
+
+// cleanupStaleResultDBs removes result DBs left behind by dead processes.
+func cleanupStaleResultDBs(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "results-") || !strings.HasSuffix(name, ".db") {
+			continue
+		}
+		pidStr := strings.TrimPrefix(strings.TrimSuffix(name, ".db"), "results-")
+		pid, err := strconv.Atoi(pidStr)
+		if err != nil {
+			continue
+		}
+		if processAlive(pid) {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if err := os.Remove(path); err == nil {
+			slog.Info("cleaned up stale result DB", "path", path, "pid", pid)
+		}
+	}
+}
+
+func processAlive(pid int) bool {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
+}
+
+func openResultDB(dbPath string) (*sql.DB, error) {
+	dir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create dir: %w", err)
 	}
-	dbPath := filepath.Join(dir, "cache.db")
 
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {

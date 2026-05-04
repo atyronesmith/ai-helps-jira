@@ -87,15 +87,15 @@ func Run(cfg Config) error {
 			"Ensure JIRA credentials are not exposed to untrusted clients.\n", bindHost)
 	}
 
-	// Start web server in background
+	// Start web server (finds an available port starting from cfg.WebPort)
 	ws := NewWebServer(store, cfg.WebPort, bindHost)
-	go func() {
-		if err := ws.Start(); err != nil {
-			slog.Error("web server failed", "error", err)
-		}
-	}()
-
-	fmt.Fprintf(os.Stderr, "Web dashboard: http://%s:%d\n", bindHost, cfg.WebPort)
+	actualPort, err := ws.Start()
+	if err != nil {
+		slog.Error("web dashboard failed to start", "error", err)
+		actualPort = cfg.WebPort
+	} else {
+		fmt.Fprintf(os.Stderr, "Web dashboard: http://%s:%d\n", bindHost, actualPort)
+	}
 
 	// Create MCP server
 	s := server.NewMCPServer(
@@ -105,7 +105,7 @@ func Run(cfg Config) error {
 	)
 
 	// Create handlers
-	h := NewHandlers(store, db, cfg.WebPort, bindHost)
+	h := NewHandlers(store, db, actualPort, bindHost)
 
 	// Register tools
 	s.AddTool(summaryToolDef(), h.HandleSummary)

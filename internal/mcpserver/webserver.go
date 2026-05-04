@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -64,14 +65,16 @@ func NewWebServer(store *ResultStore, port int, bindHost string) *WebServer {
 	}
 
 	return &WebServer{
-		store: store,
-		port:  port,
-		tmpls: tmpls,
+		store:    store,
+		port:     port,
+		bindHost: bindHost,
+		tmpls:    tmpls,
 	}
 }
 
-// Start begins listening on the configured port (localhost only).
-func (ws *WebServer) Start() error {
+// Start binds to the configured port (or the next available port if busy)
+// and begins serving in the background. Returns the actual bound port.
+func (ws *WebServer) Start() (int, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", ws.handleHealthz)
 	mux.HandleFunc("GET /", ws.handleIndex)
@@ -80,9 +83,33 @@ func (ws *WebServer) Start() error {
 	mux.HandleFunc("DELETE /api/result/{id}", ws.handleDeleteResult)
 	mux.Handle("GET /static/", http.FileServerFS(web.StaticFS))
 
-	addr := fmt.Sprintf("%s:%d", ws.bindHost, ws.port)
-	slog.Info("web dashboard starting", "addr", addr)
-	return http.ListenAndServe(addr, mux)
+	const maxAttempts = 20
+	var ln net.Listener
+	var err error
+	port := ws.port
+
+	for i := 0; i < maxAttempts; i++ {
+		addr := fmt.Sprintf("%s:%d", ws.bindHost, port)
+		ln, err = net.Listen("tcp", addr)
+		if err == nil {
+			break
+		}
+		slog.Debug("port busy, trying next", "port", port, "error", err)
+		port++
+	}
+	if err != nil {
+		return 0, fmt.Errorf("no available port in range %d-%d: %w", ws.port, ws.port+maxAttempts-1, err)
+	}
+
+	ws.port = port
+	slog.Info("web dashboard starting", "addr", ln.Addr().String())
+	go func() {
+		if err := http.Serve(ln, mux); err != nil {
+			slog.Error("web server failed", "error", err)
+		}
+	}()
+
+	return port, nil
 }
 
 // handleIndex shows all stored results.
