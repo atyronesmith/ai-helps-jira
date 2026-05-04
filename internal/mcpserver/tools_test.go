@@ -203,10 +203,17 @@ func TestAllToolDefsHaveDescriptions(t *testing.T) {
 		{"addWorklog", addWorklogToolDef()},
 		{"linkIssues", linkIssuesToolDef()},
 		{"attachFile", attachFileToolDef()},
+		{"watchIssue", watchIssueToolDef()},
+		{"unwatchIssue", unwatchIssueToolDef()},
+		{"addLabels", addLabelsToolDef()},
+		{"removeLabels", removeLabelsToolDef()},
+		{"listSprints", listSprintsToolDef()},
+		{"voteIssue", voteIssueToolDef()},
+		{"unvoteIssue", unvoteIssueToolDef()},
 	}
 
-	if len(defs) != 28 {
-		t.Errorf("expected 28 tool definitions, got %d", len(defs))
+	if len(defs) != 35 {
+		t.Errorf("expected 35 tool definitions, got %d", len(defs))
 	}
 
 	for _, d := range defs {
@@ -347,6 +354,91 @@ func TestHandleAttachFile_MissingFields(t *testing.T) {
 	}
 	assertIsError(t, result)
 	assertContains(t, resultText(result), "issue_key and file_path are required")
+}
+
+func TestHandleWatchIssue_MissingKey(t *testing.T) {
+	h := newTestHandlers(t)
+	result, err := h.HandleWatchIssue(context.Background(), makeRequest(map[string]any{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsError(t, result)
+	assertContains(t, resultText(result), "issue_key is required")
+}
+
+func TestHandleUnwatchIssue_MissingKey(t *testing.T) {
+	h := newTestHandlers(t)
+	result, err := h.HandleUnwatchIssue(context.Background(), makeRequest(map[string]any{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsError(t, result)
+	assertContains(t, resultText(result), "issue_key is required")
+}
+
+func TestHandleAddLabels_MissingFields(t *testing.T) {
+	h := newTestHandlers(t)
+	result, err := h.HandleAddLabels(context.Background(), makeRequest(map[string]any{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsError(t, result)
+	assertContains(t, resultText(result), "issue_key and labels are required")
+}
+
+func TestHandleRemoveLabels_MissingFields(t *testing.T) {
+	h := newTestHandlers(t)
+	result, err := h.HandleRemoveLabels(context.Background(), makeRequest(map[string]any{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsError(t, result)
+	assertContains(t, resultText(result), "issue_key and labels are required")
+}
+
+func TestHandleVoteIssue_MissingKey(t *testing.T) {
+	h := newTestHandlers(t)
+	result, err := h.HandleVoteIssue(context.Background(), makeRequest(map[string]any{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsError(t, result)
+	assertContains(t, resultText(result), "issue_key is required")
+}
+
+func TestHandleUnvoteIssue_MissingKey(t *testing.T) {
+	h := newTestHandlers(t)
+	result, err := h.HandleUnvoteIssue(context.Background(), makeRequest(map[string]any{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIsError(t, result)
+	assertContains(t, resultText(result), "issue_key is required")
+}
+
+func TestParseCommaSeparated(t *testing.T) {
+	cases := []struct {
+		input string
+		want  []string
+	}{
+		{"bug,urgent", []string{"bug", "urgent"}},
+		{" bug , urgent , ", []string{"bug", "urgent"}},
+		{"single", []string{"single"}},
+		{",,,", nil},
+		{"", nil},
+	}
+	for _, tc := range cases {
+		got := parseCommaSeparated(tc.input)
+		if len(got) != len(tc.want) {
+			t.Errorf("parseCommaSeparated(%q) = %v, want %v", tc.input, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("parseCommaSeparated(%q)[%d] = %q, want %q", tc.input, i, got[i], tc.want[i])
+			}
+		}
+	}
 }
 
 func TestHandleSummarizeComments_MissingKey(t *testing.T) {

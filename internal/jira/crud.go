@@ -2,6 +2,7 @@ package jira
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -349,4 +350,190 @@ func (c *Client) AddWorklog(key, timeSpent, comment, started string) (*Worklog, 
 		TimeSpentSeconds: resp.TimeSpentSeconds,
 		Started:          startedTime,
 	}, nil
+}
+
+// --- Current User ---
+
+// GetMyself returns the account ID of the authenticated user.
+func (c *Client) GetMyself() (string, error) {
+	var resp apiUser
+	if err := c.doRequest("GET", "/rest/api/3/myself", nil, &resp); err != nil {
+		return "", fmt.Errorf("get myself: %w", err)
+	}
+	return resp.AccountID, nil
+}
+
+// --- Watchers ---
+
+// WatchIssue adds the authenticated user as a watcher on the issue.
+func (c *Client) WatchIssue(key string) error {
+	path := fmt.Sprintf("/rest/api/3/issue/%s/watchers", key)
+	slog.Info("watching issue", "key", key)
+
+	accountID, err := c.GetMyself()
+	if err != nil {
+		return fmt.Errorf("watch issue %s: %w", key, err)
+	}
+
+	// The watchers endpoint expects a JSON-encoded string, not an object.
+	raw := json.RawMessage(fmt.Sprintf("%q", accountID))
+	if err := c.doRequest("POST", path, &raw, nil); err != nil {
+		return fmt.Errorf("watch issue %s: %w", key, err)
+	}
+	slog.Info("now watching issue", "key", key)
+	return nil
+}
+
+// UnwatchIssue removes the authenticated user as a watcher from the issue.
+func (c *Client) UnwatchIssue(key string) error {
+	slog.Info("unwatching issue", "key", key)
+
+	accountID, err := c.GetMyself()
+	if err != nil {
+		return fmt.Errorf("unwatch issue %s: %w", key, err)
+	}
+
+	path := fmt.Sprintf("/rest/api/3/issue/%s/watchers?accountId=%s", key, url.QueryEscape(accountID))
+	if err := c.doRequest("DELETE", path, nil, nil); err != nil {
+		return fmt.Errorf("unwatch issue %s: %w", key, err)
+	}
+	slog.Info("unwatched issue", "key", key)
+	return nil
+}
+
+// --- Labels ---
+
+// AddLabels appends labels to an issue without removing existing ones.
+func (c *Client) AddLabels(key string, labels []string) error {
+	slog.Info("adding labels", "key", key, "labels", labels)
+
+	ops := make([]map[string]string, len(labels))
+	for i, l := range labels {
+		ops[i] = map[string]string{"add": l}
+	}
+	body := map[string]any{
+		"update": map[string]any{
+			"labels": ops,
+		},
+	}
+
+	if err := c.doRequest("PUT", fmt.Sprintf("/rest/api/3/issue/%s", key), body, nil); err != nil {
+		return fmt.Errorf("add labels to %s: %w", key, err)
+	}
+	slog.Info("labels added", "key", key, "count", len(labels))
+	return nil
+}
+
+// RemoveLabels removes labels from an issue.
+func (c *Client) RemoveLabels(key string, labels []string) error {
+	slog.Info("removing labels", "key", key, "labels", labels)
+
+	ops := make([]map[string]string, len(labels))
+	for i, l := range labels {
+		ops[i] = map[string]string{"remove": l}
+	}
+	body := map[string]any{
+		"update": map[string]any{
+			"labels": ops,
+		},
+	}
+
+	if err := c.doRequest("PUT", fmt.Sprintf("/rest/api/3/issue/%s", key), body, nil); err != nil {
+		return fmt.Errorf("remove labels from %s: %w", key, err)
+	}
+	slog.Info("labels removed", "key", key, "count", len(labels))
+	return nil
+}
+
+// --- Sprints ---
+
+type apiSprintDetail struct {
+	ID            int    `json:"id"`
+	Name          string `json:"name"`
+	State         string `json:"state"`
+	StartDate     string `json:"startDate"`
+	EndDate       string `json:"endDate"`
+	CompleteDate  string `json:"completeDate"`
+	OriginBoardID int    `json:"originBoardId"`
+}
+
+type sprintDetailListResponse struct {
+	Values []apiSprintDetail `json:"values"`
+}
+
+// ListBoards returns all boards for the configured project.
+func (c *Client) ListBoards() ([]Board, error) {
+	path := fmt.Sprintf("/rest/agile/1.0/board?projectKeyOrId=%s", c.project)
+	slog.Info("listing boards", "project", c.project)
+
+	var resp boardListResponse
+	if err := c.doRequest("GET", path, nil, &resp); err != nil {
+		return nil, fmt.Errorf("list boards: %w", err)
+	}
+
+	boards := make([]Board, 0, len(resp.Values))
+	for _, b := range resp.Values {
+		boards = append(boards, Board{
+			ID:   b.ID,
+			Name: b.Name,
+			Type: b.Type,
+		})
+	}
+	slog.Info("boards found", "count", len(boards))
+	return boards, nil
+}
+
+// ListSprints returns sprints for a board, optionally filtered by state.
+func (c *Client) ListSprints(boardID int, state string) ([]Sprint, error) {
+	path := fmt.Sprintf("/rest/agile/1.0/board/%d/sprint", boardID)
+	if state != "" {
+		path += "?state=" + url.QueryEscape(state)
+	}
+	slog.Info("listing sprints", "board", boardID, "state", state)
+
+	var resp sprintDetailListResponse
+	if err := c.doRequest("GET", path, nil, &resp); err != nil {
+		return nil, fmt.Errorf("list sprints for board %d: %w", boardID, err)
+	}
+
+	sprints := make([]Sprint, 0, len(resp.Values))
+	for _, s := range resp.Values {
+		start, _ := time.Parse("2006-01-02T15:04:05.000Z", s.StartDate)
+		end, _ := time.Parse("2006-01-02T15:04:05.000Z", s.EndDate)
+		sprints = append(sprints, Sprint{
+			ID:        s.ID,
+			Name:      s.Name,
+			State:     s.State,
+			StartDate: start,
+			EndDate:   end,
+		})
+	}
+	slog.Info("sprints found", "board", boardID, "count", len(sprints))
+	return sprints, nil
+}
+
+// --- Voting ---
+
+// VoteIssue adds the authenticated user's vote to an issue.
+func (c *Client) VoteIssue(key string) error {
+	path := fmt.Sprintf("/rest/api/3/issue/%s/votes", key)
+	slog.Info("voting for issue", "key", key)
+
+	if err := c.doRequest("POST", path, nil, nil); err != nil {
+		return fmt.Errorf("vote issue %s: %w", key, err)
+	}
+	slog.Info("voted for issue", "key", key)
+	return nil
+}
+
+// UnvoteIssue removes the authenticated user's vote from an issue.
+func (c *Client) UnvoteIssue(key string) error {
+	path := fmt.Sprintf("/rest/api/3/issue/%s/votes", key)
+	slog.Info("removing vote from issue", "key", key)
+
+	if err := c.doRequest("DELETE", path, nil, nil); err != nil {
+		return fmt.Errorf("unvote issue %s: %w", key, err)
+	}
+	slog.Info("vote removed from issue", "key", key)
+	return nil
 }

@@ -124,6 +124,72 @@ func linkIssuesToolDef() mcp.Tool {
 	)
 }
 
+func watchIssueToolDef() mcp.Tool {
+	return mcp.NewTool("jira_watch_issue",
+		mcp.WithDescription("Add yourself as a watcher on a JIRA issue to receive notifications."),
+		mcp.WithString("issue_key", mcp.Required(), mcp.Description("JIRA issue key (e.g. PROJ-123).")),
+		mcp.WithString("user", mcp.Description("JIRA user email.")),
+		mcp.WithString("project", mcp.Description("JIRA project key.")),
+	)
+}
+
+func unwatchIssueToolDef() mcp.Tool {
+	return mcp.NewTool("jira_unwatch_issue",
+		mcp.WithDescription("Remove yourself as a watcher from a JIRA issue."),
+		mcp.WithString("issue_key", mcp.Required(), mcp.Description("JIRA issue key (e.g. PROJ-123).")),
+		mcp.WithString("user", mcp.Description("JIRA user email.")),
+		mcp.WithString("project", mcp.Description("JIRA project key.")),
+	)
+}
+
+func addLabelsToolDef() mcp.Tool {
+	return mcp.NewTool("jira_add_labels",
+		mcp.WithDescription("Add labels to a JIRA issue without removing existing labels."),
+		mcp.WithString("issue_key", mcp.Required(), mcp.Description("JIRA issue key (e.g. PROJ-123).")),
+		mcp.WithString("labels", mcp.Required(), mcp.Description("Comma-separated labels to add (e.g. 'bug,urgent').")),
+		mcp.WithString("user", mcp.Description("JIRA user email.")),
+		mcp.WithString("project", mcp.Description("JIRA project key.")),
+	)
+}
+
+func removeLabelsToolDef() mcp.Tool {
+	return mcp.NewTool("jira_remove_labels",
+		mcp.WithDescription("Remove labels from a JIRA issue."),
+		mcp.WithString("issue_key", mcp.Required(), mcp.Description("JIRA issue key (e.g. PROJ-123).")),
+		mcp.WithString("labels", mcp.Required(), mcp.Description("Comma-separated labels to remove (e.g. 'bug,urgent').")),
+		mcp.WithString("user", mcp.Description("JIRA user email.")),
+		mcp.WithString("project", mcp.Description("JIRA project key.")),
+	)
+}
+
+func listSprintsToolDef() mcp.Tool {
+	return mcp.NewTool("jira_list_sprints",
+		mcp.WithDescription("List sprints for the project's boards. Optionally filter by board ID and sprint state."),
+		mcp.WithNumber("board_id", mcp.Description("Board ID. If omitted, lists sprints from all project boards.")),
+		mcp.WithString("state", mcp.Description("Sprint state filter: active, future, closed. Default: all states.")),
+		mcp.WithString("user", mcp.Description("JIRA user email.")),
+		mcp.WithString("project", mcp.Description("JIRA project key.")),
+	)
+}
+
+func voteIssueToolDef() mcp.Tool {
+	return mcp.NewTool("jira_vote_issue",
+		mcp.WithDescription("Add your vote to a JIRA issue."),
+		mcp.WithString("issue_key", mcp.Required(), mcp.Description("JIRA issue key (e.g. PROJ-123).")),
+		mcp.WithString("user", mcp.Description("JIRA user email.")),
+		mcp.WithString("project", mcp.Description("JIRA project key.")),
+	)
+}
+
+func unvoteIssueToolDef() mcp.Tool {
+	return mcp.NewTool("jira_unvote_issue",
+		mcp.WithDescription("Remove your vote from a JIRA issue."),
+		mcp.WithString("issue_key", mcp.Required(), mcp.Description("JIRA issue key (e.g. PROJ-123).")),
+		mcp.WithString("user", mcp.Description("JIRA user email.")),
+		mcp.WithString("project", mcp.Description("JIRA project key.")),
+	)
+}
+
 // --- Handlers ---
 
 func (h *Handlers) HandleGetIssue(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -506,4 +572,226 @@ func (h *Handlers) HandleAttachFile(ctx context.Context, req mcp.CallToolRequest
 	}
 
 	return textResult(fmt.Sprintf("File %q attached to %s.", filename, key)), nil
+}
+
+func (h *Handlers) HandleWatchIssue(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	key := getString(req, "issue_key")
+	if key == "" {
+		return errorResult("issue_key is required"), nil
+	}
+
+	cfg, err := loadJIRAConfig(req)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	client, err := jira.NewClient(cfg)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	if err := client.WatchIssue(key); err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	return textResult(fmt.Sprintf("Now watching %s.", key)), nil
+}
+
+func (h *Handlers) HandleUnwatchIssue(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	key := getString(req, "issue_key")
+	if key == "" {
+		return errorResult("issue_key is required"), nil
+	}
+
+	cfg, err := loadJIRAConfig(req)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	client, err := jira.NewClient(cfg)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	if err := client.UnwatchIssue(key); err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	return textResult(fmt.Sprintf("Stopped watching %s.", key)), nil
+}
+
+func (h *Handlers) HandleAddLabels(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	key := getString(req, "issue_key")
+	labelsStr := getString(req, "labels")
+	if key == "" || labelsStr == "" {
+		return errorResult("issue_key and labels are required"), nil
+	}
+
+	labels := parseCommaSeparated(labelsStr)
+	if len(labels) == 0 {
+		return errorResult("labels must not be empty"), nil
+	}
+
+	cfg, err := loadJIRAConfig(req)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	client, err := jira.NewClient(cfg)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	if err := client.AddLabels(key, labels); err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	return textResult(fmt.Sprintf("Labels added to %s: %s", key, strings.Join(labels, ", "))), nil
+}
+
+func (h *Handlers) HandleRemoveLabels(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	key := getString(req, "issue_key")
+	labelsStr := getString(req, "labels")
+	if key == "" || labelsStr == "" {
+		return errorResult("issue_key and labels are required"), nil
+	}
+
+	labels := parseCommaSeparated(labelsStr)
+	if len(labels) == 0 {
+		return errorResult("labels must not be empty"), nil
+	}
+
+	cfg, err := loadJIRAConfig(req)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	client, err := jira.NewClient(cfg)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	if err := client.RemoveLabels(key, labels); err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	return textResult(fmt.Sprintf("Labels removed from %s: %s", key, strings.Join(labels, ", "))), nil
+}
+
+func (h *Handlers) HandleListSprints(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	cfg, err := loadJIRAConfig(req)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	client, err := jira.NewClient(cfg)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	state := getString(req, "state")
+	boardID := int(getFloat(req, "board_id"))
+
+	var text strings.Builder
+
+	if boardID > 0 {
+		sprints, err := client.ListSprints(boardID, state)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		fmt.Fprintf(&text, "## Sprints for Board %d\n\n", boardID)
+		formatSprints(&text, sprints)
+	} else {
+		boards, err := client.ListBoards()
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		if len(boards) == 0 {
+			return textResult("No boards found for the project."), nil
+		}
+		for _, b := range boards {
+			sprints, err := client.ListSprints(b.ID, state)
+			if err != nil {
+				fmt.Fprintf(&text, "## %s (ID: %d, %s)\n\nError fetching sprints: %s\n\n", b.Name, b.ID, b.Type, err)
+				continue
+			}
+			fmt.Fprintf(&text, "## %s (ID: %d, %s)\n\n", b.Name, b.ID, b.Type)
+			formatSprints(&text, sprints)
+		}
+	}
+
+	return textResult(text.String()), nil
+}
+
+func formatSprints(text *strings.Builder, sprints []jira.Sprint) {
+	if len(sprints) == 0 {
+		text.WriteString("No sprints found.\n\n")
+		return
+	}
+	for _, s := range sprints {
+		fmt.Fprintf(text, "- **%s** (ID: %d) — %s", s.Name, s.ID, s.State)
+		if !s.StartDate.IsZero() {
+			fmt.Fprintf(text, " | %s → %s", s.StartDate.Format("2006-01-02"), s.EndDate.Format("2006-01-02"))
+		}
+		text.WriteString("\n")
+	}
+	text.WriteString("\n")
+}
+
+func (h *Handlers) HandleVoteIssue(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	key := getString(req, "issue_key")
+	if key == "" {
+		return errorResult("issue_key is required"), nil
+	}
+
+	cfg, err := loadJIRAConfig(req)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	client, err := jira.NewClient(cfg)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	if err := client.VoteIssue(key); err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	return textResult(fmt.Sprintf("Voted for %s.", key)), nil
+}
+
+func (h *Handlers) HandleUnvoteIssue(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	key := getString(req, "issue_key")
+	if key == "" {
+		return errorResult("issue_key is required"), nil
+	}
+
+	cfg, err := loadJIRAConfig(req)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	client, err := jira.NewClient(cfg)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	if err := client.UnvoteIssue(key); err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	return textResult(fmt.Sprintf("Vote removed from %s.", key)), nil
+}
+
+func parseCommaSeparated(s string) []string {
+	parts := strings.Split(s, ",")
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }

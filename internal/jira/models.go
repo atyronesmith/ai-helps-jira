@@ -81,3 +81,20 @@ type Worklog struct {
 	Started          time.Time
 	Comment          string
 }
+
+// Board represents a JIRA agile board.
+type Board struct {
+	ID   int
+	Name string
+	Type string // "scrum" or "kanban"
+}
+
+// Sprint represents a JIRA agile sprint.
+type Sprint struct {
+	ID        int
+	Name      string
+	State     string // "active", "future", "closed"
+	StartDate time.Time
+	EndDate   time.Time
+	BoardName string
+}

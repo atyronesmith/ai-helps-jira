@@ -138,6 +138,13 @@ func Run(cfg Config) error {
 	s.AddTool(addWorklogToolDef(), h.HandleAddWorklog)
 	s.AddTool(linkIssuesToolDef(), h.HandleLinkIssues)
 	s.AddTool(attachFileToolDef(), h.HandleAttachFile)
+	s.AddTool(watchIssueToolDef(), h.HandleWatchIssue)
+	s.AddTool(unwatchIssueToolDef(), h.HandleUnwatchIssue)
+	s.AddTool(addLabelsToolDef(), h.HandleAddLabels)
+	s.AddTool(removeLabelsToolDef(), h.HandleRemoveLabels)
+	s.AddTool(listSprintsToolDef(), h.HandleListSprints)
+	s.AddTool(voteIssueToolDef(), h.HandleVoteIssue)
+	s.AddTool(unvoteIssueToolDef(), h.HandleUnvoteIssue)
 
 	switch cfg.Transport {
 	case "sse":

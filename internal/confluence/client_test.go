@@ -354,9 +354,9 @@ func TestSearchCQL(t *testing.T) {
 		jsonResponse(t, w, 200, map[string]any{
 			"results": []map[string]any{
 				{
-					"id":    "44444",
-					"title": "Found Page",
-					"space": map[string]any{"key": "ENG"},
+					"id":      "44444",
+					"title":   "Found Page",
+					"space":   map[string]any{"key": "ENG"},
 					"version": map[string]any{"number": 2},
 				},
 			},

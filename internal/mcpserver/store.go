@@ -18,14 +18,14 @@ import (
 type ResultType string
 
 const (
-	ResultSummary      ResultType = "summary"
-	ResultQuery        ResultType = "query"
-	ResultDigest       ResultType = "digest"
-	ResultEnrich       ResultType = "enrich"
-	ResultCreateEpic   ResultType = "create_epic"
-	ResultWeeklyStatus ResultType = "weekly_status"
-	ResultFindSimilar           ResultType = "find_similar"
-	ResultConfluenceAnalytics   ResultType = "confluence_analytics"
+	ResultSummary             ResultType = "summary"
+	ResultQuery               ResultType = "query"
+	ResultDigest              ResultType = "digest"
+	ResultEnrich              ResultType = "enrich"
+	ResultCreateEpic          ResultType = "create_epic"
+	ResultWeeklyStatus        ResultType = "weekly_status"
+	ResultFindSimilar         ResultType = "find_similar"
+	ResultConfluenceAnalytics ResultType = "confluence_analytics"
 )
 
 // StoredResult holds a tool result for the web server.
