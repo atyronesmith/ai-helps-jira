@@ -66,16 +66,38 @@ When adding a new CLI command:
 2. Register with `rootCmd.AddCommand()` in its `init()` function
 3. Follow the existing pattern: load config, setup logging, create client, do work, format output
 
-## Container Deployment
+## MCP Setup
 
-The MCP server runs as a container for shared multi-client SSE access. All Claude Code sessions connect to the same instance.
+The recommended setup is a local binary with stdio transport:
+
+```sh
+make build
+```
+
+**`.mcp.json` for client projects:**
+```json
+{
+  "mcpServers": {
+    "jira-cli": {
+      "command": "/path/to/jira-cli",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+- After rebuilding the binary, clients must `/mcp` reconnect to discover new tools.
+
+### Container deployment (alternative)
+
+For shared multi-client SSE access where multiple Claude Code sessions connect to the same instance:
 
 ```sh
 make container-run   # Stop old → rebuild (--no-cache) → start new container
 make container-stop  # Stop and remove the container
 ```
 
-**`.mcp.json` for client projects** (use SSE, not the local binary):
+**`.mcp.json` for SSE clients:**
 ```json
 {
   "mcpServers": {
@@ -87,7 +109,5 @@ make container-stop  # Stop and remove the container
 }
 ```
 
-- Do **not** include `"oauth": {}` — it triggers Claude Code to attempt OAuth authentication against the server. The server authenticates to Atlassian using the API token from `.env`, not client-side OAuth.
-- Do **not** point `.mcp.json` at the local binary (`"command": ".../jira-cli"`) — it will be stale after container rebuilds and miss new tools.
+- Do **not** include `"oauth": {}` when connecting to a server you control — it triggers Claude Code to attempt OAuth authentication. The server authenticates to Atlassian using the API token from `.env`.
 - After `make container-run`, clients must `/mcp` reconnect to discover new tools.
-- The local binary (`jira-cli` in project root) is a build artifact only — it is in `.gitignore` and `.containerignore`. Do not rely on it for MCP.

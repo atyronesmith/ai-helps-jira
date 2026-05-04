@@ -23,9 +23,44 @@ Inspired by the [official Atlassian MCP server](https://github.com/atlassian/mcp
 
 ## Quick Start
 
-### Option A: Container image (recommended)
+### Option A: Build from source (recommended)
 
-The fastest way to get running. No Go toolchain needed. For detailed platform-specific instructions (including Fedora/Linux and macOS setup, auto-start, Ollama integration), see [docs/CONTAINER-SETUP.md](docs/CONTAINER-SETUP.md).
+Requires Go 1.25+.
+
+```sh
+git clone https://github.com/atyronesmith/ai-helps-jira.git
+cd ai-helps-jira
+cp .env.example .env   # edit with your credentials
+make build
+```
+
+Edit `.env` with your JIRA credentials (see [Creating a JIRA API Token](#creating-a-jira-api-token)):
+
+```
+JIRA_SERVER=https://yourcompany.atlassian.net
+JIRA_EMAIL=your.email@company.com
+JIRA_API_TOKEN=your-jira-api-token
+JIRA_PROJECT=PROJ
+```
+
+Then add to your project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "jira-cli": {
+      "command": "/path/to/jira-cli",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+For AI features, also configure an [LLM provider](#llm-providers) in your `.env`. See `.env.example` for full documentation of all environment variables.
+
+### Option B: Container image
+
+For shared or remote setups where multiple clients connect simultaneously. No Go toolchain needed. See [docs/CONTAINER-SETUP.md](docs/CONTAINER-SETUP.md) for detailed platform-specific instructions.
 
 ```sh
 # 1. Create a .env file with your credentials
@@ -62,32 +97,6 @@ Then add to your project's `.mcp.json`:
   }
 }
 ```
-
-See [Creating a JIRA API Token](#creating-a-jira-api-token) for how to get your token. For AI features, also configure an [LLM provider](#llm-providers) in your `.env`.
-
-### Option B: Build from source
-
-Requires Go 1.25+.
-
-```sh
-git clone https://github.com/atyronesmith/ai-helps-jira.git
-cd ai-helps-jira
-cp .env.example .env   # edit with your credentials
-make install
-```
-
-### Configure
-
-Edit `.env` with your values:
-
-```
-JIRA_SERVER=https://yourcompany.atlassian.net
-JIRA_EMAIL=your.email@company.com
-JIRA_API_TOKEN=your-jira-api-token
-JIRA_PROJECT=PROJ
-```
-
-Then configure your LLM provider (see [LLM Providers](#llm-providers) below). See `.env.example` for full documentation of all environment variables.
 
 ## Usage
 
@@ -236,9 +245,9 @@ jira-cli lookup-user jsmith
 
 The MCP server exposes all 35 tools to Claude Code and other MCP-compatible clients. There are two ways to run it:
 
-#### Option A: Local binary (stdio)
+#### Option A: Local binary (stdio, recommended)
 
-Best for a single Claude Code instance on your machine.
+The simplest setup — build once and point `.mcp.json` at the binary.
 
 1. Build the binary:
    ```sh

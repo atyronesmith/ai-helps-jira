@@ -1,6 +1,8 @@
 # Container Setup Guide
 
-Run the jira-cli MCP server as a container. No Go toolchain or source code needed — just a container runtime and your JIRA credentials.
+Run the jira-cli MCP server as a container for shared multi-client access via SSE. For single-user setups, the simpler approach is building the binary and using stdio — see the [Quick Start](../README.md#quick-start) in the README.
+
+No Go toolchain or source code needed — just a container runtime and your JIRA credentials.
 
 ## Prerequisites
 

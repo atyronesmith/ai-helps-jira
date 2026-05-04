@@ -1,20 +1,18 @@
 # HOWTO: Set Up jira-cli MCP Server for Your Project
 
-This guide is for AI coding agents (Claude Code, etc.) that need JIRA access. It covers two paths: connecting to an existing running instance, or building and running one from source.
+This guide is for AI coding agents (Claude Code, etc.) that need JIRA access. The recommended path is building the binary and using stdio transport. A container alternative is available for shared/remote setups.
 
-## Step 1: Check for a Running Instance
+## Step 1: Check for an Existing Binary
 
-First, check if a jira-cli MCP server is already running locally:
+Check if `jira-cli` is already built:
 
 ```sh
-curl -sf http://localhost:18080/healthz
+which jira-cli || ls /path/to/jira-cli
 ```
 
-If this returns `{"status":"ok"}`, a server is already running. **Ask the user if they want to use this existing instance.** If yes, skip to [Step 3: Add MCP Configuration](#step-3-add-mcp-configuration).
+If found, skip to [Step 3: Add MCP Configuration](#step-3-add-mcp-configuration).
 
-If the health check fails (connection refused), proceed to Step 2 to build and run one.
-
-## Step 2: Build and Run from Source
+## Step 2: Build from Source
 
 Clone and build the jira-cli project:
 
@@ -39,34 +37,34 @@ cp .env.example .env
 # and related vars. See .env.example for all options.
 ```
 
-### Build and start the container
+### Build the binary
 
-Requires `podman` (or `docker`). Run:
-
-```sh
-make container-run
-```
-
-This builds the container image (Red Hat UBI 9 minimal) and starts it with:
-- MCP SSE endpoint on port 8081
-- Web dashboard on port 18080
-- Persistent cache volume (`jira-cli-cache`)
-
-### Verify it's running
+Requires Go 1.25+:
 
 ```sh
-curl -sf http://localhost:18080/healthz
-# Expected: {"status":"ok"}
-
-curl -sN http://localhost:8081/sse | head -2
-# Expected:
-# event: endpoint
-# data: http://...
+make build
 ```
+
+### Container alternative
+
+If you prefer a container (for shared multi-client access), see [docs/CONTAINER-SETUP.md](CONTAINER-SETUP.md) for detailed instructions. The container provides SSE transport on port 8081 and a web dashboard on port 18080.
 
 ## Step 3: Add MCP Configuration
 
 Add to your project's `.mcp.json` (create it if it doesn't exist):
+
+```json
+{
+  "mcpServers": {
+    "jira-cli": {
+      "command": "/path/to/jira-cli",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+If using the container instead, use the SSE configuration:
 
 ```json
 {
@@ -211,16 +209,16 @@ If your project uses a different JIRA project than the default, pass `project` w
 
 ## Web Dashboard
 
-Browse `http://localhost:18080` to see rich HTML views of MCP tool results (charts, tables, Mermaid diagrams). Tools that generate dashboard views return a URL in their response.
+The MCP server starts a web dashboard on port 18080 in both stdio and SSE modes. Browse `http://localhost:18080` to see rich HTML views of tool results (charts, tables, Mermaid diagrams). Tools that generate dashboard views return a URL in their response.
 
 ## Troubleshooting
 
-**"Connection refused"** — Container isn't running. Check `podman ps`.
+**"Connection refused"** — The MCP server isn't running. For stdio: check that the binary path in `.mcp.json` is correct. For container: check `podman ps`.
 
-**"SDK auth failed" / "needs authentication"** — Claude Code is attempting OAuth discovery. Ensure your `.mcp.json` includes `"oauth": {}` to disable it. The server also handles this server-side, but both sides help.
+**"SDK auth failed" / "needs authentication"** — Claude Code is attempting OAuth discovery. Ensure your `.mcp.json` includes `"oauth": {}` to disable it (SSE only). Not needed for stdio.
 
-**"Missing required env vars"** — The container's `.env` file is incomplete. Check with the project owner.
+**"Missing required env vars"** — The `.env` file is incomplete. Check with the project owner.
 
-**Tools return errors about LLM** — AI-powered tools need an LLM provider configured in the container's environment. CRUD tools work without an LLM.
+**Tools return errors about LLM** — AI-powered tools need an LLM provider configured in `.env`. CRUD tools work without an LLM.
 
 **Stale data** — Use `refresh: true` on `jira_summary` to force a full fetch. Most tools use cached data that auto-refreshes.
