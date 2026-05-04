@@ -209,7 +209,26 @@ If your project uses a different JIRA project than the default, pass `project` w
 
 ## Web Dashboard
 
-The MCP server starts a web dashboard on port 18080 in both stdio and SSE modes. Browse `http://localhost:18080` to see rich HTML views of tool results (charts, tables, Mermaid diagrams). Tools that generate dashboard views return a URL in their response.
+The MCP server starts a web dashboard on port 18080 in both stdio and SSE modes. Browse `http://localhost:18080` to see rich HTML views of tool results. Tools that generate dashboard views return a URL in their response.
+
+### Index page
+
+The landing page (`/`) lists all stored results in reverse chronological order. Each row shows the tool type (color-coded badge), title, and timestamp. Bulk select and delete is supported.
+
+### Views by tool
+
+| Tool | View contents |
+|------|---------------|
+| `jira_summary` | Two doughnut charts (status and priority distribution). One table per board/sprint showing issue key, status, priority, and summary. Issue keys link to JIRA. |
+| `jira_query` | Original query in a blockquote, collapsible generated JQL, status/priority doughnut charts, and a results table with linked issue keys. |
+| `jira_digest` | Epic header with overall status badge (on-track/at-risk/blocked). Interactive Mermaid hierarchy diagram with pan and zoom. Collapsible tables for progress updates, blockers, and not-started items. Executive summary paragraph. |
+| `jira_enrich` | Side-by-side comparison of current vs. suggested description. Acceptance criteria list. Priority and labels comparison table. Green banner if already applied. |
+| `jira_create_epic` | Created epic key (linked to JIRA), summary, full description, acceptance criteria, priority, and labels. |
+| `jira_weekly_status` | Report header with user and date range. Sections grouped by project/epic, each with narrative bullet points describing completed work. Epic keys link to JIRA. |
+
+### Styling
+
+The dashboard uses Pico CSS with color-coded status badges (green for on-track/done, orange for at-risk/in-progress, red for blocked/to-do) and priority indicators (red for highest through green for lowest). Charts use Chart.js; hierarchy diagrams use Mermaid. The layout is responsive — two columns on desktop, single column on mobile.
 
 ## Troubleshooting
 

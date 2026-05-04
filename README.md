@@ -306,7 +306,9 @@ Ask Claude Code to run any tool, e.g.:
 Use jira_summary to show my current issues
 ```
 
-You should see 35 tools available. The web dashboard at `http://localhost:18080` shows stored results with charts and interactive views.
+You should see 35 tools available.
+
+The MCP server also starts a web dashboard at `http://localhost:18080` (in both stdio and SSE modes). It renders stored tool results as interactive HTML pages with Chart.js charts, Mermaid hierarchy diagrams, color-coded status/priority tables, and side-by-side comparisons. Six tools have dashboard views: summary, query, digest, enrich, create_epic, and weekly_status. See the [Web Dashboard](docs/HOWTO-AI-SETUP.md#web-dashboard) section for details on each view.
 
 For a more detailed setup guide (including troubleshooting), see [docs/HOWTO-AI-SETUP.md](docs/HOWTO-AI-SETUP.md).
 
