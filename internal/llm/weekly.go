@@ -22,6 +22,7 @@ type WeeklyProjectItem struct {
 	ProjectName string   `json:"project_name"`
 	IssueKey    string   `json:"issue_key"`
 	Bullets     []string `json:"bullets"`
+	Commentary  string   `json:"commentary,omitempty"`
 }
 
 const WeeklyStatusSystemPrompt = `You are a program manager writing a weekly status report from JIRA activity data.
@@ -41,12 +42,16 @@ Produce a structured weekly status report:
      - Never say "shipped" — nothing is shipped
      - Be specific: include numbers, tool names, technical details from comments
      - Each bullet should be a complete thought, 1-3 sentences
+   - Write a commentary paragraph (2-4 sentences) that provides impact analysis:
+     - What was accomplished and why it matters to the broader project
+     - Any risks, blockers, or concerns visible from the activity
+     - Recommended next actions or what should happen next
 
 3. If an issue has no parent epic, group it on its own.
 
 Respond ONLY with valid JSON (no markdown fences) with these keys:
   user_name (string - the user's display name or email),
-  projects (array of {project_name, issue_key, bullets: [string]})`
+  projects (array of {project_name, issue_key, bullets: [string], commentary: string})`
 
 // IssueWithComments pairs an issue with its relevant comments.
 type IssueWithComments struct {

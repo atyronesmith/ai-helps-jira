@@ -23,6 +23,9 @@ func WeeklyStatusToStorage(userName, jiraServer string, projects []llm.WeeklyPro
 			b.WriteString(fmt.Sprintf("      <li>%s</li>\n", escapeHTML(bullet)))
 		}
 		b.WriteString("    </ul>\n")
+		if proj.Commentary != "" {
+			b.WriteString(fmt.Sprintf("    <ac:structured-macro ac:name=\"info\"><ac:rich-text-body><p><strong>Analysis:</strong> %s</p></ac:rich-text-body></ac:structured-macro>\n", escapeHTML(proj.Commentary)))
+		}
 		b.WriteString("  </li>\n")
 		b.WriteString("</ul>\n")
 	}

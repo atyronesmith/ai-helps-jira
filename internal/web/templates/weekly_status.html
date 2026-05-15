@@ -16,6 +16,11 @@
         <li>{{.}}</li>
     {{end}}
     </ul>
+    {{if .Commentary}}
+    <blockquote style="border-left: 3px solid #1565c0; padding: 0.5em 1em; margin: 0.5em 0; background: #e3f2fd; border-radius: 4px;">
+        <strong>Analysis:</strong> {{.Commentary}}
+    </blockquote>
+    {{end}}
 </article>
 {{end}}
 {{end}}

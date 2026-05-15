@@ -280,6 +280,7 @@ func runWeeklyStatus(cmd *cobra.Command, args []string) error {
 			ProjectName: p.ProjectName,
 			IssueKey:    p.IssueKey,
 			Bullets:     p.Bullets,
+			Commentary:  p.Commentary,
 		})
 	}
 

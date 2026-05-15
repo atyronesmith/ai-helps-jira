@@ -975,6 +975,9 @@ func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolReque
 		for _, bullet := range proj.Bullets {
 			fmt.Fprintf(&text, "  * %s\n", bullet)
 		}
+		if proj.Commentary != "" {
+			fmt.Fprintf(&text, "\n  > **Analysis:** %s\n\n", proj.Commentary)
+		}
 	}
 	fmt.Fprintf(&text, "\n---\nRich dashboard: %s\n", h.viewURL(resultID))
 

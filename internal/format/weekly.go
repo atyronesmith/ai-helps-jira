@@ -18,6 +18,7 @@ type WeeklyProject struct {
 	ProjectName string
 	IssueKey    string
 	Bullets     []string
+	Commentary  string
 }
 
 // RenderWeeklyStatus formats a weekly status report as a string.
@@ -33,6 +34,9 @@ func RenderWeeklyStatus(data *WeeklyStatusData, jiraServer, outputFormat string)
 			for _, bullet := range proj.Bullets {
 				fmt.Fprintf(&b, "  - %s\n", bullet)
 			}
+			if proj.Commentary != "" {
+				fmt.Fprintf(&b, "  > %s\n", proj.Commentary)
+			}
 		}
 
 	case "text":
@@ -41,6 +45,9 @@ func RenderWeeklyStatus(data *WeeklyStatusData, jiraServer, outputFormat string)
 			fmt.Fprintf(&b, "* %s (%s — %s/browse/%s)\n", proj.ProjectName, proj.IssueKey, jiraServer, proj.IssueKey)
 			for _, bullet := range proj.Bullets {
 				fmt.Fprintf(&b, "  * %s\n", bullet)
+			}
+			if proj.Commentary != "" {
+				fmt.Fprintf(&b, "  Analysis: %s\n", proj.Commentary)
 			}
 		}
 
@@ -51,6 +58,9 @@ func RenderWeeklyStatus(data *WeeklyStatusData, jiraServer, outputFormat string)
 			fmt.Fprintf(&b, "* **%s** (%s)\n", proj.ProjectName, link)
 			for _, bullet := range proj.Bullets {
 				fmt.Fprintf(&b, "  * %s\n", bullet)
+			}
+			if proj.Commentary != "" {
+				fmt.Fprintf(&b, "\n  > **Analysis:** %s\n\n", proj.Commentary)
 			}
 		}
 	}
@@ -64,7 +74,7 @@ func DisplayWeeklyStatus(data *WeeklyStatusData, jiraServer string) {
 	pterm.DefaultBox.WithTitle("Weekly Status").Println(data.UserName)
 
 	for _, proj := range data.Projects {
-		items := make([]pterm.BulletListItem, 0, len(proj.Bullets)+1)
+		items := make([]pterm.BulletListItem, 0, len(proj.Bullets)+2)
 		items = append(items, pterm.BulletListItem{
 			Level: 0,
 			Text:  fmt.Sprintf("%s (%s)", proj.ProjectName, proj.IssueKey),
@@ -76,6 +86,9 @@ func DisplayWeeklyStatus(data *WeeklyStatusData, jiraServer string) {
 			})
 		}
 		pterm.DefaultBulletList.WithItems(items).Render()
+		if proj.Commentary != "" {
+			pterm.DefaultBox.WithTitle("Analysis").WithBoxStyle(pterm.NewStyle(pterm.FgCyan)).Println(proj.Commentary)
+		}
 	}
 	fmt.Println()
 }
