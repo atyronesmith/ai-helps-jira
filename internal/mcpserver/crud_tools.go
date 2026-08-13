@@ -208,8 +208,20 @@ func (h *Handlers) HandleGetIssue(ctx context.Context, req mcp.CallToolRequest) 
 		return errorResult(err.Error()), nil
 	}
 
+	// Look up the issue's current updated timestamp so we don't serve a
+	// stale cached detail/comments after an edit, transition, or comment
+	// changed it out from under us -- Jira bumps `updated` on all of those.
+	// If this lightweight check fails for any reason, fall back to treating
+	// the cache as untrustworthy rather than risk serving stale data.
+	var knownUpdated time.Time
+	if fresh, searchErr := client.SearchJQL(fmt.Sprintf("key = %s", key), 1); searchErr == nil && len(fresh) == 1 {
+		knownUpdated = fresh[0].Updated
+	} else {
+		knownUpdated = time.Now()
+	}
+
 	// Check detail cache first
-	detail, cached := h.cache.GetIssueDetail(key, time.Time{})
+	detail, cached := h.cache.GetIssueDetail(key, knownUpdated)
 	var links []jira.IssueLink
 
 	if cached {
@@ -263,8 +275,11 @@ func (h *Handlers) HandleGetIssue(ctx context.Context, req mcp.CallToolRequest) 
 		includeComments = v
 	}
 	if includeComments {
-		comments, _ := h.cache.GetCommentsByKeys([]string{key}, time.Time{})
-		if len(comments) == 0 {
+		var comments []jira.Comment
+		if cached {
+			comments, _ = h.cache.GetCommentsByKeys([]string{key}, time.Time{})
+		}
+		if !cached || len(comments) == 0 {
 			comments, err = client.GetComments(key)
 			if err != nil {
 				slog.Warn("failed to fetch comments", "key", key, "error", err)
