@@ -43,11 +43,11 @@ VOLUME /home/jira-cli/.jira-cli
 USER 1001
 ENV HOME=/home/jira-cli
 
-# MCP SSE port + web dashboard port
+# MCP Streamable HTTP port + web dashboard port
 EXPOSE 8081 18080
 
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
   CMD curl -sf http://localhost:18080/healthz || exit 1
 
 ENTRYPOINT ["jira-cli"]
-CMD ["mcp", "--transport", "sse", "--sse-port", "8081", "--port", "18080", "--bind", "0.0.0.0"]
+CMD ["mcp", "--transport", "streamable-http", "--sse-port", "8081", "--port", "18080", "--bind", "0.0.0.0"]

@@ -62,8 +62,8 @@ func noAuthMiddleware(next http.Handler) http.Handler {
 // Config holds MCP server configuration.
 type Config struct {
 	WebPort   int
-	Transport string // "stdio" or "sse"
-	SSEPort   int    // port for SSE transport
+	Transport string // "stdio", "sse", or "streamable-http"
+	SSEPort   int    // port for SSE / streamable-http transport
 	BindHost  string // bind address: "127.0.0.1" (default) or "0.0.0.0" (container)
 }
 
@@ -173,6 +173,30 @@ func Run(cfg Config) error {
 
 		fmt.Fprintf(os.Stderr, "MCP SSE server: %s/sse\n", baseURL)
 		slog.Info("MCP server ready", "transport", "sse", "addr", sseAddr)
+		return serveWithGracefulShutdown(srv)
+
+	case "streamable-http":
+		httpAddr := fmt.Sprintf("%s:%d", bindHost, cfg.SSEPort)
+		baseHost := bindHost
+		if baseHost == "0.0.0.0" {
+			baseHost = "localhost"
+		}
+
+		// Stateless: no session id tracking, every request is independent.
+		// Simplest fit for tool-call-only clients (e.g. Open WebUI) behind a
+		// container that may be recreated between calls.
+		mcpHTTPServer := server.NewStreamableHTTPServer(s, server.WithStateLess(true))
+
+		mux := http.NewServeMux()
+		mux.Handle("/mcp", mcpHTTPServer)
+
+		srv := &http.Server{
+			Addr:    httpAddr,
+			Handler: noAuthMiddleware(mux),
+		}
+
+		fmt.Fprintf(os.Stderr, "MCP Streamable HTTP server: http://%s:%d/mcp\n", baseHost, cfg.SSEPort)
+		slog.Info("MCP server ready", "transport", "streamable-http", "addr", httpAddr)
 		return serveWithGracefulShutdown(srv)
 
 	default: // stdio

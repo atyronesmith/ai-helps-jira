@@ -20,8 +20,11 @@ var mcpCmd = &cobra.Command{
 Also starts a local HTTP server for rich HTML dashboards.
 
 Transports:
-  stdio  Single client via stdin/stdout (default, for .mcp.json)
-  sse    Multiple clients via HTTP SSE (for containers / shared servers)
+  stdio            Single client via stdin/stdout (default, for .mcp.json)
+  sse              Multiple clients via legacy HTTP SSE (for older clients)
+  streamable-http  Multiple clients via MCP Streamable HTTP (for containers /
+                   shared servers; required by clients like Open WebUI that
+                   dropped legacy SSE support)
 
 Examples:
   # Single client (stdio) — configure in .mcp.json
@@ -30,6 +33,9 @@ Examples:
   # Multi-client (SSE) — connect via http://host:8081/sse
   jira-cli mcp --transport sse --sse-port 8081
 
+  # Multi-client (Streamable HTTP) — connect via http://host:8081/mcp
+  jira-cli mcp --transport streamable-http --sse-port 8081
+
   # In a container
   podman run -p 8081:8081 -p 18080:18080 --env-file .env jira-cli
 
@@ -37,7 +43,10 @@ Claude Code .mcp.json for stdio:
   {"mcpServers": {"jira-cli": {"command": "jira-cli", "args": ["mcp"]}}}
 
 Claude Code .mcp.json for SSE:
-  {"mcpServers": {"jira-cli": {"type": "sse", "url": "http://localhost:8081/sse", "oauth": {}}}}`,
+  {"mcpServers": {"jira-cli": {"type": "sse", "url": "http://localhost:8081/sse", "oauth": {}}}}
+
+Claude Code .mcp.json for Streamable HTTP:
+  {"mcpServers": {"jira-cli": {"type": "http", "url": "http://localhost:8081/mcp"}}}`,
 	RunE: runMCP,
 }
 
@@ -45,9 +54,9 @@ func init() {
 	mcpCmd.Flags().IntVar(&flagMCPPort, "port", 18080,
 		"Port for the local web dashboard.")
 	mcpCmd.Flags().StringVar(&flagMCPTransport, "transport", "stdio",
-		"MCP transport: stdio or sse.")
+		"MCP transport: stdio, sse, or streamable-http.")
 	mcpCmd.Flags().IntVar(&flagMCPSSEPort, "sse-port", 8081,
-		"Port for SSE transport (only used with --transport sse).")
+		"Port for SSE/streamable-http transport (only used with --transport sse|streamable-http).")
 	mcpCmd.Flags().StringVar(&flagMCPBind, "bind", "127.0.0.1",
 		"Bind address for servers. Use 0.0.0.0 for containers.")
 	rootCmd.AddCommand(mcpCmd)
