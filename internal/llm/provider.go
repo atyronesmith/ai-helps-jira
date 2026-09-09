@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -111,6 +112,10 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 func (p *VertexProvider) Complete(ctx context.Context, system, prompt string, maxTokens int) (string, error) {
 	slog.Info("vertex completion", "model", p.model, "max_tokens", maxTokens)
 
+	// Every caller of Complete parses the result as JSON, so prefill the
+	// assistant turn with "{" -- this forces Claude to continue directly
+	// into a JSON object instead of adding a prose preamble. The prefill
+	// text isn't echoed back in resp.Content, so it's re-added below.
 	resp, err := p.client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     p.model,
 		MaxTokens: int64(maxTokens),
@@ -119,17 +124,21 @@ func (p *VertexProvider) Complete(ctx context.Context, system, prompt string, ma
 		},
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
+			anthropic.NewAssistantMessage(anthropic.NewTextBlock("{")),
 		},
 	})
 	if err != nil {
-		return "", fmt.Errorf("vertex api: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("LLM request timed out (vertex, project %s, model %s): %w", p.projectID, p.model, err)
+		}
+		return "", fmt.Errorf("LLM provider unreachable (vertex, project %s, model %s): check ANTHROPIC_VERTEX_PROJECT_ID/credentials: %w", p.projectID, p.model, err)
 	}
 
 	slog.Info("vertex response", "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens)
 
 	for _, block := range resp.Content {
 		if block.Type == "text" {
-			return block.Text, nil
+			return "{" + block.Text, nil
 		}
 	}
 	return "", fmt.Errorf("no text in vertex response")
@@ -137,10 +146,18 @@ func (p *VertexProvider) Complete(ctx context.Context, system, prompt string, ma
 
 // openAIRequest is the OpenAI chat completions request format.
 type openAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []openAIMessage `json:"messages"`
-	Temperature float64         `json:"temperature"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
+	Model          string             `json:"model"`
+	Messages       []openAIMessage    `json:"messages"`
+	Temperature    float64            `json:"temperature"`
+	MaxTokens      int                `json:"max_tokens,omitempty"`
+	ResponseFormat *openAIResponseFmt `json:"response_format,omitempty"`
+}
+
+// openAIResponseFmt requests strict JSON output. Supported by OpenAI, Ollama,
+// and most OpenAI-compatible backends; every caller of Complete parses JSON,
+// so this is always set as a best-effort guard against chatty small models.
+type openAIResponseFmt struct {
+	Type string `json:"type"`
 }
 
 type openAIMessage struct {
@@ -168,9 +185,10 @@ func (p *OpenAIProvider) Complete(ctx context.Context, system, prompt string, ma
 	slog.Info("openai completion", "base_url", p.baseURL, "model", p.model, "max_tokens", maxTokens)
 
 	reqBody := openAIRequest{
-		Model:       p.model,
-		Temperature: 0,
-		MaxTokens:   maxTokens,
+		Model:          p.model,
+		Temperature:    0,
+		MaxTokens:      maxTokens,
+		ResponseFormat: &openAIResponseFmt{Type: "json_object"},
 		Messages: []openAIMessage{
 			{Role: "system", Content: system},
 			{Role: "user", Content: prompt},
@@ -194,13 +212,21 @@ func (p *OpenAIProvider) Complete(ctx context.Context, system, prompt string, ma
 
 	resp, err := p.http.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("openai api: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("LLM request timed out (%s): %w", url, err)
+		}
+		return "", fmt.Errorf("LLM provider unreachable (%s): check network connectivity and LLM_BASE_URL/OLLAMA_BASE_URL: %w", url, err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return "", fmt.Errorf("LLM authentication failed (status %d) for %s: check LLM_API_KEY: %s",
+			resp.StatusCode, url, truncateStr(string(respBody), 300))
 	}
 
 	if resp.StatusCode >= 400 {
@@ -231,18 +257,82 @@ func truncateStr(s string, n int) string {
 	return s[:n] + "..."
 }
 
-// cleanJSON strips markdown code fences from LLM responses that wrap JSON
-// in ```json ... ``` despite being told not to.
+// cleanJSON extracts a JSON object from an LLM response, tolerating markdown
+// code fences and chatty prose before/after the JSON that smaller models add
+// despite being told to respond with JSON only.
 func cleanJSON(s string) string {
 	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "```") {
-		if idx := strings.Index(s, "\n"); idx >= 0 {
-			s = s[idx+1:]
-		}
-		if strings.HasSuffix(s, "```") {
-			s = s[:len(s)-3]
-		}
-		s = strings.TrimSpace(s)
+
+	if fenced, ok := extractFencedBlock(s); ok {
+		s = fenced
+	}
+
+	if strings.HasPrefix(s, "{") {
+		return s
+	}
+
+	if obj := extractJSONObject(s); obj != "" {
+		return obj
 	}
 	return s
+}
+
+// extractFencedBlock returns the contents of the first ``` ... ``` block
+// found anywhere in s, skipping an optional language tag on the opening line.
+func extractFencedBlock(s string) (string, bool) {
+	start := strings.Index(s, "```")
+	if start == -1 {
+		return "", false
+	}
+	rest := s[start+3:]
+	if nl := strings.IndexByte(rest, '\n'); nl != -1 {
+		tag := strings.TrimSpace(rest[:nl])
+		if !strings.ContainsAny(tag, "{}\"") {
+			rest = rest[nl+1:]
+		}
+	}
+	end := strings.Index(rest, "```")
+	if end == -1 {
+		return "", false
+	}
+	return strings.TrimSpace(rest[:end]), true
+}
+
+// extractJSONObject finds the first balanced {...} object in s, ignoring any
+// surrounding prose. It tracks string literals so braces inside string values
+// don't throw off the depth count.
+func extractJSONObject(s string) string {
+	start := strings.IndexByte(s, '{')
+	if start == -1 {
+		return ""
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return s[start : i+1]
+			}
+		}
+	}
+	return ""
 }
