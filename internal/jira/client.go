@@ -2,7 +2,9 @@ package jira
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -56,13 +58,23 @@ func (c *Client) doRequest(method, path string, body any, out any) error {
 	slog.Debug("http request", "method", method, "path", path)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("http %s %s: %w", method, path, err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("JIRA API request timed out (%s %s): check network connectivity and JIRA_BASE_URL: %w", method, path, err)
+		}
+		return fmt.Errorf("JIRA API unreachable (%s %s): check network connectivity and JIRA_BASE_URL: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		slog.Error("JIRA API auth error", "status", resp.StatusCode, "path", path,
+			"body", truncate(string(respBody), 200))
+		return fmt.Errorf("JIRA authentication failed (status %d) for %s %s: check JIRA_API_TOKEN/JIRA_EMAIL env vars or secrets files: %s",
+			resp.StatusCode, method, path, truncate(string(respBody), 200))
 	}
 
 	if resp.StatusCode >= 400 {
@@ -313,6 +325,54 @@ func (c *Client) getKanbanIssues(board apiBoard) *BoardInfo {
 		BoardType: "kanban",
 		Issues:    issues,
 	}
+}
+
+// --- Projects (v3 API) ---
+
+// apiProject mirrors the fields of the /rest/api/3/project array element that
+// the cache and the natural-language normalizer need.
+type apiProject struct {
+	ID             int    `json:"id"`
+	Key            string `json:"key"`
+	Name           string `json:"name"`
+	ProjectTypeKey string `json:"projectTypeKey"`
+}
+
+// ListProjects fetches every project in the tenant. The v3 project endpoint
+// returns a bare JSON array and is paginated via startAt/maxResults, so this
+// loops startAt until a short (or empty) page is returned, de-duplicating by
+// key. A hard page cap guards against a misbehaving server that never returns a
+// short page.
+func (c *Client) ListProjects() ([]Project, error) {
+	const (
+		pageSize = 100
+		maxPages = 50 // 5,000 projects, far beyond any real tenant
+	)
+	seen := make(map[string]struct{})
+	var out []Project
+	for page := 0; page < maxPages; page++ {
+		startAt := page * pageSize
+		path := fmt.Sprintf("/rest/api/3/project?maxResults=%d&startAt=%d", pageSize, startAt)
+		var batch []apiProject
+		if err := c.doRequest("GET", path, nil, &batch); err != nil {
+			return nil, fmt.Errorf("list projects (startAt=%d): %w", startAt, err)
+		}
+		for _, p := range batch {
+			if p.Key == "" {
+				continue
+			}
+			if _, dup := seen[p.Key]; dup {
+				continue
+			}
+			seen[p.Key] = struct{}{}
+			out = append(out, Project{Key: p.Key, Name: p.Name, ProjectType: p.ProjectTypeKey})
+		}
+		if len(batch) < pageSize {
+			break
+		}
+	}
+	slog.Info("listed projects", "count", len(out))
+	return out, nil
 }
 
 // --- Create Issue (v3 API) ---

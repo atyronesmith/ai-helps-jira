@@ -2,6 +2,7 @@ package jira
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1300,6 +1301,43 @@ func TestAPIError(t *testing.T) {
 	}
 }
 
+func TestAPIError_Unauthorized(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"errorMessages":["Unauthorized"]}`))
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	_, err := c.GetIssue("TEST-1")
+	if err == nil {
+		t.Fatal("expected error for 401 response")
+	}
+	if !strings.Contains(err.Error(), "authentication failed") {
+		t.Errorf("error should mention authentication failure, got: %s", err.Error())
+	}
+	if !strings.Contains(err.Error(), "JIRA_API_TOKEN") {
+		t.Errorf("error should mention JIRA_API_TOKEN, got: %s", err.Error())
+	}
+}
+
+func TestAPIError_Unreachable(t *testing.T) {
+	c := &Client{
+		http:    &http.Client{},
+		base:    "http://127.0.0.1:1", // nothing listens here
+		email:   "test@example.com",
+		token:   "test-token",
+		project: "TEST",
+	}
+	_, err := c.GetIssue("TEST-1")
+	if err == nil {
+		t.Fatal("expected error for unreachable server")
+	}
+	if !strings.Contains(err.Error(), "unreachable") {
+		t.Errorf("error should mention unreachable, got: %s", err.Error())
+	}
+}
+
 func TestAPIError_ServerError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
@@ -1391,5 +1429,111 @@ func TestTruncate(t *testing.T) {
 	}
 	if got := truncate("hello world", 5); got != "hello..." {
 		t.Errorf("expected 'hello...', got %q", got)
+	}
+}
+
+// --- Projects (v3 API) ---
+
+// ListProjects returns a single, short page verbatim, de-duplicating by key and
+// skipping blank keys, and stops after the first short page.
+func TestListProjects_SinglePage(t *testing.T) {
+	var seenStartAt []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/api/3/project" {
+			http.NotFound(w, r)
+			return
+		}
+		seenStartAt = append(seenStartAt, r.URL.Query().Get("startAt"))
+		jsonResponse(t, w, http.StatusOK, []map[string]any{
+			{"key": "SUP", "name": "Support", "projectTypeKey": "serviceDesks"},
+			{"key": "ENG", "name": "Engineering", "projectTypeKey": "software"},
+			{"key": "SUP", "name": "Support Dup", "projectTypeKey": "serviceDesks"}, // dup key
+			{"key": "", "name": "No Key"},                                           // skipped
+		})
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	projects, err := c.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(projects) != 2 {
+		t.Fatalf("ListProjects returned %d projects, want 2 (dup + blank dropped)", len(projects))
+	}
+	byKey := map[string]Project{}
+	for _, p := range projects {
+		byKey[p.Key] = p
+	}
+	if byKey["SUP"].Name != "Support" || byKey["ENG"].Name != "Engineering" {
+		t.Errorf("unexpected projects: %v", byKey)
+	}
+	if len(seenStartAt) != 1 {
+		t.Errorf("project endpoint called %d times, want 1 (short page stops the loop)", len(seenStartAt))
+	}
+}
+
+// ListProjects paginates: a full page (maxResults) forces another request, and
+// results are de-duplicated across pages by key.
+func TestListProjects_Paginates(t *testing.T) {
+	const pageSize = 100
+	page0 := make([]map[string]any, 0, pageSize)
+	for i := 0; i < pageSize; i++ {
+		page0 = append(page0, map[string]any{
+			"key":            fmt.Sprintf("P%03d", i),
+			"name":           fmt.Sprintf("Project %d", i),
+			"projectTypeKey": "software",
+		})
+	}
+	page1 := []map[string]any{
+		{"key": "P100", "name": "Project 100", "projectTypeKey": "software"},
+		{"key": "P000", "name": "Duplicate", "projectTypeKey": "software"}, // dup across pages
+		{"key": "P101", "name": "Project 101", "projectTypeKey": "serviceDesks"},
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startAt := r.URL.Query().Get("startAt")
+		if startAt == "0" {
+			jsonResponse(t, w, http.StatusOK, page0)
+			return
+		}
+		jsonResponse(t, w, http.StatusOK, page1)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	projects, err := c.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	// 100 distinct on page 0, plus P100 and P101 on page 1 (P000 dup dropped).
+	if len(projects) != 102 {
+		t.Fatalf("ListProjects returned %d projects, want 102", len(projects))
+	}
+	byKey := map[string]Project{}
+	for _, p := range projects {
+		byKey[p.Key] = p
+	}
+	if _, ok := byKey["P100"]; !ok {
+		t.Error("P100 from the second page is missing")
+	}
+	if _, ok := byKey["P101"]; !ok {
+		t.Error("P101 from the second page is missing")
+	}
+	if byKey["P000"].Name != "Project 0" {
+		t.Errorf("P000 dedup failed: got %q, want %q", byKey["P000"].Name, "Project 0")
+	}
+}
+
+// A server error propagates out of ListProjects.
+func TestListProjects_Error(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(t, w, http.StatusInternalServerError, map[string]any{"errorMessages": []string{"boom"}})
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	if _, err := c.ListProjects(); err == nil {
+		t.Fatal("expected an error for a 500 response")
 	}
 }

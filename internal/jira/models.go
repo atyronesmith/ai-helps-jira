@@ -98,3 +98,15 @@ type Sprint struct {
 	EndDate   time.Time
 	BoardName string
 }
+
+// Project represents a JIRA project. Key is the short identifier used in JQL
+// (e.g. "SUP"); Name is the human display name (e.g. "Support") that the
+// natural-language normalizer folds into the project-key vocabulary so a query
+// like "in Support" resolves to "project = SUP" without a JIRA round-trip.
+// ProjectType is the JIRA projectTypeKey ("software", "serviceDesks", ...),
+// retained for completeness but unused by the normalizer.
+type Project struct {
+	Key         string
+	Name        string
+	ProjectType string
+}
