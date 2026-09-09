@@ -240,6 +240,7 @@ func (h *Handlers) HandleGetIssue(ctx context.Context, req mcp.CallToolRequest) 
 		}
 	}
 
+	var commentsErr error
 	var text strings.Builder
 	fmt.Fprintf(&text, "## %s: %s\n\n", detail.Key, detail.Summary)
 	fmt.Fprintf(&text, "- **Type:** %s\n", detail.IssueType)
@@ -280,9 +281,9 @@ func (h *Handlers) HandleGetIssue(ctx context.Context, req mcp.CallToolRequest) 
 			comments, _ = h.cache.GetCommentsByKeys([]string{key}, time.Time{})
 		}
 		if !cached || len(comments) == 0 {
-			comments, err = client.GetComments(key)
-			if err != nil {
-				slog.Warn("failed to fetch comments", "key", key, "error", err)
+			comments, commentsErr = client.GetComments(key)
+			if commentsErr != nil {
+				slog.Warn("failed to fetch comments", "key", key, "error", commentsErr)
 			} else if len(comments) > 0 {
 				h.cache.UpsertComments(comments)
 			}
@@ -292,6 +293,8 @@ func (h *Handlers) HandleGetIssue(ctx context.Context, req mcp.CallToolRequest) 
 			for _, c := range comments {
 				fmt.Fprintf(&text, "\n**%s** (%s):\n%s\n", c.AuthorName, c.Created.Format("2006-01-02 15:04"), c.Body)
 			}
+		} else if commentsErr != nil {
+			fmt.Fprintf(&text, "\n### Comments\n_(comments unavailable: %s)_\n", commentsErr.Error())
 		}
 	}
 

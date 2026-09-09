@@ -17,7 +17,7 @@ IMAGE     := jira-cli
 CONTAINER := jira-cli-mcp
 
 .PHONY: all build clean install uninstall test lint fmt vet tidy run \
-        release check restart-mcp container container-run container-stop \
+        release check restart-mcp container container-build container-run container-stop \
         container-scan container-sign container-sbom help
 
 all: check build  ## Run checks then build
@@ -77,8 +77,9 @@ restart-mcp: build  ## Rebuild and restart the MCP server
 container:  ## Build container image
 	podman build --format docker -t $(IMAGE) .
 
-container-run: container-stop  ## Run MCP server in container (SSE on :8081, dashboard on :18080)
+container-build:   ## Rebuild container image with --no-cache
 	podman build --no-cache --format docker -t $(IMAGE) .
+container-run: container-stop container-build  ## Run MCP server in container (SSE on :8081, dashboard on :18080)
 	podman run -d --name $(CONTAINER) \
 		-p 8081:8081 -p 18080:18080 \
 		-v jira-cli-cache:/home/jira-cli/.jira-cli:Z \
