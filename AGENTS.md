@@ -78,7 +78,7 @@ make build
 ```json
 {
   "mcpServers": {
-    "jira-cli": {
+    "jira": {
       "command": "/path/to/jira-cli",
       "args": ["mcp"]
     }
@@ -101,7 +101,7 @@ make container-stop  # Stop and remove the container
 ```json
 {
   "mcpServers": {
-    "jira-cli": {
+    "jira": {
       "type": "sse",
       "url": "http://localhost:8081/sse"
     }

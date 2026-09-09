@@ -98,8 +98,11 @@ func Run(cfg Config) error {
 	}
 
 	// Create MCP server
+	// Name must match the "jira" key clients use in their MCP config (e.g. Codex's
+	// mcp_servers.jira): some clients namespace tools by this self-reported name
+	// rather than the config key, so a mismatch causes "unsupported call" errors.
 	s := server.NewMCPServer(
-		"jira-cli",
+		"jira",
 		"1.0.0",
 		server.WithToolCapabilities(false),
 	)

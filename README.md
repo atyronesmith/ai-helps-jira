@@ -7,7 +7,7 @@ Inspired by the [official Atlassian MCP server](https://github.com/atlassian/mcp
 ## Features
 
 - **Daily Summary** — Pull assigned issues from boards (Scrum sprints + Kanban) and display in terminal with color-coded status/priority. Outputs markdown (GitHub-flavored or Slack-compatible).
-- **Natural Language Search** — Describe what you want in plain English; an LLM translates it to JQL and executes the search.
+- **Natural Language Search** — Describe what you want in plain English; a deterministic parser translates it to JQL (an LLM handles complex queries it cannot), and the search runs.
 - **Digest Reports** — Walk issue hierarchy (Initiative → Feature → Epic), fetch recent comments, and generate executive progress digests with AI.
 - **Ticket Enrichment** — Fill in sparse tickets with AI-generated descriptions, acceptance criteria, labels, and priority suggestions.
 - **Weekly Status** — Generate formatted weekly status reports from JIRA activity, optionally post to Confluence.
@@ -48,7 +48,7 @@ Then add to your project's `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "jira-cli": {
+    "jira": {
       "command": "/path/to/jira-cli",
       "args": ["mcp"]
     }
@@ -89,7 +89,7 @@ Then add to your project's `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "jira-cli": {
+    "jira": {
       "type": "sse",
       "url": "http://localhost:8081/sse",
       "oauth": {}
@@ -258,7 +258,7 @@ The simplest setup — build once and point `.mcp.json` at the binary.
    ```json
    {
      "mcpServers": {
-       "jira-cli": {
+       "jira": {
          "command": "/path/to/jira-cli",
          "args": ["mcp"]
        }
@@ -287,7 +287,7 @@ Best for shared or remote setups where multiple clients connect simultaneously.
    ```json
    {
      "mcpServers": {
-       "jira-cli": {
+       "jira": {
          "type": "sse",
          "url": "http://localhost:8081/sse",
          "oauth": {}
@@ -319,8 +319,8 @@ For a more detailed setup guide (including troubleshooting), see [docs/HOWTO-AI-
 | Tool | Description |
 |------|-------------|
 | `jira_summary` | Daily summary of assigned issues and sprint info |
-| `jira_query` | Natural language search translated to JQL |
-| `jira_digest` | Executive digest for Features/Initiatives |
+| `jira_query` | Natural language search; deterministic parser first, LLM fallback for complex queries |
+| `jira_digest` | Executive digest for Features/Initiatives; natural-language issues translated to JQL (deterministic parser first, LLM fallback) |
 | `jira_enrich` | AI-generated enrichment for sparse tickets |
 | `jira_weekly_status` | Weekly status report with optional Confluence posting |
 | `jira_create_epic` | LLM-assisted EPIC creation |

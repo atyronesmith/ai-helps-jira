@@ -56,7 +56,7 @@ Add to your project's `.mcp.json` (create it if it doesn't exist):
 ```json
 {
   "mcpServers": {
-    "jira-cli": {
+    "jira": {
       "command": "/path/to/jira-cli",
       "args": ["mcp"]
     }
@@ -69,7 +69,7 @@ If using the container instead, use the SSE configuration:
 ```json
 {
   "mcpServers": {
-    "jira-cli": {
+    "jira": {
       "type": "sse",
       "url": "http://localhost:8081/sse",
       "oauth": {}

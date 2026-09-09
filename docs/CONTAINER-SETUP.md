@@ -138,7 +138,7 @@ Create a `.mcp.json` file in your project directory (or home directory for globa
 ```json
 {
   "mcpServers": {
-    "jira-cli": {
+    "jira": {
       "type": "sse",
       "url": "http://localhost:8081/sse",
       "oauth": {}
