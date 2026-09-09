@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 
@@ -22,8 +23,9 @@ var (
 var queryCmd = &cobra.Command{
 	Use:   "query [natural language query]",
 	Short: "Search JIRA issues using natural language",
-	Long: `Translate a natural language query into JQL using an LLM,
-execute the search against JIRA, and display matching issues.
+	Long: `Translate a natural language query into JQL (a deterministic parser
+handles common queries; an LLM handles the complex ones it cannot), then
+execute the search against JIRA and display matching issues.
 
 Examples:
   jira-cli query "show me all critical bugs from last week"
@@ -52,9 +54,23 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	naturalQuery := args[0]
 	slog.Info("starting query", "input", naturalQuery)
 
-	// Step 1: LLM translates natural language to JQL
+	// Open the cache once and reuse it for the project-list warm-up and the
+	// result cache below. A warm-up never fails a query, so a cache-open error
+	// is logged and the query proceeds with the env-only project vocabulary.
+	var db *cache.Cache
+	if c, err := cache.Open(); err != nil {
+		slog.Warn("failed to open cache", "error", err)
+	} else {
+		db = c
+		defer c.Close()
+	}
+
+	// Step 1: translate the query to JQL -- a deterministic parser first, LLM
+	// fallback for anything it cannot parse -- folding the tenant's cached
+	// project list so human names like "Support" resolve to "SUP".
 	spinner := format.StatusPrinter("Translating query to JQL...")
-	result, err := llm.GenerateJQL(cfg, naturalQuery)
+	projects := fetchProjectList(cfg, db)
+	result, err := llm.GenerateJQLWithProjects(context.Background(), cfg, naturalQuery, projects)
 	spinner.Stop()
 	if err != nil {
 		return fmt.Errorf("failed to generate JQL: %w", err)
@@ -77,15 +93,9 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 3: Cache results
-	if len(issues) > 0 {
-		db, err := cache.Open()
-		if err != nil {
-			slog.Warn("failed to open cache for query results", "error", err)
-		} else {
-			if err := db.UpsertIssues(cfg.JiraProject, issues); err != nil {
-				slog.Warn("failed to cache query results", "error", err)
-			}
-			db.Close()
+	if db != nil && len(issues) > 0 {
+		if err := db.UpsertIssues(cfg.JiraProject, issues); err != nil {
+			slog.Warn("failed to cache query results", "error", err)
 		}
 	}
 

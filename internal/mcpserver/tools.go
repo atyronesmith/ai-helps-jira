@@ -30,11 +30,70 @@ type Handlers struct {
 	cache    *cache.Cache
 	webPort  int
 	bindHost string
+
+	// jqlCache memoizes the expensive FallbackEngine (and its lazily constructed
+	// LLM provider) by provider signature, so the query/digest seams pay the
+	// provider-setup cost (notably Vertex auth) at most once instead of on every
+	// request. NewHandlers wires the seams below through it; a nil cache leaves
+	// the seams unwired.
+	jqlCache *llm.TranslatorCache
+
+	// translate and digestTranslate are the natural-language→JQL functions used
+	// by the query and digest handlers. NewHandlers wires them through jqlCache to the tenant's
+	// fetched+cached project list (so human names like "Support" resolve to "SUP"
+	// without a per-query JIRA round-trip), calling
+	// llm.GenerateJQLWithProjects / llm.GenerateJQLForDigestWithProjects. Tests
+	// override them to stub translation without a fetch or a real LLM.
+	translate       func(ctx context.Context, cfg *config.Config, query string) (*llm.QueryResult, error)
+	digestTranslate func(ctx context.Context, cfg *config.Config, query string) (*llm.QueryResult, error)
 }
 
-// NewHandlers creates a new handler set.
+// NewHandlers creates a new handler set. The query and digest handlers translate
+// natural language to JQL through translate/digestTranslate, which NewHandlers
+// wires to the tenant's fetched+cached project list (so human project names
+// resolve without a per-query JIRA round-trip) through a shared TranslatorCache
+// that memoizes the expensive FallbackEngine by provider signature, so the
+// provider-setup cost (notably Vertex auth) is paid at most once instead of on
+// every request. projectList warms the SQLite cache once and reuses it while it
+// is fresh. Tests override the two seams to stub translation without a fetch.
 func NewHandlers(store *ResultStore, db *cache.Cache, webPort int, bindHost string) *Handlers {
-	return &Handlers{store: store, cache: db, webPort: webPort, bindHost: bindHost}
+	h := &Handlers{
+		store:    store,
+		cache:    db,
+		webPort:  webPort,
+		bindHost: bindHost,
+		// One cache for the handler set's lifetime: both translation seams
+		// route through it so the FallbackEngine is built once per provider
+		// configuration rather than per request.
+		jqlCache: llm.NewTranslatorCache(),
+	}
+	// The seams fold the tenant's fetched+cached project list into translation
+	// while the shared cache memoizes the engine. Tests override these.
+	h.translate = func(ctx context.Context, cfg *config.Config, query string) (*llm.QueryResult, error) {
+		return h.jqlCache.GenerateJQL(ctx, cfg, query, projectList(db, cfg))
+	}
+	h.digestTranslate = func(ctx context.Context, cfg *config.Config, query string) (*llm.QueryResult, error) {
+		return h.jqlCache.GenerateJQLForDigest(ctx, cfg, query, projectList(db, cfg))
+	}
+	return h
+}
+
+// projectList resolves the tenant's project list for natural-language translation
+// through the shared cache.WarmupProjects helper, which prefers a fresh cached copy
+// and only touches the network on a cold or stale cache. It is best-effort: a nil
+// cache, a failed client build, or a fetch error degrades to whatever the cache
+// already has -- a stale copy when warm, or an empty slice otherwise -- which the
+// translator folds into its env-only vocabulary, so a warm-up never fails a query.
+// The fetcher is built lazily inside FetchProjects, so a fresh cache keeps the
+// per-query hot path network- and client-construction-free.
+func projectList(c *cache.Cache, cfg *config.Config) []jira.Project {
+	return cache.WarmupProjects(c, func() (cache.ProjectFetcher, error) {
+		client, err := jira.NewClient(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return client, nil
+	}, cache.DefaultProjectTTL)
 }
 
 func (h *Handlers) viewURL(id string) string {
@@ -59,7 +118,7 @@ func summaryToolDef() mcp.Tool {
 
 func queryToolDef() mcp.Tool {
 	return mcp.NewTool("jira_query",
-		mcp.WithDescription("Search JIRA using natural language. Translates to JQL via LLM, executes, returns results with rich HTML view."),
+		mcp.WithDescription("Search JIRA using natural language. Translates to JQL (deterministic parser first, LLM fallback for complex queries), executes, returns results with rich HTML view."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Natural language query (e.g. 'show me all critical bugs from last week').")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
@@ -69,8 +128,8 @@ func queryToolDef() mcp.Tool {
 
 func digestToolDef() mcp.Tool {
 	return mcp.NewTool("jira_digest",
-		mcp.WithDescription("Generate executive digest for Features/Initiatives. Walks hierarchy, fetches comments, produces AI summary. Returns text + rich dashboard URL."),
-		mcp.WithString("issues", mcp.Required(), mcp.Description("Space-separated issue keys (e.g. 'FEAT-123 FEAT-456') or natural language query.")),
+		mcp.WithDescription("Generate executive digest for Features/Initiatives. Walks hierarchy, fetches comments, produces AI summary. Natural-language issues are translated to JQL (deterministic parser first, LLM fallback). Returns text + rich dashboard URL."),
+		mcp.WithString("issues", mcp.Required(), mcp.Description("Space-separated issue keys (e.g. 'FEAT-123 FEAT-456') or a natural language query.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
 		mcp.WithNumber("days", mcp.Description("Include comments from last N days. Default: since last run or 7 days.")),
@@ -445,11 +504,11 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 	slog.Info("query", "input", naturalQuery)
 
 	// Translate to JQL
-	result, err := llm.GenerateJQL(cfg, naturalQuery)
+	result, err := h.translate(ctx, cfg, naturalQuery)
 	if err != nil {
 		return errorResult(fmt.Sprintf("JQL generation failed: %v", err)), nil
 	}
-	slog.Info("JQL generated", "jql", result.JQL)
+	slog.Info("JQL generated", "jql", result.JQL, "route", result.Route)
 
 	// Execute search
 	client, err := jira.NewClient(cfg)
@@ -470,6 +529,7 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 	// Store for web
 	resultID := h.store.Save(ResultQuery, fmt.Sprintf("Query: %s", naturalQuery), &QueryResultData{
 		Query:      naturalQuery,
+		Route:      result.Route,
 		JQL:        result.JQL,
 		Issues:     issues,
 		User:       cfg.Assignee(),
@@ -488,6 +548,9 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 		for _, issue := range issues {
 			fmt.Fprintf(&text, "- [%s](%s/browse/%s) [%s] (%s) %s\n",
 				issue.Key, cfg.JiraServer, issue.Key, issue.Status, issue.Priority, issue.Summary)
+		}
+		if len(issues) == maxResults {
+			fmt.Fprintf(&text, "\n_Hit the max_results cap (%d) — there may be more matching issues not shown. Re-run with a higher max_results or a narrower query._\n", maxResults)
 		}
 	}
 	fmt.Fprintf(&text, "\n---\nRich dashboard: %s\n", h.viewURL(resultID))
@@ -533,12 +596,12 @@ func (h *Handlers) HandleDigest(ctx context.Context, req mcp.CallToolRequest) (*
 		naturalQuery := strings.Join(args, " ")
 		queryKey = "nl:" + naturalQuery
 
-		result, err := llm.GenerateJQL(cfg, naturalQuery)
+		result, err := h.digestTranslate(ctx, cfg, naturalQuery)
 		if err != nil {
 			return errorResult(fmt.Sprintf("JQL generation failed: %v", err)), nil
 		}
 		nlDays = result.Days
-		slog.Info("digest JQL", "jql", result.JQL, "days", result.Days)
+		slog.Info("digest JQL", "jql", result.JQL, "days", result.Days, "route", result.Route)
 
 		client, err := jira.NewClient(cfg)
 		if err != nil {
@@ -575,7 +638,7 @@ func (h *Handlers) HandleDigest(ctx context.Context, req mcp.CallToolRequest) (*
 	// Run digest for each key and aggregate results
 	var text strings.Builder
 	for _, key := range issueKeys {
-		result, err := h.runSingleDigest(cfg, db, key, since, cacheOnly)
+		result, err := h.runSingleDigest(ctx, cfg, db, key, since, cacheOnly)
 		if err != nil {
 			fmt.Fprintf(&text, "**%s**: Error: %v\n\n", key, err)
 			slog.Error("digest error", "key", key, "error", err)
@@ -629,7 +692,7 @@ func (h *Handlers) HandleDigest(ctx context.Context, req mcp.CallToolRequest) (*
 }
 
 // runSingleDigest processes one issue key for digest.
-func (h *Handlers) runSingleDigest(cfg *config.Config, db *cache.Cache, issueKey string, since time.Time, cacheOnly bool) (*DigestResultData, error) {
+func (h *Handlers) runSingleDigest(ctx context.Context, cfg *config.Config, db *cache.Cache, issueKey string, since time.Time, cacheOnly bool) (*DigestResultData, error) {
 	slog.Info("digest", "key", issueKey, "since", since)
 
 	var parent *jira.IssueDetail
@@ -668,7 +731,7 @@ func (h *Handlers) runSingleDigest(cfg *config.Config, db *cache.Cache, issueKey
 	}
 
 	// Generate digest with LLM
-	digest, err := llm.GenerateDigest(cfg, parent, links, allComments)
+	digest, err := llm.GenerateDigest(ctx, cfg, parent, links, allComments)
 	if err != nil {
 		return nil, err
 	}

@@ -2,6 +2,10 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +14,8 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/cache"
+	"github.com/atyronesmith/ai-helps-jira/internal/config"
+	"github.com/atyronesmith/ai-helps-jira/internal/llm"
 )
 
 // makeRequest builds a CallToolRequest with the given arguments.
@@ -731,5 +737,273 @@ func assertContains(t *testing.T, s, substr string) {
 	t.Helper()
 	if !strings.Contains(s, substr) {
 		t.Errorf("string %q does not contain %q", s, substr)
+	}
+}
+
+// --- Query / digest handler translation tests ---
+//
+// These pin the Phase-4 integration: the query and digest handlers route their
+// natural-language input through Handlers.translate / Handlers.digestTranslate
+// (stubbed here so no real LLM is invoked), then feed the generated JQL into the
+// JIRA search. jqlSearchServer stands in for a live JIRA so a test can assert the
+// translated JQL actually reached the search call.
+
+// jqlSearchServer returns an httptest server that answers a POST to
+// /rest/api/3/search/jql, recording the received JQL into *recorded.
+func jqlSearchServer(t *testing.T, issues []map[string]any, recorded *string) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/rest/api/3/search/jql" {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			JQL string `json:"jql"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			*recorded = req.JQL
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"issues": issues, "total": len(issues)})
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// sampleJQLIssues builds the /search/jql response shape the client expects.
+func sampleJQLIssues(keys ...string) []map[string]any {
+	statuses := []string{"Open", "In Progress"}
+	priorities := []string{"High", "Medium"}
+	issues := make([]map[string]any, 0, len(keys))
+	for i, key := range keys {
+		issues = append(issues, map[string]any{
+			"key": key,
+			"fields": map[string]any{
+				"summary":  "Summary for " + key,
+				"status":   map[string]any{"name": statuses[i%len(statuses)]},
+				"priority": map[string]any{"name": priorities[i%len(priorities)]},
+				"updated":  "2026-01-15T10:00:00.000+0000",
+				"assignee": map[string]any{"emailAddress": "alice@example.com"},
+			},
+		})
+	}
+	return issues
+}
+
+// A translator error must surface as an error result, not a panic or an empty
+// success.
+func TestHandleQuery_TranslationErrorSurfaces(t *testing.T) {
+	h := newTestHandlers(t)
+	setTestJIRAEnv(t)
+
+	h.translate = func(_ context.Context, _ *config.Config, _ string) (*llm.QueryResult, error) {
+		return nil, errors.New("translation boom")
+	}
+
+	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{"query": "my open bugs"}))
+	if err != nil {
+		t.Fatalf("HandleQuery returned err: %v", err)
+	}
+	assertIsError(t, res)
+	assertContains(t, resultText(res), "JQL generation failed")
+}
+
+// The happy path: the natural query is forwarded to the translator, the returned
+// JQL drives the JIRA search, and the route/JQL/issues are persisted for the web
+// view.
+func TestHandleQuery_FastPathDrivesSearchAndStores(t *testing.T) {
+	h := newTestHandlers(t)
+	setTestJIRAEnv(t)
+
+	var recorded string
+	ts := jqlSearchServer(t, sampleJQLIssues("TEST-1", "TEST-2"), &recorded)
+	t.Setenv("JIRA_SERVER", ts.URL)
+
+	var gotQuery string
+	h.translate = func(_ context.Context, _ *config.Config, query string) (*llm.QueryResult, error) {
+		gotQuery = query
+		return &llm.QueryResult{JQL: "project = TEST AND status = Open", Route: "fast_path"}, nil
+	}
+
+	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{"query": "my open bugs in TEST"}))
+	if err != nil {
+		t.Fatalf("HandleQuery returned err: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(res))
+	}
+
+	if gotQuery != "my open bugs in TEST" {
+		t.Errorf("translator received query %q, want %q", gotQuery, "my open bugs in TEST")
+	}
+	// The translated JQL (not the raw query) must reach the JIRA search.
+	if recorded != "project = TEST AND status = Open" {
+		t.Errorf("JIRA search received JQL %q, want the translated JQL", recorded)
+	}
+
+	list := h.store.List()
+	if len(list) != 1 {
+		t.Fatalf("expected 1 stored result, got %d", len(list))
+	}
+	data, ok := list[0].Data.(*QueryResultData)
+	if !ok {
+		t.Fatalf("stored data type = %T, want *QueryResultData", list[0].Data)
+	}
+	if data.Route != "fast_path" {
+		t.Errorf("stored route = %q, want fast_path", data.Route)
+	}
+	if data.JQL != "project = TEST AND status = Open" {
+		t.Errorf("stored JQL = %q, want the translated JQL", data.JQL)
+	}
+	if len(data.Issues) != 2 {
+		t.Errorf("stored issues = %d, want 2", len(data.Issues))
+	}
+
+	text := resultText(res)
+	assertContains(t, text, "project = TEST AND status = Open")
+	assertContains(t, text, "TEST-1")
+	assertContains(t, text, "TEST-2")
+	// Two issues are well under the default 50 cap, so no cap warning.
+	if strings.Contains(text, "max_results cap") {
+		t.Errorf("unexpected max_results cap warning:\n%s", text)
+	}
+}
+
+// When the search returns exactly maxResults issues the handler emits the cap
+// warning so the caller knows results may be truncated.
+func TestHandleQuery_HitMaxResultsCap(t *testing.T) {
+	h := newTestHandlers(t)
+	setTestJIRAEnv(t)
+
+	var recorded string
+	ts := jqlSearchServer(t, sampleJQLIssues("TEST-1", "TEST-2", "TEST-3"), &recorded)
+	t.Setenv("JIRA_SERVER", ts.URL)
+
+	h.translate = func(_ context.Context, _ *config.Config, _ string) (*llm.QueryResult, error) {
+		return &llm.QueryResult{JQL: "status = Open", Route: "fast_path"}, nil
+	}
+
+	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{
+		"query":       "open bugs",
+		"max_results": float64(3),
+	}))
+	if err != nil {
+		t.Fatalf("HandleQuery returned err: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(res))
+	}
+	assertContains(t, resultText(res), "Hit the max_results cap (3)")
+}
+
+// The digest NL path routes its issues argument through digestTranslate and feeds
+// the returned JQL into the JIRA search.
+func TestHandleDigest_NLTranslationDrivesSearch(t *testing.T) {
+	h := newTestHandlers(t)
+	setTestJIRAEnv(t)
+
+	var recorded string
+	ts := jqlSearchServer(t, nil, &recorded) // no matching issues
+	t.Setenv("JIRA_SERVER", ts.URL)
+
+	var gotQuery string
+	h.digestTranslate = func(_ context.Context, _ *config.Config, query string) (*llm.QueryResult, error) {
+		gotQuery = query
+		return &llm.QueryResult{JQL: "project = TEST AND status = Open", Route: "fast_path", Days: 5}, nil
+	}
+
+	res, err := h.HandleDigest(context.Background(), makeRequest(map[string]any{
+		"issues": "open bugs in TEST in the last 5 days",
+	}))
+	if err != nil {
+		t.Fatalf("HandleDigest returned err: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(res))
+	}
+
+	if gotQuery != "open bugs in TEST in the last 5 days" {
+		t.Errorf("digest translator received query %q, want %q", gotQuery, "open bugs in TEST in the last 5 days")
+	}
+	// The translated JQL (not the raw arg) must reach the JIRA search.
+	if recorded != "project = TEST AND status = Open" {
+		t.Errorf("JIRA search received JQL %q, want the translated JQL", recorded)
+	}
+	assertContains(t, resultText(res), "No issues found.")
+}
+
+// A digest translator error must surface as an error result.
+func TestHandleDigest_TranslationErrorSurfaces(t *testing.T) {
+	h := newTestHandlers(t)
+	setTestJIRAEnv(t)
+
+	h.digestTranslate = func(_ context.Context, _ *config.Config, _ string) (*llm.QueryResult, error) {
+		return nil, errors.New("translation boom")
+	}
+
+	res, err := h.HandleDigest(context.Background(), makeRequest(map[string]any{
+		"issues": "critical bugs in TEST",
+	}))
+	if err != nil {
+		t.Fatalf("HandleDigest returned err: %v", err)
+	}
+	assertIsError(t, res)
+	assertContains(t, resultText(res), "JQL generation failed")
+}
+
+// --- projectList fetch+cache hot path ---
+//
+// projectList is what NewHandlers wires into the query/digest translation seams:
+// it warms the tenant's project list into the cache on a cold cache and serves
+// it from there while it is fresh, so the deterministic translation hot path is
+// network-free after the first call.
+
+// TestProjectList_CachesFetch verifies the cold-then-warm behaviour: the first
+// call hits JIRA and the second is served from cache, so the project endpoint is
+// called exactly once across both calls.
+func TestProjectList_CachesFetch(t *testing.T) {
+	h := newTestHandlers(t)
+	setTestJIRAEnv(t)
+
+	var calls int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/api/3/project" {
+			http.NotFound(w, r)
+			return
+		}
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"key": "SUP", "name": "Support", "projectTypeKey": "serviceDesks"},
+			{"key": "ENG", "name": "Engineering", "projectTypeKey": "software"},
+		})
+	}))
+	t.Cleanup(ts.Close)
+
+	cfg := &config.Config{
+		JiraServer:   ts.URL,
+		JiraEmail:    "test@test.com",
+		JiraAPIToken: "fake",
+		JiraProject:  "SUP",
+	}
+
+	first := projectList(h.cache, cfg)
+	if len(first) != 2 {
+		t.Fatalf("cold fetch returned %d projects, want 2", len(first))
+	}
+	second := projectList(h.cache, cfg)
+	if len(second) != 2 {
+		t.Fatalf("warm fetch returned %d projects, want 2", len(second))
+	}
+	if calls != 1 {
+		t.Errorf("project endpoint called %d times, want 1 (the second call must be a cache hit)", calls)
+	}
+}
+
+// TestProjectList_NilCache verifies a nil cache degrades to an empty project
+// list (the translator falls back to its env-only vocabulary) without panicking.
+func TestProjectList_NilCache(t *testing.T) {
+	if got := projectList(nil, &config.Config{JiraProject: "SUP"}); got != nil {
+		t.Errorf("projectList(nil, _) = %v, want nil", got)
 	}
 }

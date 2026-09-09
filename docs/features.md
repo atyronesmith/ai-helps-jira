@@ -73,7 +73,7 @@ fuller description, story points estimate, suggested labels.
 
 ## 3. Natural Language JQL ✅
 
-Type queries in plain English, LLM translates to JQL, executes, shows results.
+Type queries in plain English; a deterministic parser translates to JQL (an LLM handles the complex ones it cannot), then executes and shows results.
 
 **Command:** `jira-cli query "show me all critical bugs from last week"`
 

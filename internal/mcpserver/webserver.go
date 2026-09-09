@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atyronesmith/ai-helps-jira/internal/llm"
 	"github.com/atyronesmith/ai-helps-jira/internal/web"
 )
 
@@ -52,6 +53,22 @@ func NewWebServer(store *ResultStore, port int, bindHost string) *WebServer {
 		"mermaidHierarchy": func(links []interface{}) template.HTML {
 			// Built in the template via JS instead
 			return ""
+		},
+		// routeTooltip renders a one-line, human-readable explanation of a
+		// query result's Route tier for the query view's badge title
+		// (hover tooltip) and caption, so a viewer can tell the three tiers
+		// apart without reading the code.
+		"routeTooltip": func(route string) string {
+			switch route {
+			case llm.RouteFastPath:
+				return llm.RouteFastPath + " — the deterministic parser handled this query with no LLM call."
+			case llm.RouteFallback:
+				return llm.RouteFallback + " — the parser could not handle it, so a strict, schema-scoped LLM generated the JQL."
+			case llm.RouteJSON:
+				return llm.RouteJSON + " — the deterministic pipeline failed, so the JSON LLM path generated the JQL (and any time window)."
+			default:
+				return ""
+			}
 		},
 	}
 

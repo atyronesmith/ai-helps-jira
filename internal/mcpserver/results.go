@@ -22,6 +22,7 @@ type SummaryResult struct {
 // QueryResultData holds query results for the web template.
 type QueryResultData struct {
 	Query      string
+	Route      string
 	JQL        string
 	Issues     []jira.Issue
 	User       string

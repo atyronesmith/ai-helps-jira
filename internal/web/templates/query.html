@@ -11,6 +11,8 @@
 <article>
     <h3>Query</h3>
     <blockquote>{{.Data.Query}}</blockquote>
+    {{if .Data.Route}}<p><span class="badge badge-query" title="{{routeTooltip .Data.Route}}">Route: {{.Data.Route}}</span>
+    <small class="timestamp">{{routeTooltip .Data.Route}}</small></p>{{end}}
     <details>
         <summary>Generated JQL</summary>
         <pre><code>{{.Data.JQL}}</code></pre>
