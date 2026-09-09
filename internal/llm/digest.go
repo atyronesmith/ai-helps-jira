@@ -62,9 +62,7 @@ Respond ONLY with valid JSON (no markdown fences) with these keys:
   not_started (array of {epic_key, epic_summary, reason}),
   summary (string)`
 
-func GenerateDigest(cfg *config.Config, parent *jira.IssueDetail, links []jira.IssueLink, comments []jira.Comment) (*DigestContent, error) {
-	ctx := context.Background()
-
+func GenerateDigest(ctx context.Context, cfg *config.Config, parent *jira.IssueDetail, links []jira.IssueLink, comments []jira.Comment) (*DigestContent, error) {
 	slog.Info("generating digest", "parent", parent.Key, "links", len(links), "comments", len(comments))
 
 	provider, err := NewProvider(cfg)
