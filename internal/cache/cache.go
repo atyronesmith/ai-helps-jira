@@ -175,6 +175,25 @@ func migrate(db *sql.DB) error {
 		slog.Info("cache migrated to v6", "added", "issue_details table")
 	}
 
+	// v7: add projects table for caching the tenant's project list (key + display
+	// name) so the natural-language normalizer can resolve human names like
+	// "Support" -> "SUP" without a JIRA round-trip on the hot path.
+	if version < 7 {
+		_, err := db.Exec(`
+			CREATE TABLE IF NOT EXISTS projects (
+				key          TEXT PRIMARY KEY,
+				name         TEXT NOT NULL DEFAULT '',
+				project_type TEXT NOT NULL DEFAULT '',
+				fetched_at   DATETIME NOT NULL
+			);
+		`)
+		if err != nil {
+			slog.Warn("migrate v7: table may already exist", "error", err)
+		}
+		_, _ = db.Exec("PRAGMA user_version = 7")
+		slog.Info("cache migrated to v7", "added", "projects table")
+	}
+
 	return nil
 }
 
@@ -721,6 +740,73 @@ func (c *Cache) GetFreshDetailKeys(updatedByKey map[string]time.Time) map[string
 	return fresh
 }
 
+// UpsertProjects caches the tenant's project list (key + display name),
+// refreshing fetched_at for every row. It is a no-op for an empty slice so a
+// fetch that returns nothing never poisons or clears a good cache.
+func (c *Cache) UpsertProjects(projects []jira.Project) error {
+	if len(projects) == 0 {
+		return nil
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO projects (key, name, project_type, fetched_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			name = excluded.name,
+			project_type = excluded.project_type,
+			fetched_at = excluded.fetched_at`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, p := range projects {
+		_, err := stmt.Exec(p.Key, p.Name, p.ProjectType, now)
+		if err != nil {
+			return fmt.Errorf("upsert project %s: %w", p.Key, err)
+		}
+	}
+	slog.Info("cache upserted projects", "count", len(projects))
+	return tx.Commit()
+}
+
+// GetProjects returns the cached project list, its most recent fetched_at, and
+// whether any row exists. found is false when the table is empty.
+func (c *Cache) GetProjects() ([]jira.Project, time.Time, bool) {
+	rows, err := c.db.Query("SELECT key, name, project_type, fetched_at FROM projects ORDER BY key")
+	if err != nil {
+		return nil, time.Time{}, false
+	}
+	defer rows.Close()
+
+	var projects []jira.Project
+	var lastFetch time.Time
+	for rows.Next() {
+		var p jira.Project
+		var fetched string
+		if err := rows.Scan(&p.Key, &p.Name, &p.ProjectType, &fetched); err != nil {
+			continue
+		}
+		projects = append(projects, p)
+		if t, perr := time.Parse(time.RFC3339, fetched); perr == nil && t.After(lastFetch) {
+			lastFetch = t
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, time.Time{}, false
+	}
+	if len(projects) == 0 {
+		return nil, time.Time{}, false
+	}
+	return projects, lastFetch, true
+}
+
 // CacheStats holds row counts for each cache table.
 type CacheStats struct {
 	Issues       int
@@ -731,6 +817,7 @@ type CacheStats struct {
 	WeeklyCache  int
 	DigestLog    int
 	FetchLog     int
+	Projects     int
 }
 
 // Stats returns row counts for all cache tables.
@@ -744,6 +831,7 @@ func (c *Cache) Stats() CacheStats {
 	_ = c.db.QueryRow("SELECT COUNT(*) FROM weekly_cache").Scan(&s.WeeklyCache)
 	_ = c.db.QueryRow("SELECT COUNT(*) FROM digest_log").Scan(&s.DigestLog)
 	_ = c.db.QueryRow("SELECT COUNT(*) FROM fetch_log").Scan(&s.FetchLog)
+	_ = c.db.QueryRow("SELECT COUNT(*) FROM projects").Scan(&s.Projects)
 	return s
 }
 
