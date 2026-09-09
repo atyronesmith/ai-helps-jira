@@ -3,6 +3,7 @@ module github.com/atyronesmith/ai-helps-jira
 go 1.25.3
 
 require (
+	github.com/alecthomas/participle/v2 v2.1.4
 	github.com/anthropics/anthropic-sdk-go v1.28.0
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
