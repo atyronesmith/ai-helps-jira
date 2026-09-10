@@ -93,3 +93,12 @@ type ConfluencePageStats struct {
 	TotalViews    int
 	UniqueViewers int
 }
+
+// queryMetaView is a lightweight projection of a query result's natural-language
+// query, translation route, and generated JQL. The results index uses it to
+// list the query and its generated JQL without the full issue payload.
+type queryMetaView struct {
+	Query string
+	Route string
+	JQL   string
+}

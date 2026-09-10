@@ -70,6 +70,16 @@ func NewWebServer(store *ResultStore, port int, bindHost string) *WebServer {
 				return ""
 			}
 		},
+		// queryMeta projects a stored result to its natural-language query,
+		// translation route, and generated JQL when it is a query result, so
+		// the results index can list the query and its generated JQL without
+		// the full issue payload.
+		"queryMeta": func(r *StoredResult) queryMetaView {
+			if q, ok := r.Data.(*QueryResultData); ok {
+				return queryMetaView{Query: q.Query, Route: q.Route, JQL: q.JQL}
+			}
+			return queryMetaView{}
+		},
 	}
 
 	// Parse each view template separately with layout to avoid block name collisions.

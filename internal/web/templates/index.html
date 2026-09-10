@@ -12,7 +12,7 @@
     <thead>
         <tr>
             <th><input type="checkbox" id="select-all" title="Select all"></th>
-            <th>Type</th><th>Title</th><th>Time</th><th></th>
+            <th>Type</th><th>Title</th><th>JQL</th><th>Time</th><th></th>
         </tr>
     </thead>
     <tbody>
@@ -21,6 +21,7 @@
             <td><input type="checkbox" class="row-check" data-id="{{.ID}}"></td>
             <td><span class="badge badge-{{.Type}}">{{.Type}}</span></td>
             <td>{{.Title}}</td>
+            <td>{{with queryMeta .}}{{if .JQL}}<code class="jql">{{.JQL}}</code>{{end}}{{if .Route}}<div class="timestamp">route: {{.Route}}</div>{{end}}{{end}}</td>
             <td class="timestamp">{{formatTime .CreatedAt}}</td>
             <td><a href="/view/{{.ID}}" role="button" class="outline">View</a></td>
         </tr>

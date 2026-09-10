@@ -13,9 +13,9 @@
     <blockquote>{{.Data.Query}}</blockquote>
     {{if .Data.Route}}<p><span class="badge badge-query" title="{{routeTooltip .Data.Route}}">Route: {{.Data.Route}}</span>
     <small class="timestamp">{{routeTooltip .Data.Route}}</small></p>{{end}}
-    <details>
+    <details open>
         <summary>Generated JQL</summary>
-        <pre><code>{{.Data.JQL}}</code></pre>
+        <pre><code class="jql">{{.Data.JQL}}</code></pre>
     </details>
 </article>
 
