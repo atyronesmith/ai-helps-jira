@@ -99,10 +99,10 @@ func runWeeklyStatus(cmd *cobra.Command, args []string) error {
 	if email := cfg.AssigneeEmail(); email != "" {
 		assigneeJQL = fmt.Sprintf("%q", email)
 	}
-	jql := fmt.Sprintf(
-		`project = %s AND updatedBy = %s AND updated >= "%s" ORDER BY updated DESC`,
-		cfg.JiraProject, assigneeJQL, startStr,
-	)
+	jql, err := jira.WeeklyActivityJQL(cfg.JiraProject, assigneeJQL, startStr, endStr)
+	if err != nil {
+		return err
+	}
 
 	spinner := format.StatusPrinter("Searching JIRA...")
 	issues, err := client.SearchJQL(jql, 100)

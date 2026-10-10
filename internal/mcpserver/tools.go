@@ -879,10 +879,10 @@ func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolReque
 	if email := cfg.AssigneeEmail(); email != "" {
 		assigneeJQL = fmt.Sprintf("%q", email)
 	}
-	jql := fmt.Sprintf(
-		`project = %s AND updatedBy = %s AND updated >= "%s" ORDER BY updated DESC`,
-		cfg.JiraProject, assigneeJQL, startStr,
-	)
+	jql, err := jira.WeeklyActivityJQL(cfg.JiraProject, assigneeJQL, startStr, endStr)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
 
 	issues, err := client.SearchJQL(jql, 100)
 	if err != nil {
