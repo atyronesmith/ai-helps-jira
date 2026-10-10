@@ -89,6 +89,44 @@ func TestParse(t *testing.T) {
 			query: "bugs in-progress",
 			want:  `issuetype = Bug AND status = "In Progress"`,
 		},
+		// FIELDCTO-2808: several values for one field must become a membership
+		// test. AND-ing them is valid JQL that can never match.
+		{
+			name:  "two issue types collapse into IN",
+			query: "bugs and stories",
+			want:  `issuetype IN (Bug, Story)`,
+		},
+		{
+			name:  "three issue types collapse into IN",
+			query: "bugs tasks epics",
+			want:  `issuetype IN (Bug, Task, Epic)`,
+		},
+		{
+			name:  "collapsed types still combine with other fields",
+			query: "my bugs and stories in Support",
+			want:  `project = Support AND issuetype IN (Bug, Story) AND assignee = currentUser()`,
+		},
+		{
+			name:  "duplicate issue types collapse to a single equality",
+			query: "bugs and bugs",
+			want:  `issuetype = Bug`,
+		},
+		{
+			name:  "quoted status values survive the IN list",
+			query: "done and in progress bugs",
+			want:  `issuetype = Bug AND status IN (Done, "In Progress")`,
+		},
+		{
+			name:  "non-equality open status does not collapse",
+			query: "open and done bugs",
+			want:  `issuetype = Bug AND status NOT IN ("Done", "Closed", "Resolved") AND status = Done`,
+		},
+		{
+			name:  "two assignees collapse into IN",
+			query: "bugs assigned to John assigned to Jane",
+			want:  `issuetype = Bug AND assignee IN (John, Jane)`,
+		},
+
 		{
 			name:    "noise-only input yields no constraints",
 			query:   "please show me",

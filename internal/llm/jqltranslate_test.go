@@ -337,6 +337,64 @@ func TestEnsureProjectScope(t *testing.T) {
 		{"empty jql is returned unchanged", "", "SUP", ""},
 		{"no default project is a no-op", "status = Open", "", "status = Open"},
 		{"subproject look-alike is not a project predicate", "subproject = X", "SUP", "subproject = X AND project = SUP"},
+
+		// FIELDCTO-2807: AND binds tighter than OR in JQL, so a where-clause with a
+		// top-level OR must be parenthesised or the leading branches escape the scope.
+		{
+			"top-level OR is parenthesised before scoping",
+			"issuetype = Bug OR issuetype = Story", "SUP",
+			"(issuetype = Bug OR issuetype = Story) AND project = SUP",
+		},
+		{
+			"OR already inside parentheses is not double-wrapped",
+			`status = Open AND (priority = High OR priority = Highest)`, "SUP",
+			`status = Open AND (priority = High OR priority = Highest) AND project = SUP`,
+		},
+		{
+			"OR inside a quoted literal is not structural",
+			`summary ~ "crash or hang"`, "SUP",
+			`summary ~ "crash or hang" AND project = SUP`,
+		},
+		{
+			"word containing or is not an OR operator",
+			"reporter = currentUser()", "SUP",
+			"reporter = currentUser() AND project = SUP",
+		},
+
+		// FIELDCTO-2807: ORDER BY must stay the final clause; appending after it is
+		// a syntax error Jira rejects with HTTP 400.
+		{
+			"predicate is inserted before ORDER BY",
+			"status = Closed ORDER BY created DESC", "SUP",
+			"status = Closed AND project = SUP ORDER BY created DESC",
+		},
+		{
+			"OR and ORDER BY combined",
+			"issuetype = Bug OR issuetype = Story ORDER BY priority ASC", "SUP",
+			"(issuetype = Bug OR issuetype = Story) AND project = SUP ORDER BY priority ASC",
+		},
+		{
+			"ORDER BY inside a quoted literal is not the clause boundary",
+			`summary ~ "order by clause" AND status = Open`, "SUP",
+			`summary ~ "order by clause" AND status = Open AND project = SUP`,
+		},
+		{
+			"irregular whitespace between ORDER and BY is still recognised",
+			"status = Open ORDER   BY created DESC", "SUP",
+			"status = Open AND project = SUP ORDER   BY created DESC",
+		},
+		{
+			"sort-only query with no where-clause",
+			"ORDER BY created DESC", "SUP",
+			"project = SUP ORDER BY created DESC",
+		},
+
+		// A project predicate hidden inside a string literal must not suppress scoping.
+		{
+			"project predicate inside a quoted literal does not count as scoping",
+			`summary ~ "project = ENG"`, "SUP",
+			`summary ~ "project = ENG" AND project = SUP`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -243,48 +243,111 @@ func normaliseStatus(raw string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-func (o *Ownership) predicate() string {
+// pred is one rendered JQL predicate. Field and Value are set for simple
+// equality predicates (`field = value`), which is what lets ToJQL collapse
+// several values for the same field into a single IN (...) membership test.
+// Predicates that are not simple equalities carry Raw alone and are always
+// emitted verbatim -- the "open" status expansion is the only one today.
+//
+// The zero value means "no predicate"; callers skip it.
+type pred struct {
+	Field string
+	Value string
+	Raw   string
+}
+
+// eqPred builds a collapsible `field = value` predicate. value must already be
+// quoted by the caller where JQL requires it.
+func eqPred(field, value string) pred {
+	return pred{Field: field, Value: value, Raw: field + " = " + value}
+}
+
+// rawPred builds a predicate that must be emitted exactly as given and can
+// never participate in an IN (...) collapse.
+func rawPred(raw string) pred { return pred{Raw: raw} }
+
+func (o *Ownership) predicate() pred {
 	// "assigned to ..."
 	if o.Assignment != nil {
 		if o.Assignment.Self {
-			return `assignee = currentUser()`
+			return eqPred("assignee", "currentUser()")
 		}
 		owner := clean(strings.Join(o.Assignment.Owner, " "))
 		if owner == "" {
-			return "" // only fillers captured; skip the predicate
+			return pred{} // only fillers captured; skip the predicate
 		}
-		return `assignee = ` + quoteIfNeeded(owner)
+		return eqPred("assignee", quoteIfNeeded(owner))
 	}
 	// "my" / "mine" / "myself"
-	return `assignee = currentUser()`
+	return eqPred("assignee", "currentUser()")
 }
 
-func (t *IssueType) predicate() string {
+func (t *IssueType) predicate() pred {
 	if v, ok := issueTypeJQL[strings.ToLower(t.Raw)]; ok {
-		return `issuetype = ` + v
+		return eqPred("issuetype", v)
 	}
-	return `issuetype = ` + quoteIfNeeded(t.Raw) // defensive default
+	return eqPred("issuetype", quoteIfNeeded(t.Raw)) // defensive default
 }
 
-func (s *Status) predicate() string {
+func (s *Status) predicate() pred {
 	// "open" means "not one of the closed statuses", not a literal "Open"
-	// status, so the fast path agrees with QuerySystemPrompt rule #6.
+	// status, so the fast path agrees with QuerySystemPrompt rule #6. It is a
+	// NOT IN expansion rather than an equality, so it never collapses.
 	if normaliseStatus(s.Raw) == "open" {
-		return openStatusJQL
+		return rawPred(openStatusJQL)
 	}
 	v, ok := statusJQL[normaliseStatus(s.Raw)]
 	if !ok {
 		v = s.Raw
 	}
-	return `status = ` + quoteIfNeeded(v)
+	return eqPred("status", quoteIfNeeded(v))
 }
 
-func (p *Project) predicate() string {
+func (p *Project) predicate() pred {
 	key := clean(strings.Join(p.Key, " "))
 	if key == "" {
-		return "" // "in the ..." with nothing after it
+		return pred{} // "in the ..." with nothing after it
 	}
-	return `project = ` + quoteIfNeeded(key)
+	return eqPred("project", quoteIfNeeded(key))
+}
+
+// renderBucket renders every predicate collected for a single field.
+//
+// Two or more equality predicates for the same field collapse into one
+// IN (...) membership test. AND-ing them instead -- which is what this used to
+// do -- produces `issuetype = Bug AND issuetype = Story`: valid JQL that can
+// never match anything, so "bugs and stories" silently returned zero rows with
+// no indication the query was self-contradictory (FIELDCTO-2808).
+//
+// A single value still renders as `field = value`, so output for the common
+// case is byte-identical to before. Non-equality predicates pass through
+// untouched and hold their original position relative to the collapsed test.
+func renderBucket(bucket []pred) []string {
+	out := make([]string, 0, len(bucket))
+	values := make([]string, 0, len(bucket))
+	field, slot := "", -1
+
+	for _, p := range bucket {
+		if p.Field == "" {
+			out = append(out, p.Raw)
+			continue
+		}
+		if slot < 0 {
+			slot = len(out)
+			out = append(out, "") // reserved; filled once all values are known
+		}
+		field = p.Field
+		values = append(values, p.Value)
+	}
+
+	switch {
+	case slot < 0: // no equality predicates in this bucket
+	case len(values) == 1:
+		out[slot] = field + " = " + values[0]
+	default:
+		out[slot] = field + " IN (" + strings.Join(values, ", ") + ")"
+	}
+	return out
 }
 
 // ToJQL renders the AST as a JQL expression.
@@ -295,26 +358,27 @@ func (p *Project) predicate() string {
 //   - predicates are always emitted in the fixed field order
 //     project -> issuetype -> status -> assignee;
 //   - exact duplicate predicates are removed ("my ... assigned to me");
-//   - multiple distinct predicates for the same field are AND-ed together,
-//     which is valid JQL (it just yields an empty result set).
+//   - multiple distinct values for the same field collapse into a single
+//     IN (...) membership test, so "bugs and stories" asks for either rather
+//     than for both at once, which nothing can satisfy.
 func (q *Query) ToJQL() (string, error) {
 	if q == nil {
 		return "", ErrNoConstraints
 	}
 
 	seen := map[string]struct{}{}
-	add := func(bucket *[]string, pred string) {
-		if pred == "" {
+	add := func(bucket *[]pred, p pred) {
+		if p.Raw == "" {
 			return
 		}
-		if _, dup := seen[pred]; dup {
+		if _, dup := seen[p.Raw]; dup {
 			return
 		}
-		seen[pred] = struct{}{}
-		*bucket = append(*bucket, pred)
+		seen[p.Raw] = struct{}{}
+		*bucket = append(*bucket, p)
 	}
 
-	var project, issueType, status, assignee []string
+	var project, issueType, status, assignee []pred
 	for _, clause := range q.Clauses {
 		if clause == nil {
 			continue
@@ -335,8 +399,8 @@ func (q *Query) ToJQL() (string, error) {
 
 	parts := make([]string, 0, len(project)+len(issueType)+len(status)+len(assignee))
 	// Fixed field order: rendering is independent of input clause order.
-	for _, bucket := range [][]string{project, issueType, status, assignee} {
-		parts = append(parts, bucket...)
+	for _, bucket := range [][]pred{project, issueType, status, assignee} {
+		parts = append(parts, renderBucket(bucket)...)
 	}
 	if len(parts) == 0 {
 		return "", ErrNoConstraints

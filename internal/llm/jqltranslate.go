@@ -364,6 +364,119 @@ func translateCascade(ctx context.Context, cfg *config.Config, naturalQuery stri
 // boundary keeps look-alikes such as "subproject" or "projectname" from matching.
 var projectPredicateRe = regexp.MustCompile(`(?i)\bproject\s*(?:!=|=|\bin\b|not\s+in\b)`)
 
+// isJQLWordByte reports whether c can appear inside a JQL bareword, so keyword
+// scans can enforce word boundaries and never match the "or" inside "reporter".
+func isJQLWordByte(c byte) bool {
+	return c == '_' ||
+		(c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9')
+}
+
+// blankQuotedLiterals returns jql with the contents of every quoted string
+// literal (and the quotes themselves) replaced by spaces, preserving the exact
+// byte length so indexes into the result are valid indexes into the original.
+//
+// Structural scans run against the blanked copy so that a keyword appearing
+// inside a literal -- summary ~ "ORDER BY" or labels = "a or b" -- is never
+// mistaken for JQL syntax. Backslash escapes consume the following byte, so an
+// escaped quote does not terminate the literal early.
+func blankQuotedLiterals(jql string) string {
+	b := []byte(jql)
+	var quote byte
+	for i := 0; i < len(b); i++ {
+		c := b[i]
+		if quote != 0 {
+			if c == '\\' && i+1 < len(b) {
+				b[i], b[i+1] = ' ', ' '
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			b[i] = ' '
+			continue
+		}
+		if c == '"' || c == '\'' {
+			quote = c
+			b[i] = ' '
+		}
+	}
+	return string(b)
+}
+
+// topLevelKeywordIndex returns the index of the first occurrence of the
+// uppercase keyword kw that sits at parenthesis depth zero in the already-blanked
+// JQL, with word boundaries on both sides. It returns -1 when there is none.
+func topLevelKeywordIndex(blanked, kw string) int {
+	up := strings.ToUpper(blanked)
+	depth := 0
+	for i := 0; i < len(up); i++ {
+		switch up[i] {
+		case '(':
+			depth++
+			continue
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		if depth != 0 || !strings.HasPrefix(up[i:], kw) {
+			continue
+		}
+		if i > 0 && isJQLWordByte(up[i-1]) {
+			continue
+		}
+		if end := i + len(kw); end < len(up) && isJQLWordByte(up[end]) {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+// orderByIndex returns the index at which the trailing ORDER BY clause begins,
+// or -1 when the query has none. ORDER and BY may be separated by any run of
+// whitespace. The scan is depth- and quote-aware for the same reasons as
+// topLevelKeywordIndex.
+func orderByIndex(blanked string) int {
+	up := strings.ToUpper(blanked)
+	depth := 0
+	for i := 0; i < len(up); i++ {
+		switch up[i] {
+		case '(':
+			depth++
+			continue
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		if depth != 0 || !strings.HasPrefix(up[i:], "ORDER") {
+			continue
+		}
+		if i > 0 && isJQLWordByte(up[i-1]) {
+			continue
+		}
+		j := i + len("ORDER")
+		k := j
+		for k < len(up) && (up[k] == ' ' || up[k] == '\t' || up[k] == '\n' || up[k] == '\r') {
+			k++
+		}
+		if k == j || !strings.HasPrefix(up[k:], "BY") {
+			continue // "ORDER" not followed by whitespace then "BY"
+		}
+		if end := k + len("BY"); end < len(up) && isJQLWordByte(up[end]) {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
 // ensureProjectScope preserves the behaviour the old LLM path guaranteed
 // (QuerySystemPrompt rule #1): every query is scoped to the tenant's project
 // unless the user names a different one. The deterministic nl2jql pipeline only
@@ -375,14 +488,46 @@ var projectPredicateRe = regexp.MustCompile(`(?i)\bproject\s*(?:!=|=|\bin\b|not\
 // behaviour, not a clobber. It runs on both translation paths -- the nl2jql pipeline
 // above and, inside generateJQLLLM, the JSON-prompt LLM tier -- so project scoping is
 // a hard guarantee rather than a matter of the model obeying QuerySystemPrompt rule #1.
+//
+// Appending the predicate is not a string concatenation, because JQL has no
+// SQL-style precedence climbing (FIELDCTO-2807). Two structural rules apply:
+//
+//   - AND binds tighter than OR, so a where-clause containing a top-level OR must
+//     be parenthesised first. Without it, `a OR b` + ` AND project = X` parses as
+//     `a OR (b AND project = X)` and the first branch escapes the scope entirely,
+//     silently matching every project in the tenant.
+//   - ORDER BY must remain the final clause. Appending after it is a syntax error
+//     that Jira rejects outright with HTTP 400, so the sort is split off, the
+//     predicate inserted, and the sort re-attached.
 func ensureProjectScope(jql string, cfg *config.Config) string {
 	if cfg == nil || cfg.JiraProject == "" || jql == "" {
 		return jql
 	}
-	if projectPredicateRe.MatchString(jql) {
+	// Match against the blanked copy so a literal such as summary ~ "project = X"
+	// is not mistaken for real scoping and does not suppress the predicate.
+	blanked := blankQuotedLiterals(jql)
+	if projectPredicateRe.MatchString(blanked) {
 		return jql
 	}
-	return jql + " AND project = " + cfg.JiraProject
+
+	where, orderBy := jql, ""
+	if idx := orderByIndex(blanked); idx >= 0 {
+		where, orderBy = jql[:idx], strings.TrimSpace(jql[idx:])
+	}
+	where = strings.TrimSpace(where)
+
+	scoped := "project = " + cfg.JiraProject
+	if where != "" {
+		// Re-blank: offsets shift once the ORDER BY clause is trimmed away.
+		if topLevelKeywordIndex(blankQuotedLiterals(where), "OR") >= 0 {
+			where = "(" + where + ")"
+		}
+		scoped = where + " AND " + scoped
+	}
+	if orderBy != "" {
+		scoped += " " + orderBy
+	}
+	return scoped
 }
 
 // GenerateJQLForDigest is the digest-flavoured JQL translation. The digest handler
