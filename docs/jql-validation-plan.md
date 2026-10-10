@@ -33,11 +33,25 @@ risk the LLM path does not:
 
 | Site | Shape |
 |------|-------|
-| `cmd/weekly_status.go:102` | `project = %s AND updatedBy = %s AND updated >= "%s" ORDER BY ...` |
-| `cmd/find_similar.go:83` | `project = %s AND status NOT IN (...) ORDER BY updated DESC` |
-| `internal/mcpserver/tools.go:883` | weekly-status equivalent |
-| `internal/mcpserver/tools.go:1422` | find-similar equivalent |
-| `internal/mcpserver/crud_tools.go:217` | `key = %s` |
+| Site | Interpolated | Caller-controlled? |
+|------|--------------|--------------------|
+| `cmd/find_similar.go` runFindSimilar | project | no (config) |
+| `internal/mcpserver/tools.go` find-similar handler | project | no (config) |
+| `internal/mcpserver/crud_tools.go` post-mutation refetch | issue key | **yes** — MCP tool argument |
+| `internal/jira/client.go` GetOpenIssues | assignee, project | no |
+| `internal/jira/client.go` GetOpenIssuesSince | assignee, project, time | no |
+| `internal/jira/client.go` GetSprintIssues | assignee, sprint ID, project | no |
+| `internal/jira/client.go` SearchByRelease | release name, project | **yes** — caller string |
+
+Regenerate that list rather than trusting it — an earlier revision of this table listed five sites
+and missed the four in `internal/jira/client.go`:
+
+```
+grep -rn 'project = %s\|key = %s\|assignee = %s\|fixVersion = %q' --include='*.go' cmd internal | grep -v _test
+```
+
+Excluding `internal/llm/query.go` (prompt text, not JQL) and `internal/jira/jql.go` (the 2816
+builder, already correct).
 
 The third source is `ensureProjectScope`, which post-processes JQL from either of the other two.
 That is where both of the known defects landed, and it is the reason a guard belongs downstream of
@@ -174,6 +188,22 @@ spacing and parenthesisation are expected. Land the Phase 2 corpus first so the 
 safety net that checks meaning rather than string equality — otherwise every cosmetic rendering
 change looks like a regression and the real ones hide among them.
 
+### [FIELDCTO-2816](https://redhat.atlassian.net/browse/FIELDCTO-2816) — Weekly status queried a nonexistent field (3 SP, done)
+
+Found while tracing Phase 5 and fixed in commit `68c7a28`. The weekly-status JQL filtered on
+`updatedBy`, which is not among the 786 fields `/rest/api/3/jql/autocompletedata` reports for this
+instance. `/search/jql` accepts it regardless, answering HTTP 200 with an empty array, so the
+feature reported "No issues found" for every window it was given — and an empty answer is
+indistinguishable from a quiet week.
+
+Replaced with a union of `status CHANGED BY` and `worklogAuthor`, which depend only on core JQL
+fields. A second defect in the same line: the end date was accepted, used for the cache key and the
+report title, and then omitted from the query, leaving every window open-ended.
+
+Two things worth carrying forward. This was *hand-written* JQL, not model output — the Phase 2
+oracle earns its keep against our own code, not just the LLM's. And a query returning zero rows is
+not evidence of no data; this instance tolerates nonexistent fields in silence.
+
 ### [FIELDCTO-2814](https://redhat.atlassian.net/browse/FIELDCTO-2814) — Error propagation (1 SP)
 
 During the original investigation, `jira_weekly_status` reported "No issues found" for a window that
@@ -221,6 +251,52 @@ own. Phase 6 (2815) is independent of the others and can land whenever. Phase 3 
 standalone rather than waiting behind Phase 4, which subsumes it but is the largest item in the set.
 
 Total is 16 SP.
+
+## Implementation notes
+
+Read this before picking up any phase. It exists because an audit of these tickets found the
+reasoning sound and the mechanics not — several references were stale within hours of being written.
+
+**Line numbers here are indicative, not authoritative.** Every `file:line` in this document and in
+the tickets was accurate when written, and the fixes under 2807/2808/2816 shifted the files they
+point at. Locate symbols by name. Where a ticket gives a grep command, run it and work from the
+result.
+
+**Inventories here have been wrong.** FIELDCTO-2812's original list of interpolation sites missed
+`internal/jira/client.go` entirely — four sites — because the search that produced it was scoped to
+`cmd/` and `internal/mcpserver/`. FIELDCTO-2814 named two error paths; there are six. Treat every
+list as a starting point to verify, not a specification to satisfy. "The ticket said five, I fixed
+five" is the failure mode to avoid.
+
+**Environment.** Credentials are in `~/dev/jira/.env` and are not exported by default:
+
+```
+cd ~/dev/jira && set -a && . ./.env && set +a
+```
+
+Only the Phase 2 oracle needs them. Note the LLM provider in `.env` points at
+`host.containers.internal`, which resolves only inside the container network — a bare host binary
+will query Jira correctly and then fail at any LLM step. That is expected, not a regression.
+
+**Definition of done**, identical for every phase:
+
+```
+go build ./... && go vet ./... && go test ./...
+```
+
+All clean, nothing skipped. Anything touching JQL generation additionally goes through
+`/rest/api/3/jql/parse?validation=strict`, asserting on `errors[]` rather than the HTTP status,
+which is 200 either way. Default validation does not catch a nonexistent field — that omission is
+what produced FIELDCTO-2816.
+
+**Decisions already made.** Phase 1 threads the default project from `Client.c.project`, which is
+already on the struct; do not add a parameter to `SearchJQL`. Guards fail closed and never repair,
+because silently rewriting a caller's query is how the original defect stayed hidden. Same-field
+multi-value renders as `IN (...)`, including for `project`.
+
+**Where judgement is genuinely needed:** whether Go's `%q` agrees with JQL quoting on embedded
+quotes and backslashes (Phase 3), and the AST node shapes (Phase 4). Write the test first and let it
+answer. That is what settled every other question here.
 
 ## Out of scope
 
