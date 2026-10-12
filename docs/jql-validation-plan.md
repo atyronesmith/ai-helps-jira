@@ -109,6 +109,28 @@ came from grepping for `c.searchIssues`, for `jql=` inside constructed paths, an
 `url.QueryEscape` — not from listing the call sites already in mind. When a later phase needs this
 list, regenerate it that way rather than trusting this table.
 
+Both paths are guarded as of Phase 3. The board query validates with no default project, so the
+structural rules apply and the scope invariant is skipped — a board-scoped endpoint must not carry
+a project predicate, and demanding one would break it.
+
+### Regenerating a list is not enough if the recipe is also narrow
+
+Phase 3 supplied a grep to rebuild the interpolation-site inventory, precisely because the written
+list had been wrong twice. The grep was *also* incomplete. It matched four literal shapes —
+`project = %s`, `key = %s`, `assignee = %s`, `fixVersion = %q` — and therefore could not see
+
+```
+assigneeJQL = fmt.Sprintf("%q", email)     // internal/mcpserver/tools.go
+```
+
+a second copy of the very pattern the ticket had named elsewhere. A grep keyed to the phrasings
+already known can only rediscover what is already known.
+
+What found it was searching for the *mechanism* rather than the instances: `%q` tree-wide, then
+triaging the Confluence/CQL false positives by hand. When rebuilding one of these inventories,
+search for the verb — the quoting call, the execution call, the escape function — not for the
+shapes you remember writing.
+
 ## Approach
 
 Three mechanisms are available, and the right answer is to combine them rather than pick one.
