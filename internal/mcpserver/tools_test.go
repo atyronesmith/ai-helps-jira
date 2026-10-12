@@ -951,6 +951,38 @@ func TestHandleDigest_TranslationErrorSurfaces(t *testing.T) {
 	assertContains(t, resultText(res), "JQL generation failed")
 }
 
+// A 400 from the JIRA search endpoint (a malformed query) must surface as an
+// error result, not an empty success, and Jira's own diagnostic text — plus
+// the offending JQL — must survive into the message (FIELDCTO-2814).
+func TestHandleQuery_SearchErrorSurfacesJiraMessageAndJQL(t *testing.T) {
+	h := newTestHandlers(t)
+	setTestJIRAEnv(t)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"errorMessages": []string{"Error in the JQL Query: Expecting ',' but got 'AND'. (line 1, character 39)"},
+		})
+	}))
+	t.Cleanup(ts.Close)
+	t.Setenv("JIRA_SERVER", ts.URL)
+
+	const badJQL = "project = TEST AND AND status = Open"
+	h.translate = func(_ context.Context, _ *config.Config, _ string) (*llm.QueryResult, error) {
+		return &llm.QueryResult{JQL: badJQL, Route: "fast_path"}, nil
+	}
+
+	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{"query": "broken query"}))
+	if err != nil {
+		t.Fatalf("HandleQuery returned err: %v", err)
+	}
+	assertIsError(t, res)
+	text := resultText(res)
+	assertContains(t, text, "Expecting ',' but got 'AND'")
+	assertContains(t, text, badJQL)
+}
+
 // --- projectList fetch+cache hot path ---
 //
 // projectList is what NewHandlers wires into the query/digest translation seams:

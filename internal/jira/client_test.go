@@ -1352,6 +1352,62 @@ func TestAPIError_ServerError(t *testing.T) {
 	}
 }
 
+// A 400 from the JQL search endpoint — a malformed query — must surface as an
+// error, not an empty result, and Jira's own diagnostic text must survive
+// into it along with the offending JQL (FIELDCTO-2814).
+func TestSearchJQL_400SurfacesJiraErrorAndJQL(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(t, w, 400, map[string]any{
+			"errorMessages": []string{"Error in the JQL Query: Expecting ',' but got 'AND'. (line 1, character 39)"},
+		})
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	badJQL := "project = TEST AND status = Open AND AND foo"
+	issues, err := c.SearchJQL(badJQL, 50)
+
+	if err == nil {
+		t.Fatal("expected error for 400 response, got nil")
+	}
+	if issues != nil {
+		t.Errorf("expected nil issues on error, got %v", issues)
+	}
+	if !strings.Contains(err.Error(), "Expecting ',' but got 'AND'") {
+		t.Errorf("Jira's errorMessages text did not survive into the error: %s", err.Error())
+	}
+	if !strings.Contains(err.Error(), badJQL) {
+		t.Errorf("the offending JQL did not survive into the error: %s", err.Error())
+	}
+	if !strings.Contains(err.Error(), "400") {
+		t.Errorf("expected status code in error, got: %s", err.Error())
+	}
+}
+
+// GetOpenIssues and GetOpenIssuesSince build their own JQL internally and have
+// no caller-visible JQL argument, but they still funnel through searchIssues,
+// so a failure must surface rather than be swallowed into an empty slice.
+func TestGetOpenIssues_400Surfaces(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(t, w, 400, map[string]any{
+			"errorMessages": []string{"Error in the JQL Query: Expecting ',' but got 'AND'. (line 1, character 39)"},
+		})
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	issues, err := c.GetOpenIssues()
+	if err == nil {
+		t.Fatal("expected error for 400 response, got nil")
+	}
+	if issues != nil {
+		t.Errorf("expected nil issues on error, got %v", issues)
+	}
+	if !strings.Contains(err.Error(), "Expecting ',' but got 'AND'") {
+		t.Errorf("Jira's errorMessages text did not survive into the error: %s", err.Error())
+	}
+}
+
 // --- Auth tests ---
 
 func TestBasicAuth(t *testing.T) {

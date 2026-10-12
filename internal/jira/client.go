@@ -144,7 +144,12 @@ func (c *Client) searchIssues(jql string, max int) ([]Issue, error) {
 	}
 	var resp searchResponse
 	if err := c.doRequest("POST", "/rest/api/3/search/jql", req, &resp); err != nil {
-		return nil, err
+		// Every caller of searchIssues funnels through here, so embedding the
+		// JQL at this single chokepoint — rather than at each of the ~10
+		// "JIRA search failed" call sites in cmd/ and internal/mcpserver/ —
+		// guarantees a failed query is diagnosable everywhere, not just at
+		// the sites someone remembered to annotate (FIELDCTO-2814).
+		return nil, fmt.Errorf("JQL %q: %w", jql, err)
 	}
 	slog.Info("search returned", "count", len(resp.Issues), "total", resp.Total,
 		"jql_prefix", truncate(jql, 60))
