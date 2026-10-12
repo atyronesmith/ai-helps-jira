@@ -53,8 +53,8 @@ Common statuses: "To Do", "In Progress", "In Review", "Done", "Closed", "Resolve
 Common priorities: Highest, High, Medium, Low, Lowest.
 Common issue types: Bug, Story, Task, Epic, Sub-task.
 
-Date functions: now(), startOfDay(), startOfWeek(), startOfMonth(), endOfDay(), endOfWeek(), endOfMonth().
-Relative dates: "-1w" (one week ago), "-1d" (one day ago), "-2w", "-1m", etc.
+Date functions: now(), startOfDay(), startOfWeek(), startOfMonth(), endOfDay(), endOfWeek(), endOfMonth(). For a calendar month such as "last month", use startOfMonth()/endOfMonth() (these accept an optional offset argument) -- do NOT try to express a month as a relative date literal.
+Relative date literals are a signed integer plus a single-letter unit: "d" (days), "w" (weeks), "h" (hours), "m" or "M" (minutes -- both letters mean minutes; JQL has no month unit). Examples: "-1w" (one week ago), "-1d" (one day ago), "-2w" (two weeks ago), "-45m" (45 minutes ago). For a rolling window of roughly a month, use days or weeks instead, e.g. "-30d" or "-4w" -- never write "-1m" or "-1M" meaning "one month"; both resolve to a one-minute window.
 
 Rules:
 1. Always scope to project = %s unless the user explicitly asks about a different project or all projects.
