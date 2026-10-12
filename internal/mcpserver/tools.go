@@ -518,7 +518,7 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 
 	issues, err := client.SearchJQL(result.JQL, maxResults)
 	if err != nil {
-		return errorResult(fmt.Sprintf("JIRA search failed (JQL: %s): %v", result.JQL, err)), nil
+		return errorResult(fmt.Sprintf("JIRA search failed: %v", err)), nil
 	}
 
 	// Cache results
@@ -609,7 +609,7 @@ func (h *Handlers) HandleDigest(ctx context.Context, req mcp.CallToolRequest) (*
 		}
 		issues, err := client.SearchJQL(result.JQL, 50)
 		if err != nil {
-			return errorResult(fmt.Sprintf("JIRA search failed (JQL: %s): %v", result.JQL, err)), nil
+			return errorResult(fmt.Sprintf("JIRA search failed: %v", err)), nil
 		}
 		for _, issue := range issues {
 			issueKeys = append(issueKeys, issue.Key)

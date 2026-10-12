@@ -1364,7 +1364,7 @@ func TestSearchJQL_400SurfacesJiraErrorAndJQL(t *testing.T) {
 	defer ts.Close()
 
 	c := newTestClient(ts)
-	badJQL := "project = TEST AND status = Open AND AND foo"
+	badJQL := "project = TEST AND status = Open"
 	issues, err := c.SearchJQL(badJQL, 50)
 
 	if err == nil {

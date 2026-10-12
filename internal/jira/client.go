@@ -137,9 +137,20 @@ type apiKeyedName struct {
 	Name string `json:"name"`
 }
 
-func (c *Client) searchIssues(jql string, max int) ([]Issue, error) {
+// searchIssues is the true chokepoint through which every JQL source in this
+// codebase -- LLM-translated, hand-built, and interpolated -- is executed,
+// regardless of whether it arrived via SearchJQL or one of the other
+// Client methods that build their own JQL and call searchIssues directly.
+// That makes it the single point at which a local, network-free structural
+// guard is enforced (FIELDCTO-2810). The guard fails closed and never
+// repairs: a rejected query returns an error rather than a silently
+// rewritten one.
+func (c *Client) searchIssues(rawJQL string, max int) ([]Issue, error) {
+	if err := jql.Validate(rawJQL, jql.Options{DefaultProject: c.project}); err != nil {
+		return nil, err
+	}
 	req := searchRequest{
-		JQL:        jql,
+		JQL:        rawJQL,
 		MaxResults: max,
 		Fields:     []string{"summary", "status", "priority", "updated", "assignee"},
 	}
@@ -150,10 +161,10 @@ func (c *Client) searchIssues(jql string, max int) ([]Issue, error) {
 		// "JIRA search failed" call sites in cmd/ and internal/mcpserver/ —
 		// guarantees a failed query is diagnosable everywhere, not just at
 		// the sites someone remembered to annotate (FIELDCTO-2814).
-		return nil, fmt.Errorf("JQL %q: %w", jql, err)
+		return nil, fmt.Errorf("JQL %q: %w", rawJQL, err)
 	}
 	slog.Info("search returned", "count", len(resp.Issues), "total", resp.Total,
-		"jql_prefix", truncate(jql, 60))
+		"jql_prefix", truncate(rawJQL, 60))
 	return parseAPIIssues(resp.Issues), nil
 }
 
@@ -208,15 +219,11 @@ func (c *Client) GetOpenIssuesSince(since time.Time) ([]Issue, error) {
 }
 
 // SearchJQL runs an arbitrary JQL query and returns matching issues. It is
-// the single chokepoint through which every JQL source in this codebase --
-// LLM-translated, hand-built, and interpolated -- is executed, so it is also
-// the single point at which a local, network-free structural guard is
-// enforced (FIELDCTO-2810). The guard fails closed and never repairs: a
-// rejected query returns an error rather than a silently rewritten one.
+// one of several Client methods that funnel into searchIssues, which is the
+// actual chokepoint where the structural JQL guard is enforced
+// (FIELDCTO-2810) and errors are annotated with the offending JQL
+// (FIELDCTO-2814).
 func (c *Client) SearchJQL(rawJQL string, max int) ([]Issue, error) {
-	if err := jql.Validate(rawJQL, jql.Options{DefaultProject: c.project}); err != nil {
-		return nil, err
-	}
 	slog.Info("search_jql", "jql", rawJQL, "max", max)
 	return c.searchIssues(rawJQL, max)
 }

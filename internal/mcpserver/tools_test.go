@@ -968,7 +968,7 @@ func TestHandleQuery_SearchErrorSurfacesJiraMessageAndJQL(t *testing.T) {
 	t.Cleanup(ts.Close)
 	t.Setenv("JIRA_SERVER", ts.URL)
 
-	const badJQL = "project = TEST AND AND status = Open"
+	const badJQL = "project = TEST AND status = Open"
 	h.translate = func(_ context.Context, _ *config.Config, _ string) (*llm.QueryResult, error) {
 		return &llm.QueryResult{JQL: badJQL, Route: "fast_path"}, nil
 	}
