@@ -86,6 +86,29 @@ actually converge, the other followed the instruction to guard `SearchJQL` and t
 doing so missed four paths. An author checking their own claim counts the callers they already had
 in mind. Both changes now sit in `searchIssues`, which validates and then error-wraps in one place.
 
+### And `searchIssues` is not universal either
+
+A third agent, enumerating sites for the oracle corpus rather than trusting the list it was given,
+found a sixth path. `getKanbanIssues` embeds its JQL in a URL and calls `doRequest` directly against
+the board-scoped agile endpoint, so it reaches Jira without passing through `searchIssues` at all.
+Tracked as [FIELDCTO-2818](https://redhat.atlassian.net/browse/FIELDCTO-2818).
+
+The verified, exhaustive position:
+
+| Path | Route | Guarded |
+|------|-------|---------|
+| `GetOpenIssues`, `GetOpenIssuesSince`, `SearchJQL`, `getSprintIssues`, `SearchByRelease` | `searchIssues` | yes |
+| `getKanbanIssues` | `doRequest`, JQL in the URL | **no** |
+
+Note it deliberately carries no project predicate, which is correct for a board-scoped endpoint —
+so routing it through `Validate` with a default project would fail rule 5 and break a working
+feature. 2818 covers the options.
+
+This plan has now claimed universal coverage twice and been wrong both times. The enumeration above
+came from grepping for `c.searchIssues`, for `jql=` inside constructed paths, and for
+`url.QueryEscape` — not from listing the call sites already in mind. When a later phase needs this
+list, regenerate it that way rather than trusting this table.
+
 ## Approach
 
 Three mechanisms are available, and the right answer is to combine them rather than pick one.
