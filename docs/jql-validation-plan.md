@@ -65,11 +65,26 @@ interpolate nothing but placeholder lists (`?,?,?`), with values passed separate
 
 ## The chokepoint
 
-`Client.SearchJQL` (`internal/jira/client.go:205`) is a genuine single point of execution. All nine
-call sites across `cmd/` and `internal/mcpserver/` funnel through it, and it is a three-line
-pass-through to `searchIssues`. Every piece of JQL this tool executes passes through that one
-function. Validating there covers all three sources at once, rather than patching each generator
-and hoping the next one remembers.
+The chokepoint is `Client.searchIssues` — the unexported one — not the exported `SearchJQL`.
+
+Earlier revisions of this document said the opposite, and said it emphatically: *"Every piece of JQL
+this tool executes passes through that one function."* That was wrong. `SearchJQL` is one of five
+callers of `searchIssues`:
+
+```
+GetOpenIssues  GetOpenIssuesSince  SearchJQL  GetSprintIssues  SearchByRelease
+```
+
+Guarding `SearchJQL` covers roughly a fifth of the JQL this tool executes. The error-wrapping work
+in FIELDCTO-2814 landed in `searchIssues` and was right to; the validator in FIELDCTO-2810 was
+specified against `SearchJQL` and had to be moved.
+
+The mistake is worth recording rather than quietly corrected, because of how it was found. It did
+not surface from rereading the plan — it surfaced twice, independently, from two agents
+*implementing* against it: one placed its fix at `searchIssues` because that is where the calls
+actually converge, the other followed the instruction to guard `SearchJQL` and then reported that
+doing so missed four paths. An author checking their own claim counts the callers they already had
+in mind. Both changes now sit in `searchIssues`, which validates and then error-wraps in one place.
 
 ## Approach
 
@@ -143,9 +158,13 @@ appearing once and last, no dangling operators, and the scope invariant.
 
 That last check is the one that matters: when a default project is configured, a project predicate
 must be present *and* must sit outside any top-level `OR`. Presence alone is insufficient, because
-`project = X OR foo` has a project predicate and still leaks. Wire it into `SearchJQL` as a
-fail-closed guard that names the offending JQL and the rule violated. It must not attempt repair —
-silently rewriting a caller's query is how the original bug stayed hidden for as long as it did.
+`project = X OR foo` has a project predicate and still leaks. Rule 5 exempts queries identified
+solely by `key` or `id`: issue keys are globally unique, so scoping them is meaningless, and the
+refetch in `crud_tools.go` would otherwise fail validation and degrade silently.
+
+Wire it into `searchIssues` — not `SearchJQL` — as a fail-closed guard that names the offending JQL
+and the rule violated. It must not attempt repair; silently rewriting a caller's query is how the
+original bug stayed hidden for as long as it did.
 
 ### [FIELDCTO-2811](https://redhat.atlassian.net/browse/FIELDCTO-2811) — CI oracle and golden corpus (2 SP)
 
@@ -290,9 +309,10 @@ which is 200 either way. Default validation does not catch a nonexistent field �
 what produced FIELDCTO-2816.
 
 **Decisions already made.** Phase 1 threads the default project from `Client.c.project`, which is
-already on the struct; do not add a parameter to `SearchJQL`. Guards fail closed and never repair,
-because silently rewriting a caller's query is how the original defect stayed hidden. Same-field
-multi-value renders as `IN (...)`, including for `project`.
+already on the struct; do not add a parameter to the search entry points. The guard lives in
+`searchIssues`, the real chokepoint — see above. Guards fail closed and never repair, because
+silently rewriting a caller's query is how the original defect stayed hidden. Same-field
+multi-value renders as `IN (...)`, including for `project`. Rule 5 exempts `key`/`id`-only queries.
 
 **Where judgement is genuinely needed:** whether Go's `%q` agrees with JQL quoting on embedded
 quotes and backslashes (Phase 3), and the AST node shapes (Phase 4). Write the test first and let it
