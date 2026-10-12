@@ -17,6 +17,7 @@ import (
 	"github.com/atyronesmith/ai-helps-jira/internal/confluence"
 	"github.com/atyronesmith/ai-helps-jira/internal/format"
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
+	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
 )
 
@@ -526,11 +527,17 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 		h.cache.UpsertIssues(cfg.JiraProject, issues)
 	}
 
+	// JQL is executed above exactly as generated. displayJQL resolves any
+	// relative dates ("-365d") to absolute ones for the human-facing text and
+	// dashboard only, so a rolling window is visible for what it is next to
+	// the natural-language request that produced it.
+	displayJQL := jql.ResolveRelativeDatesForDisplay(result.JQL, time.Now())
+
 	// Store for web
 	resultID := h.store.Save(ResultQuery, fmt.Sprintf("Query: %s", naturalQuery), &QueryResultData{
 		Query:      naturalQuery,
 		Route:      result.Route,
-		JQL:        result.JQL,
+		JQL:        displayJQL,
 		Issues:     issues,
 		User:       cfg.Assignee(),
 		JiraServer: cfg.JiraServer,
@@ -540,7 +547,10 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 	// Build text
 	var text strings.Builder
 	fmt.Fprintf(&text, "## Query: %s\n\n", naturalQuery)
-	fmt.Fprintf(&text, "**JQL:** `%s`\n\n", result.JQL)
+	if result.Route != "" {
+		fmt.Fprintf(&text, "**Route:** `%s`\n\n", result.Route)
+	}
+	fmt.Fprintf(&text, "**JQL:** `%s`\n\n", displayJQL)
 	if len(issues) == 0 {
 		text.WriteString("No issues found.\n")
 	} else {

@@ -15,6 +15,7 @@ import (
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
 	"github.com/atyronesmith/ai-helps-jira/internal/format"
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
+	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
 )
 
@@ -172,8 +173,15 @@ func discoverIssueKeys(cfg *config.Config, db *cache.Cache, args []string) ([]st
 		return nil, "", 0, fmt.Errorf("failed to generate JQL: %w", err)
 	}
 
-	if flagDigestShowJQL {
-		pterm.FgLightWhite.Printfln("JQL: %s", result.JQL)
+	// Same affordance as `jira-cli query`: the deterministic fast path stays
+	// silent unless asked, the LLM-routed tiers echo their JQL unconditionally,
+	// and relative dates are resolved to absolute ones for display only --
+	// the JQL used to search below is untouched.
+	if flagDigestShowJQL || result.Route != llm.RouteFastPath {
+		if result.Route != "" {
+			pterm.FgLightWhite.Printfln("Route: %s", result.Route)
+		}
+		pterm.FgLightWhite.Printfln("JQL: %s", jql.ResolveRelativeDatesForDisplay(result.JQL, time.Now()))
 	}
 	slog.Info("digest JQL generated", "query", naturalQuery, "jql", result.JQL, "days", result.Days)
 

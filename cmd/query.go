@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
@@ -12,6 +13,7 @@ import (
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
 	"github.com/atyronesmith/ai-helps-jira/internal/format"
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
+	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
 )
 
@@ -100,11 +102,19 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 4: Display results
-	jqlDisplay := ""
-	if flagShowJQL {
-		jqlDisplay = result.JQL
+	//
+	// The deterministic fast path is a closed grammar and can be trusted
+	// silently; the LLM-routed tiers cannot, so their JQL is echoed without
+	// needing --show-jql. Either way, relative dates ("-365d") are resolved
+	// to absolute ones for this display only -- the JQL actually sent to
+	// JIRA above is untouched -- so an opaque rolling window is visible for
+	// what it is next to the request that produced it.
+	jqlDisplay, routeDisplay := "", ""
+	if flagShowJQL || result.Route != llm.RouteFastPath {
+		jqlDisplay = jql.ResolveRelativeDatesForDisplay(result.JQL, time.Now())
+		routeDisplay = result.Route
 	}
-	format.DisplayQueryResults(issues, jqlDisplay)
+	format.DisplayQueryResults(issues, jqlDisplay, routeDisplay)
 
 	return nil
 }

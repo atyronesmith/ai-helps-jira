@@ -144,10 +144,17 @@ func DisplayEnrichPreview(issue *jira.IssueDetail, desc string, criteria []strin
 	fmt.Println()
 }
 
-// DisplayQueryResults renders issues from a JQL query.
-func DisplayQueryResults(issues []jira.Issue, jql string) {
+// DisplayQueryResults prints the query results, and, when jql is non-empty,
+// the JQL that produced them. route is the translation tier label
+// (nl2jql.RouteFastPath / RouteFallback / llm.RouteJSON); when non-empty it
+// is printed alongside the JQL so a reader knows whether a human-written
+// grammar or an LLM produced the query they are about to inspect.
+func DisplayQueryResults(issues []jira.Issue, jql string, route string) {
 	fmt.Println()
 	if jql != "" {
+		if route != "" {
+			pterm.FgLightWhite.Printfln("Route: %s", route)
+		}
 		pterm.FgLightWhite.Printfln("JQL: %s", jql)
 		fmt.Println()
 	}
