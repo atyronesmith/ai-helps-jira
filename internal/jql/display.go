@@ -29,11 +29,13 @@ import (
 // pattern therefore covers the general JQL relative-duration shape
 // (d/w/h/m/M/y) rather than only the normalizer's "d" case.
 //
-// Units follow Jira's grammar, not this project's prompt text. Jira treats
-// lowercase "m" as MINUTES; uppercase "M" is months. QuerySystemPrompt lists
-// "-1m" among its relative-date examples in a way that reads as "one month",
-// so the model may well emit it meaning a month and Jira will silently apply
-// a one-minute window (FIELDCTO-2817).
+// Units follow Jira's grammar, not this project's prompt text. Both "m" and
+// "M" mean MINUTES — Jira matches the unit case-insensitively and has no month
+// period unit at all. Confirmed against a live tenant: "-100000m" and
+// "-100000M" return the same issues as "-70d", 100000 minutes being about 69
+// days. QuerySystemPrompt lists "-1m" among its relative-date examples in a
+// way that reads as "one month", so the model may emit it meaning a month and
+// Jira will silently apply a sixty-second window (FIELDCTO-2817).
 //
 // Resolving by Jira's semantics is the whole point. This display exists to
 // show what the query will actually do, so a "-1m" the model intended as a
@@ -133,14 +135,13 @@ func absoluteDate(now time.Time, n int, unit string) (abs string, ok bool) {
 		t = now.AddDate(0, 0, -n)
 	case "w":
 		t = now.AddDate(0, 0, -n*7)
-	case "M":
-		t = now.AddDate(0, -n, 0)
 	case "y":
 		t = now.AddDate(-n, 0, 0)
 	case "h":
 		t, withClock = now.Add(-time.Duration(n)*time.Hour), true
-	case "m":
-		// Minutes, per Jira's grammar -- not months. See the note above.
+	case "m", "M":
+		// Both are minutes. Jira matches the unit case-insensitively and has
+		// no month unit, so "-1M" is a sixty-second window, not thirty days.
 		t, withClock = now.Add(-time.Duration(n)*time.Minute), true
 	default:
 		return "", false

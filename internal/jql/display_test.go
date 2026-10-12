@@ -37,19 +37,28 @@ func TestResolveRelativeDatesForDisplay(t *testing.T) {
 			want: `project = FIELDCTO AND created >= 2026-10-02 AND updated >= 2026-09-25 ORDER BY created DESC`,
 		},
 		{
-			name: "week, month, and year units",
-			jql:  `created >= -2w AND resolved >= -1M AND due >= -1y`,
-			want: `created >= 2026-09-25 AND resolved >= 2026-09-09 AND due >= 2025-10-09`,
+			name: "week and year units",
+			jql:  `created >= -2w AND due >= -1y`,
+			want: `created >= 2026-09-25 AND due >= 2025-10-09`,
 		},
 		{
-			// Jira reads lowercase m as MINUTES. QuerySystemPrompt lists "-1m"
-			// in a way that reads as "one month" (FIELDCTO-2817), so the model
-			// may emit it meaning a month. Rendering the minute-wide window it
-			// actually produces is the point: a timestamp moments old next to a
-			// request that said "last month" is wrong at a glance, where
-			// "2026-09-09" would have looked entirely reasonable.
+			// Jira reads BOTH m and M as minutes, case-insensitively, and has
+			// no month unit. Verified live: "-100000m" and "-100000M" each
+			// return what "-70d" does, 100000 minutes being about 69 days.
+			//
+			// QuerySystemPrompt lists "-1m" in a way that reads as "one month"
+			// (FIELDCTO-2817), so the model may emit it meaning a month.
+			// Rendering the minute-wide window it actually produces is the
+			// point: a timestamp moments old, next to a request that said
+			// "last month", is wrong at a glance — where "2026-09-09" would
+			// have looked entirely reasonable.
 			name: "lowercase m is minutes, not months, and shows a clock time",
 			jql:  `created >= -1m`,
+			want: `created >= 2026-10-09 11:59`,
+		},
+		{
+			name: "uppercase M is also minutes, not months",
+			jql:  `created >= -1M`,
 			want: `created >= 2026-10-09 11:59`,
 		},
 		{
