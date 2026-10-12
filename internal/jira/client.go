@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
+	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 )
 
 type Client struct {
@@ -206,10 +207,18 @@ func (c *Client) GetOpenIssuesSince(since time.Time) ([]Issue, error) {
 	return c.searchIssues(jql, 100)
 }
 
-// SearchJQL runs an arbitrary JQL query and returns matching issues.
-func (c *Client) SearchJQL(jql string, max int) ([]Issue, error) {
-	slog.Info("search_jql", "jql", jql, "max", max)
-	return c.searchIssues(jql, max)
+// SearchJQL runs an arbitrary JQL query and returns matching issues. It is
+// the single chokepoint through which every JQL source in this codebase --
+// LLM-translated, hand-built, and interpolated -- is executed, so it is also
+// the single point at which a local, network-free structural guard is
+// enforced (FIELDCTO-2810). The guard fails closed and never repairs: a
+// rejected query returns an error rather than a silently rewritten one.
+func (c *Client) SearchJQL(rawJQL string, max int) ([]Issue, error) {
+	if err := jql.Validate(rawJQL, jql.Options{DefaultProject: c.project}); err != nil {
+		return nil, err
+	}
+	slog.Info("search_jql", "jql", rawJQL, "max", max)
+	return c.searchIssues(rawJQL, max)
 }
 
 // --- Boards & Sprints (Agile REST API — still v1.0) ---

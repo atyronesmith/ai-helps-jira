@@ -880,7 +880,7 @@ func TestHandleQuery_HitMaxResultsCap(t *testing.T) {
 	t.Setenv("JIRA_SERVER", ts.URL)
 
 	h.translate = func(_ context.Context, _ *config.Config, _ string) (*llm.QueryResult, error) {
-		return &llm.QueryResult{JQL: "status = Open", Route: "fast_path"}, nil
+		return &llm.QueryResult{JQL: "project = TEST AND status = Open", Route: "fast_path"}, nil
 	}
 
 	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{
