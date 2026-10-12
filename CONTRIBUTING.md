@@ -125,6 +125,42 @@ Build uses `--format docker` for HEALTHCHECK support in podman.
 3. Register the tool in `internal/mcpserver/server.go`
 4. If the tool has a web view, add a template in `internal/web/templates/` and register it in `webserver.go`
 
+## Running the JQL Oracle Suite
+
+Every JQL shape this tool can generate -- the `nl2jql` fast path, `ensureProjectScope`,
+`WeeklyActivityJQL`, and the hand-built `fmt.Sprintf` templates in `internal/jira/client.go`,
+`cmd/find_similar.go`, and `internal/mcpserver/` -- has a corpus test that validates it against
+Jira's own parser (`POST /rest/api/3/jql/parse?validation=strict`). This is the only check that can
+catch a grammar violation or a hallucinated field/value, because only Jira knows its own grammar and
+this tenant's vocabulary.
+
+These tests live in `internal/llm/jqltranslate_oracle_test.go` and `internal/jira/jql_oracle_test.go`,
+plus the shared client in `internal/jqloracle/`. They are gated behind the `oracle` build tag, so the
+default `go build ./...` / `go vet ./...` / `go test ./...` never compiles or runs them -- the default
+suite stays hermetic and requires no network access or credentials.
+
+To run the oracle suite, you need a live Jira instance. Export credentials first (never commit `.env`
+or print `JIRA_API_TOKEN`):
+
+```sh
+set -a && . ./.env && set +a
+go test -tags=oracle ./...
+```
+
+Without `JIRA_SERVER` / `JIRA_EMAIL` / `JIRA_API_TOKEN` exported, each oracle test skips (not fails)
+with a clear message, so `go test -tags=oracle ./...` is still safe to run locally without
+credentials -- it just reports fewer tests run.
+
+Notes for anyone extending this corpus:
+- Positive (should-be-valid) cases must name real tenant data (a real project key, a real issue key)
+  because `validation=strict` checks value existence, not just syntax -- a fictitious project name
+  fails for the wrong reason and makes the corpus untrustworthy.
+- The endpoint returns HTTP 200 whether a query is valid or not; always assert on the response's
+  `errors[]` array, never the status code.
+- Where Jira returns a parsed structure, assert on it too (e.g. top-level `where.operator` and
+  whether a `project` clause sits at that top level) -- this is what actually catches the
+  FIELDCTO-2807 class of bug, which is syntactically valid JQL with zero `errors[]`.
+
 ## Reporting Issues
 
 Open an issue with:
