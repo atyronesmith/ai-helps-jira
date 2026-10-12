@@ -14,6 +14,7 @@ import (
 	"github.com/atyronesmith/ai-helps-jira/internal/confluence"
 	"github.com/atyronesmith/ai-helps-jira/internal/format"
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
+	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
 )
 
@@ -95,17 +96,22 @@ func runWeeklyStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Go's %q is Go quoting, not JQL quoting; jql.Quote is the canonical JQL
+	// string-literal quoter (see internal/jql.Quote and its test comparing
+	// the two directly). They agree for the characters that matter here
+	// (an embedded quote, a backslash), but cfg.Assignee() already uses
+	// jql.Quote, so use it here too rather than a second quoting path.
 	assigneeJQL := cfg.Assignee()
 	if email := cfg.AssigneeEmail(); email != "" {
-		assigneeJQL = fmt.Sprintf("%q", email)
+		assigneeJQL = jql.Quote(email)
 	}
-	jql, err := jira.WeeklyActivityJQL(cfg.JiraProject, assigneeJQL, startStr, endStr)
+	weeklyJQL, err := jira.WeeklyActivityJQL(cfg.JiraProject, assigneeJQL, startStr, endStr)
 	if err != nil {
 		return err
 	}
 
 	spinner := format.StatusPrinter("Searching JIRA...")
-	issues, err := client.SearchJQL(jql, 100)
+	issues, err := client.SearchJQL(weeklyJQL, 100)
 	spinner.Stop()
 	if err != nil {
 		return fmt.Errorf("JIRA search failed: %w", err)

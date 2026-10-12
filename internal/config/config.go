@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
+
+	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 )
 
 // secretsDirs are checked (in order) for secret files before falling back
@@ -123,7 +125,7 @@ func LoadJIRAOnly(userOverride, projectOverride string) (*Config, error) {
 
 func (c *Config) Assignee() string {
 	if c.JiraUser != "" {
-		return fmt.Sprintf("%q", c.JiraUser)
+		return jql.Quote(c.JiraUser)
 	}
 	return "currentUser()"
 }

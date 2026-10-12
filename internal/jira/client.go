@@ -196,26 +196,26 @@ func parseAPIIssues(raw []apiIssue) []Issue {
 }
 
 func (c *Client) GetOpenIssues() ([]Issue, error) {
-	jql := fmt.Sprintf(
+	q := fmt.Sprintf(
 		"assignee = %s AND project = %s "+
 			"AND status NOT IN (Done, Closed, Resolved) "+
 			"ORDER BY priority ASC, status ASC",
-		c.assignee, c.project,
+		c.assignee, jql.QuoteIdent(c.project),
 	)
-	slog.Debug("get_open_issues", "jql", jql)
-	return c.searchIssues(jql, 100)
+	slog.Debug("get_open_issues", "jql", q)
+	return c.searchIssues(q, 100)
 }
 
 func (c *Client) GetOpenIssuesSince(since time.Time) ([]Issue, error) {
-	jql := fmt.Sprintf(
+	q := fmt.Sprintf(
 		"assignee = %s AND project = %s "+
 			"AND status NOT IN (Done, Closed, Resolved) "+
-			"AND updated >= \"%s\" "+
+			"AND updated >= %s "+
 			"ORDER BY priority ASC, status ASC",
-		c.assignee, c.project, since.Format("2006-01-02 15:04"),
+		c.assignee, jql.QuoteIdent(c.project), jql.Quote(since.Format("2006-01-02 15:04")),
 	)
-	slog.Debug("get_open_issues_since", "jql", jql, "since", since)
-	return c.searchIssues(jql, 100)
+	slog.Debug("get_open_issues_since", "jql", q, "since", since)
+	return c.searchIssues(q, 100)
 }
 
 // SearchJQL runs an arbitrary JQL query and returns matching issues. It is
@@ -291,11 +291,11 @@ func (c *Client) getSprintIssues(board apiBoard) *BoardInfo {
 	sprint := sprints.Values[0]
 	slog.Info("active sprint", "name", sprint.Name, "id", sprint.ID, "board", board.Name)
 
-	jql := fmt.Sprintf(
+	q := fmt.Sprintf(
 		"assignee = %s AND sprint = %d AND project = %s ORDER BY priority ASC",
-		c.assignee, sprint.ID, c.project,
+		c.assignee, sprint.ID, jql.QuoteIdent(c.project),
 	)
-	issues, err := c.searchIssues(jql, 50)
+	issues, err := c.searchIssues(q, 50)
 	if err != nil {
 		slog.Warn("failed to fetch sprint issues", "sprint", sprint.Name, "error", err)
 		return nil
@@ -317,15 +317,29 @@ func (c *Client) getSprintIssues(board apiBoard) *BoardInfo {
 	}
 }
 
+// getKanbanIssues queries the board-scoped agile endpoint directly with
+// doRequest rather than through searchIssues, because the agile issue list
+// is already scoped to one board by the URL path and a board can span
+// projects -- a project predicate here would be wrong, not merely
+// unnecessary. That also means it bypasses searchIssues's guard
+// (FIELDCTO-2810) and error-wrapping (FIELDCTO-2814), so it validates its
+// own JQL here with DefaultProject left empty: rules 1-4 (balanced quotes
+// and parens, ORDER BY placement, no dangling operators) still apply, and
+// rule 5 (the scope invariant) is skipped on purpose rather than satisfied
+// with a project this query must not carry (FIELDCTO-2818).
 func (c *Client) getKanbanIssues(board apiBoard) *BoardInfo {
 	// Use board-specific agile endpoint so each board only shows its own issues
-	jql := fmt.Sprintf(
+	kanbanJQL := fmt.Sprintf(
 		"assignee = %s AND status NOT IN (Done, Closed, Resolved) "+
 			"ORDER BY priority ASC, status ASC",
 		c.assignee,
 	)
+	if err := jql.Validate(kanbanJQL, jql.Options{}); err != nil {
+		slog.Error("kanban JQL failed validation", "board", board.Name, "error", err)
+		return nil
+	}
 	path := fmt.Sprintf("/rest/agile/1.0/board/%d/issue?jql=%s&maxResults=50",
-		board.ID, url.QueryEscape(jql))
+		board.ID, url.QueryEscape(kanbanJQL))
 	slog.Debug("kanban issues", "board", board.Name, "path", path)
 
 	var resp searchResponse
@@ -735,14 +749,20 @@ func (c *Client) GetChildIssues(parentKey string) ([]IssueLink, error) {
 	return links, nil
 }
 
-// SearchByRelease returns all issues in a fixVersion.
+// SearchByRelease returns all issues in a fixVersion. releaseName is
+// caller-supplied (an MCP tool argument / CLI flag), so it is always quoted
+// via jql.Quote rather than the weaker "quote only if needed" QuoteIdent --
+// unlike the old fmt.Sprintf("%q", ...), which is Go quoting, not JQL
+// quoting (see internal/jql.Quote's doc comment and its test comparing the
+// two) -- so a value containing a quote, a parenthesis, or the word OR
+// cannot break out of the fixVersion clause.
 func (c *Client) SearchByRelease(releaseName string) ([]Issue, error) {
-	jql := fmt.Sprintf(
-		"fixVersion = %q AND project = %s ORDER BY issuetype ASC, priority ASC",
-		releaseName, c.project,
+	q := fmt.Sprintf(
+		"fixVersion = %s AND project = %s ORDER BY issuetype ASC, priority ASC",
+		jql.Quote(releaseName), jql.QuoteIdent(c.project),
 	)
-	slog.Info("search_by_release", "release", releaseName, "jql", jql)
-	return c.searchIssues(jql, 100)
+	slog.Info("search_by_release", "release", releaseName, "jql", q)
+	return c.searchIssues(q, 100)
 }
 
 func truncate(s string, n int) string {

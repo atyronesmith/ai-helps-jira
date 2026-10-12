@@ -3,6 +3,8 @@ package jira
 import (
 	"fmt"
 	"time"
+
+	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 )
 
 // WeeklyActivityJQL builds the query behind the weekly status report: issues the
@@ -35,6 +37,6 @@ func WeeklyActivityJQL(project, user, start, end string) (string, error) {
 		`project = %s AND (status CHANGED BY %s AFTER %q BEFORE %q`+
 			` OR (worklogAuthor = %s AND worklogDate >= %q AND worklogDate <= %q))`+
 			` ORDER BY updated DESC`,
-		project, user, start, endExclusive, user, start, end,
+		jql.QuoteIdent(project), user, start, endExclusive, user, start, end,
 	), nil
 }

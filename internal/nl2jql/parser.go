@@ -22,6 +22,8 @@ import (
 
 	"github.com/alecthomas/participle/v2"
 	"github.com/alecthomas/participle/v2/lexer"
+
+	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 )
 
 // ---------------------------------------------------------------------------
@@ -227,12 +229,10 @@ func clean(s string) string {
 }
 
 // quoteIfNeeded quotes a JQL value only when the syntax requires it
-// (embedded whitespace or quotes).
+// (embedded whitespace or quotes). It wraps internal/jql.QuoteIdent so this
+// logic has one implementation in the tree rather than two (FIELDCTO-2812).
 func quoteIfNeeded(s string) string {
-	if strings.ContainsAny(s, " \t\"") {
-		return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
-	}
-	return s
+	return jql.QuoteIdent(s)
 }
 
 // normaliseStatus lowercases the raw token and folds "-" / "_"

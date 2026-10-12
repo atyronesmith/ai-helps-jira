@@ -10,6 +10,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
+	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 )
 
 // --- Tool Definitions ---
@@ -213,8 +214,14 @@ func (h *Handlers) HandleGetIssue(ctx context.Context, req mcp.CallToolRequest) 
 	// changed it out from under us -- Jira bumps `updated` on all of those.
 	// If this lightweight check fails for any reason, fall back to treating
 	// the cache as untrustworthy rather than risk serving stale data.
+	// key arrives as an MCP tool argument -- caller-controlled -- so it is
+	// quoted via jql.QuoteIdent rather than interpolated raw. An ordinary
+	// issue key (PROJ-123) renders unchanged; a hostile value containing a
+	// quote or whitespace (e.g. `" OR project = OTHER`) is fully quoted,
+	// which keeps it inside the key clause instead of letting it inject a
+	// top-level OR (FIELDCTO-2812).
 	var knownUpdated time.Time
-	if fresh, searchErr := client.SearchJQL(fmt.Sprintf("key = %s", key), 1); searchErr == nil && len(fresh) == 1 {
+	if fresh, searchErr := client.SearchJQL(fmt.Sprintf("key = %s", jql.QuoteIdent(key)), 1); searchErr == nil && len(fresh) == 1 {
 		knownUpdated = fresh[0].Updated
 	} else {
 		knownUpdated = time.Now()

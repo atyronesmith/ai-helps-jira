@@ -12,6 +12,7 @@ import (
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
 	"github.com/atyronesmith/ai-helps-jira/internal/format"
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
+	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
 )
 
@@ -80,11 +81,11 @@ func runFindSimilar(cmd *cobra.Command, args []string) error {
 
 	// Fetch candidate issues
 	spinner := format.StatusPrinter("Fetching open issues...")
-	jql := fmt.Sprintf(
+	candidateJQL := fmt.Sprintf(
 		"project = %s AND status NOT IN (Done, Closed, Resolved) ORDER BY updated DESC",
-		cfg.JiraProject,
+		jql.QuoteIdent(cfg.JiraProject),
 	)
-	issues, err := client.SearchJQL(jql, flagSimilarMax)
+	issues, err := client.SearchJQL(candidateJQL, flagSimilarMax)
 	spinner.Stop()
 	if err != nil {
 		return fmt.Errorf("JIRA search failed: %w", err)

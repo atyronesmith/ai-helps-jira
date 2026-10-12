@@ -885,16 +885,21 @@ func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolReque
 		return errorResult(err.Error()), nil
 	}
 
+	// Go's %q is Go quoting, not JQL quoting (see internal/jql.Quote and its
+	// test comparing the two); cfg.Assignee() already uses jql.Quote, so use
+	// it here too (this mirrors cmd/weekly_status.go, which had the same
+	// fmt.Sprintf("%q", ...) -- a site the FIELDCTO-2812 grep inventory did
+	// not catch because it doesn't match any of the listed patterns).
 	assigneeJQL := cfg.Assignee()
 	if email := cfg.AssigneeEmail(); email != "" {
-		assigneeJQL = fmt.Sprintf("%q", email)
+		assigneeJQL = jql.Quote(email)
 	}
-	jql, err := jira.WeeklyActivityJQL(cfg.JiraProject, assigneeJQL, startStr, endStr)
+	weeklyJQL, err := jira.WeeklyActivityJQL(cfg.JiraProject, assigneeJQL, startStr, endStr)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
 
-	issues, err := client.SearchJQL(jql, 100)
+	issues, err := client.SearchJQL(weeklyJQL, 100)
 	if err != nil {
 		return errorResult(fmt.Sprintf("JIRA search failed: %v", err)), nil
 	}
@@ -1428,11 +1433,11 @@ func (h *Handlers) HandleFindSimilar(ctx context.Context, req mcp.CallToolReques
 	}
 
 	// Fetch candidate issues
-	jql := fmt.Sprintf(
+	candidateJQL := fmt.Sprintf(
 		"project = %s AND status NOT IN (Done, Closed, Resolved) ORDER BY updated DESC",
-		cfg.JiraProject,
+		jql.QuoteIdent(cfg.JiraProject),
 	)
-	issues, err := client.SearchJQL(jql, maxCandidates)
+	issues, err := client.SearchJQL(candidateJQL, maxCandidates)
 	if err != nil {
 		return errorResult(fmt.Sprintf("JIRA search failed: %v", err)), nil
 	}

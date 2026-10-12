@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 )
 
 func newTestClient(ts *httptest.Server) *Client {
@@ -199,6 +201,44 @@ func TestSearchByRelease(t *testing.T) {
 	_, err := c.SearchByRelease("v1.0")
 	if err != nil {
 		t.Fatalf("SearchByRelease: %v", err)
+	}
+}
+
+// TestSearchByRelease_RejectsInjectionAttempt is the FIELDCTO-2812 negative
+// test for the one caller-supplied value SearchByRelease accepts directly:
+// releaseName comes straight from the caller (CLI flag / MCP argument), and a
+// value shaped like `" OR project = OTHER` would, if interpolated with the
+// old fmt.Sprintf("%q", ...), still land inside Go's quoting -- but the
+// property under test here is the one that matters operationally: the
+// resulting JQL must still scope to the client's configured project rather
+// than escaping it via a top-level OR.
+func TestSearchByRelease_RejectsInjectionAttempt(t *testing.T) {
+	var recorded string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payload := readBody(t, r)
+		recorded = payload["jql"].(string)
+		jsonResponse(t, w, 200, map[string]any{"issues": []map[string]any{}, "total": 0})
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts) // project: "TEST"
+	hostile := `" OR project = OTHER`
+	if _, err := c.SearchByRelease(hostile); err != nil {
+		t.Fatalf("SearchByRelease: %v", err)
+	}
+
+	if err := jql.Validate(recorded, jql.Options{DefaultProject: "TEST"}); err != nil {
+		t.Errorf("expected quoted JQL to pass validation scoped to TEST, got: %v\njql: %s", err, recorded)
+	}
+	blanked := jql.BlankQuotedLiterals(recorded)
+	if jql.TopLevelKeywordIndex(blanked, "OR") >= 0 {
+		t.Errorf("hostile OR escaped quoting into a top-level keyword: %s", recorded)
+	}
+	if !strings.Contains(recorded, "project = TEST") {
+		t.Errorf("expected JQL still scoped to project = TEST, got: %s", recorded)
+	}
+	if strings.Contains(blanked, "OTHER") {
+		t.Errorf("hostile project reference leaked outside the quoted literal: %s", recorded)
 	}
 }
 
@@ -1279,6 +1319,120 @@ func TestGetBoardIssues(t *testing.T) {
 	}
 	if boards[0].Issues[0].Key != "TEST-1" {
 		t.Errorf("expected issue TEST-1, got %s", boards[0].Issues[0].Key)
+	}
+}
+
+// TestGetBoardIssues_KanbanBoard covers the getKanbanIssues path
+// (FIELDCTO-2818): a board with no active sprint falls through to the
+// board-scoped agile endpoint, which embeds JQL directly in the URL rather
+// than going through searchIssues. This confirms the guard added there
+// still lets a well-formed, deliberately project-less query through.
+func TestGetBoardIssues_KanbanBoard(t *testing.T) {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/rest/agile/1.0/board", func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(t, w, 200, map[string]any{
+			"values": []map[string]any{
+				{"id": 2, "name": "Kanban Board", "type": "kanban"},
+			},
+		})
+	})
+
+	// No active sprints -- board/2/sprint returns a 404-equivalent (empty),
+	// which getSprintIssues treats as "board does not support sprints".
+	mux.HandleFunc("/rest/agile/1.0/board/2/sprint", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+
+	var gotJQL string
+	mux.HandleFunc("/rest/agile/1.0/board/2/issue", func(w http.ResponseWriter, r *http.Request) {
+		gotJQL = r.URL.Query().Get("jql")
+		jsonResponse(t, w, 200, map[string]any{
+			"issues": []map[string]any{
+				{
+					"key": "TEST-5",
+					"fields": map[string]any{
+						"summary":  "Kanban task",
+						"status":   map[string]any{"name": "Open"},
+						"priority": map[string]any{"name": "Low"},
+						"updated":  "2026-01-15T10:00:00.000+0000",
+						"assignee": nil,
+					},
+				},
+			},
+			"total": 1,
+		})
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	boards, err := c.GetBoardIssues()
+	if err != nil {
+		t.Fatalf("GetBoardIssues: %v", err)
+	}
+	if len(boards) != 1 || boards[0].BoardType != "kanban" {
+		t.Fatalf("expected 1 kanban board result, got %+v", boards)
+	}
+	if len(boards[0].Issues) != 1 || boards[0].Issues[0].Key != "TEST-5" {
+		t.Fatalf("expected issue TEST-5, got %+v", boards[0].Issues)
+	}
+
+	if gotJQL == "" {
+		t.Fatal("expected the kanban board endpoint to receive a jql query param")
+	}
+	// The agile endpoint is already scoped to this one board, so the JQL
+	// deliberately carries no project predicate -- confirm that's still true
+	// and that validating it with no default project (as getKanbanIssues
+	// does) finds it well-formed.
+	if strings.Contains(strings.ToLower(gotJQL), "project") {
+		t.Errorf("kanban JQL should carry no project predicate, got %q", gotJQL)
+	}
+	if err := jql.Validate(gotJQL, jql.Options{}); err != nil {
+		t.Errorf("expected kanban JQL to validate with no default project, got: %v\njql: %s", err, gotJQL)
+	}
+}
+
+// TestGetBoardIssues_KanbanBoard_InvalidJQLIsNotSent locks in the
+// FIELDCTO-2818 fix directly: getKanbanIssues must validate its JQL before
+// ever reaching doRequest, so a structurally broken query never reaches the
+// network. This is exercised by temporarily breaking the assignee token
+// (which is attacker-reachable only via c.assignee's upstream source, not
+// directly, but stands in here for "whatever produced malformed JQL").
+func TestGetBoardIssues_KanbanBoard_InvalidJQLIsNotSent(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/agile/1.0/board", func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(t, w, 200, map[string]any{
+			"values": []map[string]any{{"id": 3, "name": "Broken Board", "type": "kanban"}},
+		})
+	})
+	mux.HandleFunc("/rest/agile/1.0/board/3/sprint", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+	var hitIssueEndpoint bool
+	mux.HandleFunc("/rest/agile/1.0/board/3/issue", func(w http.ResponseWriter, r *http.Request) {
+		hitIssueEndpoint = true
+		jsonResponse(t, w, 200, map[string]any{"issues": []map[string]any{}, "total": 0})
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	// An unbalanced quote in the assignee token is enough to make the
+	// template's rendered JQL fail Validate's rule 1.
+	c.assignee = `"unterminated`
+
+	boards, err := c.GetBoardIssues()
+	if err != nil {
+		t.Fatalf("GetBoardIssues: %v", err)
+	}
+	if len(boards) != 0 {
+		t.Fatalf("expected no board results for invalid JQL, got %+v", boards)
+	}
+	if hitIssueEndpoint {
+		t.Error("expected getKanbanIssues to reject invalid JQL locally rather than calling the agile endpoint")
 	}
 }
 
