@@ -2,6 +2,22 @@
 
 Tracking epic: [FIELDCTO-2809](https://redhat.atlassian.net/browse/FIELDCTO-2809)
 
+## Status
+
+As of 2026-10-12. Phases are tracked by the FIELDCTO items below; merges are on `main`.
+
+| Item | Phase | Status |
+|------|-------|--------|
+| 2810 | Lexical guard at the chokepoint | ✅ done (merged `cf247cf`) |
+| 2811 | CI oracle + golden corpus | ✅ done (merged `3b545ee`) |
+| 2814 | Error propagation | ✅ done (merged `9bba020`) |
+| 2815 | Surface query intent | ✅ done (merged `4f00ce4`) |
+| 2816 | Weekly status nonexistent field | ✅ done (`68c7a28`) |
+| 2812 | Interpolation sites | ✅ done (merged `2be2005`, with 2818) — two config-sourced raw `project = %s` sites (`cmd/find_similar.go:85`, `internal/mcpserver/tools.go:1437`) remain by design as accepted low-risk |
+| 2817 | Relative-date unit fix | ✅ done (merged `0cef9b6`) |
+| 2818 | Board-query guard | ✅ done (merged `2be2005`, with 2812) |
+| 2813 | AST-based construction | ⏳ open — `participle` AST + canonical renderer not yet landed |
+
 ## Background
 
 On 2026-10-09, while pulling Q3 data for a quarterly review, a FIELDCTO-scoped query came back

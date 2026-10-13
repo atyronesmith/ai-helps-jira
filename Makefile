@@ -17,7 +17,7 @@ IMAGE     := jira-cli
 CONTAINER := jira-cli-mcp
 
 .PHONY: all build clean install uninstall test lint fmt vet tidy run \
-        release check restart-mcp container container-build container-run container-stop \
+        release check doc-lint restart-mcp container container-build container-run container-stop \
         container-scan container-sign container-sbom help
 
 all: check build  ## Run checks then build
@@ -56,6 +56,9 @@ test:  ## Run tests
 	go test -v -race -count=1 ./...
 
 check: tidy fmt vet  ## Run all checks (tidy, fmt, vet)
+
+doc-lint:  ## Check docs stay in sync with code (package + target coverage)
+	@bash scripts/doc-lint.sh
 
 release: clean  ## Build release binaries for all platforms
 	@mkdir -p dist

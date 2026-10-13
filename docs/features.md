@@ -3,6 +3,8 @@
 Each feature below uses the existing Vertex AI / Claude integration and JIRA REST API client.
 Features are ordered roughly by implementation complexity (simplest first).
 
+**Status legend:** ✅ shipped · ⏳ partial or in progress · unmarked = not started. Last reviewed 2026-10-12.
+
 ---
 
 ## 1. Standup Prep
@@ -200,7 +202,7 @@ Generate user-facing release notes from issues in a fix version or date range.
 
 ---
 
-## 7. Duplicate / Related Issue Detection
+## 7. Duplicate / Related Issue Detection ✅
 
 Find semantically similar issues when creating or viewing a ticket.
 
@@ -233,7 +235,9 @@ Find semantically similar issues when creating or viewing a ticket.
 
 ---
 
-## 8. Workload / Risk Analysis
+## 8. Workload / Risk Analysis ⏳ Partial
+
+**Status (2026-10-12):** The rule-based half ships as `cmd/backlog_health.go` (the `backlog-health` command and MCP tool): stale tickets, missing descriptions, orphaned and unassigned issues, with an optional LLM executive summary. The "workload overload / deadline-pressure / priority-imbalance" LLM analysis from the vision below is not yet built.
 
 Analyze assigned issues and flag risks: overload, stale tickets, deadline pressure.
 
@@ -263,7 +267,9 @@ Analyze assigned issues and flag risks: overload, stale tickets, deadline pressu
 
 ---
 
-## 9. Smart Ticket Creation from Context
+## 9. Smart Ticket Creation from Context ⏳ Partial
+
+**Status (2026-10-12):** `cmd/create_issue.go` and `cmd/create_epic.go` cover explicit field-based creation; the natural-language / meeting-notes text-extraction variant (`--from-text` / `--from-file`) described below is not yet built.
 
 Create tickets from natural language, meeting notes, or pasted text. LLM extracts
 structured fields.
