@@ -10,11 +10,12 @@ import (
 )
 
 var (
-	flagUser    string
-	flagProject string
-	flagFormat  string
-	flagOutfile string
-	flagVerbose int
+	flagUser      string
+	flagProject   string
+	flagFormat    string
+	flagOutfile   string
+	flagVerbose   int
+	binaryVersion = "dev"
 )
 
 var rootCmd = &cobra.Command{
@@ -57,6 +58,9 @@ func init() {
 }
 
 func SetVersionInfo(version, commit, date string) {
+	if version != "" {
+		binaryVersion = version
+	}
 	rootCmd.Version = fmt.Sprintf("%s (commit: %s, built: %s)", version, commit, date)
 }
 

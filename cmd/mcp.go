@@ -70,5 +70,6 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		Transport: flagMCPTransport,
 		SSEPort:   flagMCPSSEPort,
 		BindHost:  flagMCPBind,
+		Version:   binaryVersion,
 	})
 }

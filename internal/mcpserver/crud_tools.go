@@ -23,6 +23,7 @@ func getIssueToolDef() mcp.Tool {
 		mcp.WithBoolean("include_links", mcp.Description("Include linked issues and subtasks. Default true.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		readOnlyAnnotations(),
 	)
 }
 
@@ -37,6 +38,7 @@ func createIssueToolDef() mcp.Tool {
 		mcp.WithString("assignee_account_id", mcp.Description("Assignee account ID. Use jira_lookup_user to find.")),
 		mcp.WithString("project", mcp.Description("JIRA project key. Defaults to configured project.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
+		writeAnnotations(false, false),
 	)
 }
 
@@ -51,6 +53,7 @@ func editIssueToolDef() mcp.Tool {
 		mcp.WithObject("custom_fields", mcp.Description("Custom fields as key-value pairs (e.g. {\"customfield_NNNNN\": 3} for story points).")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		writeAnnotations(true, true),
 	)
 }
 
@@ -60,6 +63,7 @@ func getTransitionsToolDef() mcp.Tool {
 		mcp.WithString("issue_key", mcp.Required(), mcp.Description("JIRA issue key (e.g. PROJ-123).")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		readOnlyAnnotations(),
 	)
 }
 
@@ -70,6 +74,7 @@ func transitionToolDef() mcp.Tool {
 		mcp.WithString("transition_id", mcp.Required(), mcp.Description("Transition ID from jira_get_transitions.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		writeAnnotations(true, false),
 	)
 }
 
@@ -80,6 +85,7 @@ func addCommentToolDef() mcp.Tool {
 		mcp.WithString("body", mcp.Required(), mcp.Description("Comment text in plain text.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		writeAnnotations(false, false),
 	)
 }
 
@@ -89,6 +95,7 @@ func lookupUserToolDef() mcp.Tool {
 		mcp.WithString("query", mcp.Required(), mcp.Description("Search string (name or email).")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		readOnlyAnnotations(),
 	)
 }
 
@@ -99,6 +106,7 @@ func attachFileToolDef() mcp.Tool {
 		mcp.WithString("file_path", mcp.Required(), mcp.Description("Absolute path to the local file to attach.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		writeAnnotations(false, false),
 	)
 }
 
@@ -111,6 +119,7 @@ func addWorklogToolDef() mcp.Tool {
 		mcp.WithString("started", mcp.Description("When the work started in ISO 8601 format (e.g. '2024-01-15T09:00:00.000+0000'). Defaults to now.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		writeAnnotations(false, false),
 	)
 }
 
@@ -122,6 +131,7 @@ func linkIssuesToolDef() mcp.Tool {
 		mcp.WithString("link_type", mcp.Required(), mcp.Description("Link type name: Blocks, Cloners, Duplicate, Relates, etc.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		writeAnnotations(false, true),
 	)
 }
 
@@ -131,6 +141,7 @@ func watchIssueToolDef() mcp.Tool {
 		mcp.WithString("issue_key", mcp.Required(), mcp.Description("JIRA issue key (e.g. PROJ-123).")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		writeAnnotations(false, true),
 	)
 }
 
@@ -140,6 +151,7 @@ func unwatchIssueToolDef() mcp.Tool {
 		mcp.WithString("issue_key", mcp.Required(), mcp.Description("JIRA issue key (e.g. PROJ-123).")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		writeAnnotations(true, true),
 	)
 }
 
@@ -150,6 +162,7 @@ func addLabelsToolDef() mcp.Tool {
 		mcp.WithString("labels", mcp.Required(), mcp.Description("Comma-separated labels to add (e.g. 'bug,urgent').")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		writeAnnotations(false, true),
 	)
 }
 
@@ -160,6 +173,7 @@ func removeLabelsToolDef() mcp.Tool {
 		mcp.WithString("labels", mcp.Required(), mcp.Description("Comma-separated labels to remove (e.g. 'bug,urgent').")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		writeAnnotations(true, true),
 	)
 }
 
@@ -170,6 +184,7 @@ func listSprintsToolDef() mcp.Tool {
 		mcp.WithString("state", mcp.Description("Sprint state filter: active, future, closed. Default: all states.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		readOnlyAnnotations(),
 	)
 }
 
@@ -179,6 +194,7 @@ func voteIssueToolDef() mcp.Tool {
 		mcp.WithString("issue_key", mcp.Required(), mcp.Description("JIRA issue key (e.g. PROJ-123).")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		writeAnnotations(false, true),
 	)
 }
 
@@ -188,6 +204,7 @@ func unvoteIssueToolDef() mcp.Tool {
 		mcp.WithString("issue_key", mcp.Required(), mcp.Description("JIRA issue key (e.g. PROJ-123).")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		writeAnnotations(true, true),
 	)
 }
 

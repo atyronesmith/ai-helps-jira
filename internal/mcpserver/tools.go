@@ -107,6 +107,28 @@ func (h *Handlers) viewURL(id string) string {
 
 // --- Tool Definitions ---
 
+// readOnlyAnnotations marks tools that inspect or summarize external data.
+// The service interaction is open-world because results depend on Jira,
+// Confluence, or an LLM outside this process.
+func readOnlyAnnotations() mcp.ToolOption {
+	return func(tool *mcp.Tool) {
+		mcp.WithReadOnlyHintAnnotation(true)(tool)
+		mcp.WithDestructiveHintAnnotation(false)(tool)
+		mcp.WithIdempotentHintAnnotation(true)(tool)
+		mcp.WithOpenWorldHintAnnotation(true)(tool)
+	}
+}
+
+// writeAnnotations marks tools that can change Jira or Confluence state.
+func writeAnnotations(destructive, idempotent bool) mcp.ToolOption {
+	return func(tool *mcp.Tool) {
+		mcp.WithReadOnlyHintAnnotation(false)(tool)
+		mcp.WithDestructiveHintAnnotation(destructive)(tool)
+		mcp.WithIdempotentHintAnnotation(idempotent)(tool)
+		mcp.WithOpenWorldHintAnnotation(true)(tool)
+	}
+}
+
 func summaryToolDef() mcp.Tool {
 	return mcp.NewTool("jira_summary",
 		mcp.WithDescription("Show daily summary of assigned JIRA issues and sprint info. Returns text + URL for rich HTML dashboard."),
@@ -114,6 +136,7 @@ func summaryToolDef() mcp.Tool {
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
 		mcp.WithBoolean("refresh", mcp.Description("Force full fetch, bypass cache.")),
 		mcp.WithBoolean("cache_only", mcp.Description("Use cached data only, no API calls.")),
+		readOnlyAnnotations(),
 	)
 }
 
@@ -124,6 +147,7 @@ func queryToolDef() mcp.Tool {
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
 		mcp.WithNumber("max_results", mcp.Description("Maximum results. Default 50.")),
+		readOnlyAnnotations(),
 	)
 }
 
@@ -135,6 +159,7 @@ func digestToolDef() mcp.Tool {
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
 		mcp.WithNumber("days", mcp.Description("Include comments from last N days. Default: since last run or 7 days.")),
 		mcp.WithBoolean("cache_only", mcp.Description("Use cached data only.")),
+		readOnlyAnnotations(),
 	)
 }
 
@@ -145,6 +170,7 @@ func enrichToolDef() mcp.Tool {
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
 		mcp.WithBoolean("apply", mcp.Description("Apply enrichment to JIRA. Default false.")),
+		writeAnnotations(true, false),
 	)
 }
 
@@ -157,6 +183,7 @@ func weeklyStatusToolDef() mcp.Tool {
 		mcp.WithString("end_date", mcp.Description("End of reporting period (YYYY-MM-DD). Defaults to today.")),
 		mcp.WithBoolean("confluence", mcp.Description("Post report to Confluence. Default false.")),
 		mcp.WithString("confluence_parent_id", mcp.Description("Confluence parent page ID. Defaults to configured parent.")),
+		writeAnnotations(false, false),
 	)
 }
 
@@ -167,6 +194,7 @@ func backlogHealthToolDef() mcp.Tool {
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
 		mcp.WithNumber("stale_days", mcp.Description("Days without update before an active issue is stale. Default 14.")),
 		mcp.WithBoolean("no_llm", mcp.Description("Skip LLM summary, return rule-based checks only. Default false.")),
+		readOnlyAnnotations(),
 	)
 }
 
@@ -176,6 +204,7 @@ func summarizeCommentsToolDef() mcp.Tool {
 		mcp.WithString("issue_key", mcp.Required(), mcp.Description("JIRA issue key (e.g. PROJ-123).")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		readOnlyAnnotations(),
 	)
 }
 
@@ -188,6 +217,7 @@ func findSimilarToolDef() mcp.Tool {
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
 		mcp.WithNumber("threshold", mcp.Description("Minimum confidence threshold (0.0-1.0). Default 0.5.")),
 		mcp.WithNumber("max_candidates", mcp.Description("Maximum candidate issues to compare. Default 200.")),
+		readOnlyAnnotations(),
 	)
 }
 
@@ -196,6 +226,7 @@ func confluenceAnalyticsToolDef() mcp.Tool {
 		mcp.WithDescription("Get Confluence page view analytics (total views and unique viewers). Provide a page ID to check a single page, or set include_children to also check all child pages."),
 		mcp.WithString("page_id", mcp.Required(), mcp.Description("Confluence page ID to analyze.")),
 		mcp.WithBoolean("include_children", mcp.Description("Also fetch analytics for child pages. Default true.")),
+		readOnlyAnnotations(),
 	)
 }
 
@@ -208,6 +239,7 @@ func confluenceUpdateToolDef() mcp.Tool {
 		mcp.WithString("body_file", mcp.Description("Path to a local file containing the body. Use this instead of body for large content.")),
 		mcp.WithString("space_key", mcp.Description("Space key to narrow title search (e.g. 'ENG'). Optional.")),
 		mcp.WithString("content_type", mcp.Description("Content type: 'page' (default) or 'blog'.")),
+		writeAnnotations(true, true),
 	)
 }
 
@@ -219,6 +251,7 @@ func confluenceGetPageToolDef() mcp.Tool {
 		mcp.WithString("space_key", mcp.Description("Space key to narrow title search.")),
 		mcp.WithString("content_type", mcp.Description("Content type: 'page' (default) or 'blog'.")),
 		mcp.WithString("output_file", mcp.Description("Write the body to this file path instead of returning it inline. Useful for large pages.")),
+		readOnlyAnnotations(),
 	)
 }
 
@@ -227,6 +260,7 @@ func confluenceSearchToolDef() mcp.Tool {
 		mcp.WithDescription("Search Confluence content using CQL (Confluence Query Language). Examples: 'title = \"My Page\"', 'space = ENG AND label = api', 'text ~ \"error handling\" AND lastModified > now(\"-7d\")'."),
 		mcp.WithString("cql", mcp.Required(), mcp.Description("CQL query string.")),
 		mcp.WithNumber("limit", mcp.Description("Maximum results to return. Default 25.")),
+		readOnlyAnnotations(),
 	)
 }
 
@@ -235,6 +269,7 @@ func confluenceListPagesToolDef() mcp.Tool {
 		mcp.WithDescription("List pages in a Confluence space, ordered by last modified. Useful for discovering what pages exist."),
 		mcp.WithString("space_key", mcp.Required(), mcp.Description("Space key (e.g. 'ENG', 'FIELDCTO').")),
 		mcp.WithNumber("limit", mcp.Description("Maximum results to return. Default 25.")),
+		readOnlyAnnotations(),
 	)
 }
 
@@ -242,6 +277,7 @@ func confluenceGetCommentsToolDef() mcp.Tool {
 	return mcp.NewTool("jira_confluence_get_comments",
 		mcp.WithDescription("Read footer comments on a Confluence page."),
 		mcp.WithString("page_id", mcp.Required(), mcp.Description("Confluence page ID.")),
+		readOnlyAnnotations(),
 	)
 }
 
@@ -250,6 +286,7 @@ func confluenceAddLabelToolDef() mcp.Tool {
 		mcp.WithDescription("Add a label to a Confluence page."),
 		mcp.WithString("page_id", mcp.Required(), mcp.Description("Confluence page ID.")),
 		mcp.WithString("label", mcp.Required(), mcp.Description("Label to add.")),
+		writeAnnotations(false, true),
 	)
 }
 
@@ -261,6 +298,7 @@ func confluenceCreatePageToolDef() mcp.Tool {
 		mcp.WithString("title", mcp.Required(), mcp.Description("Page title.")),
 		mcp.WithString("body", mcp.Description("Page body in Confluence storage format (XHTML). Either body or body_file is required.")),
 		mcp.WithString("body_file", mcp.Description("Path to a local file containing the page body. Use this instead of body for large content.")),
+		writeAnnotations(false, false),
 	)
 }
 
@@ -271,6 +309,7 @@ func confluenceCreateBlogToolDef() mcp.Tool {
 		mcp.WithString("title", mcp.Required(), mcp.Description("Blog post title.")),
 		mcp.WithString("body", mcp.Description("Blog post body in Confluence storage format (XHTML). Either body or body_file is required.")),
 		mcp.WithString("body_file", mcp.Description("Path to a local file containing the blog post body. Use this instead of body for large content.")),
+		writeAnnotations(false, false),
 	)
 }
 
@@ -280,6 +319,7 @@ func createEpicToolDef() mcp.Tool {
 		mcp.WithString("description", mcp.Required(), mcp.Description("Brief description of what the EPIC should accomplish.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
+		writeAnnotations(false, false),
 	)
 }
 

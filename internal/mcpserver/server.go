@@ -65,6 +65,65 @@ type Config struct {
 	Transport string // "stdio", "sse", or "streamable-http"
 	SSEPort   int    // port for SSE / streamable-http transport
 	BindHost  string // bind address: "127.0.0.1" (default) or "0.0.0.0" (container)
+	Version   string // build version reported during MCP initialization; defaults to "dev"
+}
+
+// newMCPServer constructs the MCP server and registers all available tools.
+// Keeping registration here makes discovery testable without starting listeners.
+func newMCPServer(version string, h *Handlers) *server.MCPServer {
+	if version == "" {
+		version = "dev"
+	}
+
+	// Name must match the "jira" key clients use in their MCP config (e.g. Codex's
+	// mcp_servers.jira): some clients namespace tools by this self-reported name
+	// rather than the config key, so a mismatch causes "unsupported call" errors.
+	s := server.NewMCPServer(
+		"jira",
+		version,
+		server.WithToolCapabilities(false),
+	)
+
+	// Register core tools.
+	s.AddTool(summaryToolDef(), h.HandleSummary)
+	s.AddTool(queryToolDef(), h.HandleQuery)
+	s.AddTool(digestToolDef(), h.HandleDigest)
+	s.AddTool(enrichToolDef(), h.HandleEnrich)
+	s.AddTool(createEpicToolDef(), h.HandleCreateEpic)
+	s.AddTool(weeklyStatusToolDef(), h.HandleWeeklyStatus)
+	s.AddTool(summarizeCommentsToolDef(), h.HandleSummarizeComments)
+	s.AddTool(backlogHealthToolDef(), h.HandleBacklogHealth)
+	s.AddTool(findSimilarToolDef(), h.HandleFindSimilar)
+	s.AddTool(confluenceAnalyticsToolDef(), h.HandleConfluenceAnalytics)
+	s.AddTool(confluenceUpdateToolDef(), h.HandleConfluenceUpdate)
+	s.AddTool(confluenceGetPageToolDef(), h.HandleConfluenceGetPage)
+	s.AddTool(confluenceSearchToolDef(), h.HandleConfluenceSearch)
+	s.AddTool(confluenceListPagesToolDef(), h.HandleConfluenceListPages)
+	s.AddTool(confluenceGetCommentsToolDef(), h.HandleConfluenceGetComments)
+	s.AddTool(confluenceAddLabelToolDef(), h.HandleConfluenceAddLabel)
+	s.AddTool(confluenceCreatePageToolDef(), h.HandleConfluenceCreatePage)
+	s.AddTool(confluenceCreateBlogToolDef(), h.HandleConfluenceCreateBlog)
+
+	// CRUD tools.
+	s.AddTool(getIssueToolDef(), h.HandleGetIssue)
+	s.AddTool(createIssueToolDef(), h.HandleCreateIssue)
+	s.AddTool(editIssueToolDef(), h.HandleEditIssue)
+	s.AddTool(getTransitionsToolDef(), h.HandleGetTransitions)
+	s.AddTool(transitionToolDef(), h.HandleTransition)
+	s.AddTool(addCommentToolDef(), h.HandleAddComment)
+	s.AddTool(lookupUserToolDef(), h.HandleLookupUser)
+	s.AddTool(addWorklogToolDef(), h.HandleAddWorklog)
+	s.AddTool(linkIssuesToolDef(), h.HandleLinkIssues)
+	s.AddTool(attachFileToolDef(), h.HandleAttachFile)
+	s.AddTool(watchIssueToolDef(), h.HandleWatchIssue)
+	s.AddTool(unwatchIssueToolDef(), h.HandleUnwatchIssue)
+	s.AddTool(addLabelsToolDef(), h.HandleAddLabels)
+	s.AddTool(removeLabelsToolDef(), h.HandleRemoveLabels)
+	s.AddTool(listSprintsToolDef(), h.HandleListSprints)
+	s.AddTool(voteIssueToolDef(), h.HandleVoteIssue)
+	s.AddTool(unvoteIssueToolDef(), h.HandleUnvoteIssue)
+
+	return s
 }
 
 // Run starts the MCP server and web dashboard.
@@ -97,57 +156,9 @@ func Run(cfg Config) error {
 		fmt.Fprintf(os.Stderr, "Web dashboard: http://%s:%d\n", bindHost, actualPort)
 	}
 
-	// Create MCP server
-	// Name must match the "jira" key clients use in their MCP config (e.g. Codex's
-	// mcp_servers.jira): some clients namespace tools by this self-reported name
-	// rather than the config key, so a mismatch causes "unsupported call" errors.
-	s := server.NewMCPServer(
-		"jira",
-		"1.0.0",
-		server.WithToolCapabilities(false),
-	)
-
 	// Create handlers
 	h := NewHandlers(store, db, actualPort, bindHost)
-
-	// Register tools
-	s.AddTool(summaryToolDef(), h.HandleSummary)
-	s.AddTool(queryToolDef(), h.HandleQuery)
-	s.AddTool(digestToolDef(), h.HandleDigest)
-	s.AddTool(enrichToolDef(), h.HandleEnrich)
-	s.AddTool(createEpicToolDef(), h.HandleCreateEpic)
-	s.AddTool(weeklyStatusToolDef(), h.HandleWeeklyStatus)
-	s.AddTool(summarizeCommentsToolDef(), h.HandleSummarizeComments)
-	s.AddTool(backlogHealthToolDef(), h.HandleBacklogHealth)
-	s.AddTool(findSimilarToolDef(), h.HandleFindSimilar)
-	s.AddTool(confluenceAnalyticsToolDef(), h.HandleConfluenceAnalytics)
-	s.AddTool(confluenceUpdateToolDef(), h.HandleConfluenceUpdate)
-	s.AddTool(confluenceGetPageToolDef(), h.HandleConfluenceGetPage)
-	s.AddTool(confluenceSearchToolDef(), h.HandleConfluenceSearch)
-	s.AddTool(confluenceListPagesToolDef(), h.HandleConfluenceListPages)
-	s.AddTool(confluenceGetCommentsToolDef(), h.HandleConfluenceGetComments)
-	s.AddTool(confluenceAddLabelToolDef(), h.HandleConfluenceAddLabel)
-	s.AddTool(confluenceCreatePageToolDef(), h.HandleConfluenceCreatePage)
-	s.AddTool(confluenceCreateBlogToolDef(), h.HandleConfluenceCreateBlog)
-
-	// CRUD tools
-	s.AddTool(getIssueToolDef(), h.HandleGetIssue)
-	s.AddTool(createIssueToolDef(), h.HandleCreateIssue)
-	s.AddTool(editIssueToolDef(), h.HandleEditIssue)
-	s.AddTool(getTransitionsToolDef(), h.HandleGetTransitions)
-	s.AddTool(transitionToolDef(), h.HandleTransition)
-	s.AddTool(addCommentToolDef(), h.HandleAddComment)
-	s.AddTool(lookupUserToolDef(), h.HandleLookupUser)
-	s.AddTool(addWorklogToolDef(), h.HandleAddWorklog)
-	s.AddTool(linkIssuesToolDef(), h.HandleLinkIssues)
-	s.AddTool(attachFileToolDef(), h.HandleAttachFile)
-	s.AddTool(watchIssueToolDef(), h.HandleWatchIssue)
-	s.AddTool(unwatchIssueToolDef(), h.HandleUnwatchIssue)
-	s.AddTool(addLabelsToolDef(), h.HandleAddLabels)
-	s.AddTool(removeLabelsToolDef(), h.HandleRemoveLabels)
-	s.AddTool(listSprintsToolDef(), h.HandleListSprints)
-	s.AddTool(voteIssueToolDef(), h.HandleVoteIssue)
-	s.AddTool(unvoteIssueToolDef(), h.HandleUnvoteIssue)
+	s := newMCPServer(cfg.Version, h)
 
 	switch cfg.Transport {
 	case "sse":
