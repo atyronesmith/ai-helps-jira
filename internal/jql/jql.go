@@ -192,15 +192,13 @@ var (
 	doubledOperatorRe  = regexp.MustCompile(`(?i)\b(AND|OR)\s+(AND|OR)\b`)
 )
 
-// projectPredicateRe matches any JQL predicate on the project field. It
-// covers the equality and membership operators; the leading word boundary
-// keeps look-alikes such as "subproject" or "projectname" from matching.
-var projectPredicateRe = regexp.MustCompile(`(?i)\bproject\s*(?:!=|=|\bin\b|not\s+in\b)`)
+// projectPositivePredicateRe recognizes only positive project restrictions.
+// The caller anchors it to an individual predicate, so project != and
+// project NOT IN cannot accidentally satisfy the scope invariant.
+var projectPositivePredicateRe = regexp.MustCompile(`(?i)^\s*project\s*(?:=|\bin\b)`)
 
-// predicateFieldRe matches the field name immediately preceding a comparison
-// or membership operator, so Validate can collect every field a where-clause
-// makes a predicate on (used for the key/id direct-identity exemption).
-var predicateFieldRe = regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:!=|=|~|!~|>=|<=|>|<|\bnot\s+in\b|\bin\b|\bis\s+not\b|\bis\b)`)
+var identityFieldRe = regexp.MustCompile(`(?i)^\s*(key|id)\s*(=|\bin\b)\s*(.*?)\s*$`)
+var identityScalarRe = regexp.MustCompile(`(?i)^(?:[A-Za-z0-9_-]+|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')$`)
 
 // Validate runs a local, network-free structural check over jqlStr and
 // returns an error naming the offending JQL and the rule violated, or nil
@@ -269,12 +267,9 @@ func Validate(jqlStr string, opts Options) error {
 	}
 
 	// Rule 5: scope invariant.
-	if opts.DefaultProject != "" && !isDirectIdentityOnly(blankedWhere) {
-		if TopLevelKeywordIndex(blankedWhere, "OR") >= 0 {
-			return fail("5-scope", "top-level OR can escape project scope even when a project predicate is present")
-		}
-		if !projectPredicateRe.MatchString(blankedWhere) {
-			return fail("5-scope", "no project predicate and a default project is configured")
+	if opts.DefaultProject != "" && !isDirectIdentityOnly(where) {
+		if !projectScopeGuaranteed(where) {
+			return fail("5-scope", "a positive project predicate does not restrict every query branch")
 		}
 	}
 
@@ -325,20 +320,184 @@ func parensBalanced(blanked string) bool {
 	return depth == 0
 }
 
-// isDirectIdentityOnly reports whether blankedWhere's where-clause consists
-// solely of predicates on the `key` or `id` fields. Issue keys and IDs are
-// globally unique, so project scoping is meaningless for such a query --
-// e.g. the post-mutation refetch in internal/mcpserver/crud_tools.go,
-// SearchJQL(fmt.Sprintf("key = %s", key), 1). A where-clause with no
-// recognizable predicate at all is not treated as identity-only.
-func isDirectIdentityOnly(blankedWhere string) bool {
-	matches := predicateFieldRe.FindAllStringSubmatch(blankedWhere, -1)
-	if len(matches) == 0 {
+// projectScopeGuaranteed reports whether every possible boolean branch has
+// a positive project restriction. AND is evaluated before OR, as in JQL:
+// every OR arm must be scoped, while a project predicate conjoined outside
+// an OR group scopes all of that group's branches.
+func projectScopeGuaranteed(expr string) bool {
+	expr = stripOuterParens(strings.TrimSpace(expr))
+	if arms, ok := splitBoolean(expr, "OR"); ok {
+		for _, arm := range arms {
+			if !projectScopeGuaranteed(arm) {
+				return false
+			}
+		}
+		return true
+	}
+	if terms, ok := splitBoolean(expr, "AND"); ok {
+		for _, term := range terms {
+			if projectScopeGuaranteed(term) {
+				return true
+			}
+		}
 		return false
 	}
-	for _, m := range matches {
-		field := strings.ToLower(m[1])
-		if field != "key" && field != "id" {
+	return projectPositivePredicateRe.MatchString(expr)
+}
+
+// isDirectIdentityOnly exempts only expressions composed entirely of direct
+// key/id equality or IN predicates. Unknown JQL forms (including WAS and
+// CHANGED) fail closed instead of being inferred from a partial field scan.
+func isDirectIdentityOnly(expr string) bool {
+	expr = stripOuterParens(strings.TrimSpace(expr))
+	if arms, ok := splitBoolean(expr, "OR"); ok {
+		for _, arm := range arms {
+			if !isDirectIdentityOnly(arm) {
+				return false
+			}
+		}
+		return true
+	}
+	if terms, ok := splitBoolean(expr, "AND"); ok {
+		for _, term := range terms {
+			if !isDirectIdentityOnly(term) {
+				return false
+			}
+		}
+		return true
+	}
+
+	m := identityFieldRe.FindStringSubmatch(expr)
+	if m == nil {
+		return false
+	}
+	value := strings.TrimSpace(m[3])
+	if strings.EqualFold(m[2], "=") {
+		return identityScalarRe.MatchString(value)
+	}
+	if len(value) < 3 || value[0] != '(' || value[len(value)-1] != ')' {
+		return false
+	}
+	items := strings.Split(value[1:len(value)-1], ",")
+	if len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		if !identityScalarRe.MatchString(strings.TrimSpace(item)) {
+			return false
+		}
+	}
+	return true
+}
+
+func stripOuterParens(expr string) string {
+	for len(expr) >= 2 && expr[0] == '(' && expr[len(expr)-1] == ')' && outerParensWrapAll(expr) {
+		expr = strings.TrimSpace(expr[1 : len(expr)-1])
+	}
+	return expr
+}
+
+func outerParensWrapAll(expr string) bool {
+	depth := 0
+	var quote byte
+	for i := 0; i < len(expr); i++ {
+		c := expr[i]
+		if quote != 0 {
+			if c == '\\' {
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		if c == '"' || c == '\'' {
+			quote = c
+			continue
+		}
+		switch c {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 && i != len(expr)-1 {
+				return false
+			}
+		}
+	}
+	return depth == 0
+}
+
+// splitBoolean splits expr at every top-level occurrence of op. It ignores
+// quoted literals and nested parentheses. ok is false when there is no split.
+func splitBoolean(expr, op string) ([]string, bool) {
+	depth, start := 0, 0
+	var quote byte
+	var parts []string
+	for i := 0; i < len(expr); i++ {
+		c := expr[i]
+		if quote != 0 {
+			if c == '\\' {
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		if c == '"' || c == '\'' {
+			quote = c
+			continue
+		}
+		switch c {
+		case '(':
+			depth++
+			continue
+		case ')':
+			depth--
+			continue
+		}
+		if depth != 0 || !hasASCIIPrefixFold(expr, i, op) {
+			continue
+		}
+		if i > 0 && isJQLWordByte(expr[i-1]) {
+			continue
+		}
+		end := i + len(op)
+		if end < len(expr) && isJQLWordByte(expr[end]) {
+			continue
+		}
+		parts = append(parts, strings.TrimSpace(expr[start:i]))
+		start = end
+		i = end - 1
+	}
+	if len(parts) == 0 {
+		return nil, false
+	}
+	parts = append(parts, strings.TrimSpace(expr[start:]))
+	for _, part := range parts {
+		if part == "" {
+			return parts, true
+		}
+	}
+	return parts, true
+}
+
+func hasASCIIPrefixFold(s string, at int, prefix string) bool {
+	if at+len(prefix) > len(s) {
+		return false
+	}
+	for i := range prefix {
+		a, b := s[at+i], prefix[i]
+		if a >= 'a' && a <= 'z' {
+			a -= 'a' - 'A'
+		}
+		if b >= 'a' && b <= 'z' {
+			b -= 'a' - 'A'
+		}
+		if a != b {
 			return false
 		}
 	}

@@ -1,8 +1,10 @@
 # Container Setup Guide
 
-Run the jira-cli MCP server as a container for shared multi-client access via SSE. For single-user setups, the simpler approach is building the binary and using stdio — see the [Quick Start](../README.md#quick-start) in the README.
+Run the jira-cli MCP server as a container for shared multi-client access via MCP Streamable HTTP. For single-user setups, the simpler approach is building the binary and using stdio — see the [Quick Start](../README.md#quick-start) in the README.
 
 No Go toolchain or source code needed — just a container runtime and your JIRA credentials.
+
+The included `make container-run` target and the manual examples below publish both services on `127.0.0.1` only. The MCP endpoint and dashboard do not provide client authentication. To make them reachable from other machines, configure an authenticated reverse proxy and firewall restrictions first, then explicitly change the host publish address; do not expose the unauthenticated ports directly to an untrusted network.
 
 ## Prerequisites
 
@@ -96,7 +98,7 @@ ${EDITOR:-vi} ~/.config/jira-cli/.env
 
 ```sh
 podman run -d --name jira-cli-mcp \
-  -p 8081:8081 -p 18080:18080 \
+  -p 127.0.0.1:8081:8081 -p 127.0.0.1:18080:18080 \
   -v jira-cli-cache:/home/jira-cli/.jira-cli:Z \
   --read-only --tmpfs /tmp \
   --cap-drop=ALL \
@@ -108,8 +110,8 @@ What this does:
 
 | Flag | Purpose |
 |------|---------|
-| `-p 8081:8081` | MCP SSE endpoint (Claude Code connects here) |
-| `-p 18080:18080` | Web dashboard and health check |
+| `-p 127.0.0.1:8081:8081` | MCP Streamable HTTP endpoint, reachable from this host only by default |
+| `-p 127.0.0.1:18080:18080` | Web dashboard and health check, reachable from this host only by default |
 | `-v jira-cli-cache:...` | Persistent cache so data survives restarts |
 | `--read-only` | Read-only root filesystem (security) |
 | `--cap-drop=ALL` | Drop all Linux capabilities (security) |
@@ -122,14 +124,13 @@ What this does:
 curl -sf http://localhost:18080/healthz
 # Expected: {"status":"ok"}
 
-# SSE endpoint
-curl -sN http://localhost:8081/sse | head -2
-# Expected:
-# event: endpoint
-# data: http://localhost:8081/message?sessionId=...
+# MCP Streamable HTTP endpoint: configure the client as shown in Step 5.
+# The /mcp endpoint uses the MCP HTTP protocol and is not an SSE event stream.
 ```
 
 Open `http://localhost:18080` in a browser to see the web dashboard.
+
+The Make target offers an explicit host address override, for example `make container-run CONTAINER_HOST=192.0.2.10`. Its printed `localhost` URLs and client config are for clients running on the container host. Remote clients must replace `localhost` with the host's reachable DNS name or IP. The MCP endpoint and dashboard have no client authentication, so remote access must be protected by firewall rules and an authenticated proxy. `CONTAINER_HOST=0.0.0.0` publishes on every host interface and is unsafe without those protections. The services still bind to `0.0.0.0` inside the container so Podman or Docker can forward connections; that does not by itself publish them on every host interface.
 
 ## Step 5: Connect Claude Code
 
@@ -139,15 +140,14 @@ Create a `.mcp.json` file in your project directory (or home directory for globa
 {
   "mcpServers": {
     "jira": {
-      "type": "sse",
-      "url": "http://localhost:8081/sse",
-      "oauth": {}
+      "type": "http",
+      "url": "http://localhost:8081/mcp"
     }
   }
 }
 ```
 
-The `"oauth": {}` is required — it tells Claude Code not to attempt OAuth discovery on this server.
+Do not add `"oauth": {}` when connecting to this server; it can trigger an OAuth flow. The server authenticates to Atlassian using the API token from `.env`.
 
 Restart Claude Code (or start a new session). You should see 35 JIRA tools available. Test with:
 
@@ -189,8 +189,8 @@ cat > ~/.config/containers/systemd/jira-cli-mcp.container <<'EOF'
 [Container]
 Image=quay.io/aasmith/jira-cli:latest
 ContainerName=jira-cli-mcp
-PublishPort=8081:8081
-PublishPort=18080:18080
+PublishPort=127.0.0.1:8081:8081
+PublishPort=127.0.0.1:18080:18080
 Volume=jira-cli-cache:/home/jira-cli/.jira-cli:Z
 EnvironmentFile=%h/.config/jira-cli/.env
 ReadOnly=true
@@ -228,7 +228,7 @@ The podman machine VM starts automatically after `podman machine init`. To auto-
 podman stop jira-cli-mcp && podman rm jira-cli-mcp
 podman run -d --name jira-cli-mcp \
   --restart=always \
-  -p 8081:8081 -p 18080:18080 \
+  -p 127.0.0.1:8081:8081 -p 127.0.0.1:18080:18080 \
   -v jira-cli-cache:/home/jira-cli/.jira-cli:Z \
   --read-only --tmpfs /tmp \
   --cap-drop=ALL \
@@ -259,10 +259,6 @@ The container isn't running. Check `podman ps -a` to see if it exited, then `pod
 **"Missing required env vars"**
 
 Your `.env` file is missing `JIRA_SERVER`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, or `JIRA_PROJECT`. Double-check the file path in `--env-file`.
-
-**"SDK auth failed" / "needs authentication" in Claude Code**
-
-Your `.mcp.json` is missing `"oauth": {}`. Claude Code probes for OAuth by default; this disables it.
 
 **AI tools return LLM errors but CRUD tools work**
 

@@ -24,7 +24,7 @@ LABEL name="jira-cli" \
       url="https://github.com/atyronesmith/ai-helps-jira" \
       license="MIT" \
       io.k8s.display-name="jira-cli MCP Server" \
-      io.k8s.description="JIRA Cloud MCP server with SSE transport"
+      io.k8s.description="JIRA Cloud MCP server with Streamable HTTP transport"
 
 RUN microdnf install -y tzdata ca-certificates curl-minimal && \
     microdnf clean all && \
@@ -43,11 +43,14 @@ VOLUME /home/jira-cli/.jira-cli
 USER 1001
 ENV HOME=/home/jira-cli
 
-# MCP Streamable HTTP port + web dashboard port
+# MCP Streamable HTTP port + web dashboard port. These services bind inside the
+# container; the host publish address is restricted separately by the run command.
 EXPOSE 8081 18080
 
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
   CMD curl -sf http://localhost:18080/healthz || exit 1
 
 ENTRYPOINT ["jira-cli"]
+# Bind on all container interfaces so the container runtime can forward traffic
+# from the host's loopback-only published ports.
 CMD ["mcp", "--transport", "streamable-http", "--sse-port", "8081", "--port", "18080", "--bind", "0.0.0.0"]

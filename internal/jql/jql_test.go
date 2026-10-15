@@ -189,6 +189,61 @@ func TestValidate_TableDriven(t *testing.T) {
 			jql:  "project = TEST AND (issuetype = Bug OR issuetype = Story)",
 			opts: Options{DefaultProject: "TEST"},
 		},
+		{
+			name: "nested OR before project restriction is scoped",
+			jql:  "(status = Open OR priority = High) AND project = TEST",
+			opts: Options{DefaultProject: "TEST"},
+		},
+		{
+			name: "nested OR with project restriction outside every branch is scoped",
+			jql:  "project = TEST AND ((status = Open OR priority = High) AND resolution = Fixed)",
+			opts: Options{DefaultProject: "TEST"},
+		},
+		{
+			name:    "nested OR branch without project restriction is rejected",
+			jql:     "(project = TEST AND status = Open) OR priority = High",
+			opts:    Options{DefaultProject: "TEST"},
+			wantErr: true,
+		},
+		{
+			name:    "Unicode before top-level OR cannot hide an unscoped branch",
+			jql:     `project = TEST AND summary ~ "ı" OR status = Open`,
+			opts:    Options{DefaultProject: "TEST"},
+			wantErr: true,
+		},
+		{
+			name: "quoted Unicode and OR text do not split a safe query",
+			jql:  `project = TEST AND summary ~ "ı OR status = Open"`,
+			opts: Options{DefaultProject: "TEST"},
+		},
+		{
+			name:    "project restriction in only one nested OR branch is rejected",
+			jql:     "status = Open OR (project = TEST AND priority = High)",
+			opts:    Options{DefaultProject: "TEST"},
+			wantErr: true,
+		},
+		{
+			name:    "project inequality does not satisfy scope",
+			jql:     "project != TEST AND status = Open",
+			opts:    Options{DefaultProject: "TEST"},
+			wantErr: true,
+		},
+		{
+			name:    "project NOT IN does not satisfy scope",
+			jql:     "project NOT IN (OTHER) AND status = Open",
+			opts:    Options{DefaultProject: "TEST"},
+			wantErr: true,
+		},
+		{
+			name: "positive restriction on a different project remains allowed",
+			jql:  "project = OTHER AND status = Open",
+			opts: Options{DefaultProject: "TEST"},
+		},
+		{
+			name: "positive project IN restriction remains allowed",
+			jql:  "project IN (TEST, OTHER) AND status = Open",
+			opts: Options{DefaultProject: "TEST"},
+		},
 
 		// Rule 5 exemption: direct-identity queries.
 		{
@@ -212,8 +267,42 @@ func TestValidate_TableDriven(t *testing.T) {
 			opts: Options{DefaultProject: "TEST"},
 		},
 		{
+			name: "id IN list is exempt",
+			jql:  "id IN (10042, 10043)",
+			opts: Options{DefaultProject: "TEST"},
+		},
+		{
+			name: "key and id identity predicates combined with AND are exempt",
+			jql:  "key = TEST-1 AND id = 10042",
+			opts: Options{DefaultProject: "TEST"},
+		},
+		{
 			name:    "mixing key with a non-identity field no longer exempt",
 			jql:     "key = TEST-123 OR status = Open",
+			opts:    Options{DefaultProject: "TEST"},
+			wantErr: true,
+		},
+		{
+			name:    "key with unsupported WAS predicate is not exempt",
+			jql:     "key = TEST-1 OR status WAS Open",
+			opts:    Options{DefaultProject: "TEST"},
+			wantErr: true,
+		},
+		{
+			name:    "key with unsupported CHANGED predicate is not exempt",
+			jql:     "key = TEST-1 OR status CHANGED",
+			opts:    Options{DefaultProject: "TEST"},
+			wantErr: true,
+		},
+		{
+			name:    "key with CHANGED AFTER predicate is not exempt",
+			jql:     "key = TEST-1 AND status CHANGED AFTER -1d",
+			opts:    Options{DefaultProject: "TEST"},
+			wantErr: true,
+		},
+		{
+			name:    "malformed identity equality is not exempt",
+			jql:     "key = TEST-1 WAS Open",
 			opts:    Options{DefaultProject: "TEST"},
 			wantErr: true,
 		},

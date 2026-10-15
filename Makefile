@@ -15,6 +15,7 @@ PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 # Container
 IMAGE     := jira-cli
 CONTAINER := jira-cli-mcp
+CONTAINER_HOST ?= 127.0.0.1
 
 .PHONY: all build clean install uninstall test lint fmt vet tidy run \
         release check doc-lint restart-mcp container container-build container-run container-stop \
@@ -82,19 +83,23 @@ container:  ## Build container image
 
 container-build:   ## Rebuild container image with --no-cache
 	podman build --no-cache --format docker -t $(IMAGE) .
-container-run: container-stop container-build  ## Run MCP server in container (SSE on :8081, dashboard on :18080)
+container-run: container-stop container-build  ## Run MCP Streamable HTTP server in container (loopback only)
 	podman run -d --name $(CONTAINER) \
-		-p 8081:8081 -p 18080:18080 \
+		-p $(CONTAINER_HOST):8081:8081 -p $(CONTAINER_HOST):18080:18080 \
 		-v jira-cli-cache:/home/jira-cli/.jira-cli:Z \
 		--read-only --tmpfs /tmp \
 		--cap-drop=ALL \
 		--env-file .env \
 		$(IMAGE)
-	@echo "MCP SSE:     http://localhost:8081/sse"
-	@echo "Dashboard:   http://localhost:18080"
+	@echo "MCP HTTP (local client): http://localhost:8081/mcp (published on $(CONTAINER_HOST))"
+	@echo "Dashboard (local client): http://localhost:18080 (published on $(CONTAINER_HOST))"
+	@if [ "$(CONTAINER_HOST)" != "127.0.0.1" ] && [ "$(CONTAINER_HOST)" != "localhost" ]; then \
+		echo "Remote clients: replace localhost in these URLs/config with this host's reachable DNS name or IP."; \
+		echo "WARNING: MCP and dashboard have no authentication; remote access must be protected by firewall rules and an authenticated proxy."; \
+	fi
 	@echo ""
-	@echo "Claude Code .mcp.json:"
-	@echo '  {"mcpServers": {"jira-cli": {"type": "sse", "url": "http://localhost:8081/sse", "oauth": {}}}}'
+	@echo "Claude Code .mcp.json (for a client on this host):"
+	@echo '  {"mcpServers": {"jira-cli": {"type": "http", "url": "http://localhost:8081/mcp"}}}'
 
 container-stop:  ## Stop and remove the MCP container
 	podman stop $(CONTAINER) 2>/dev/null || true
