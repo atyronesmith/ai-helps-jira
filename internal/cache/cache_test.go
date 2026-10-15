@@ -181,6 +181,23 @@ func TestGetIssueDetail_Freshness(t *testing.T) {
 	}
 }
 
+func TestGetIssueDetail_FreshnessPreservesSubsecondTimestamp(t *testing.T) {
+	c := openTestCache(t)
+	cachedTime := time.Date(2026, 4, 1, 12, 0, 0, 123000000, time.UTC)
+	if err := c.UpsertIssueDetail(&jira.IssueDetail{
+		Key: "PROJ-1", Summary: "test", Status: "To Do", IssueType: "Task", Updated: cachedTime,
+	}); err != nil {
+		t.Fatalf("UpsertIssueDetail: %v", err)
+	}
+	got, ok := c.GetIssueDetail("PROJ-1", cachedTime)
+	if !ok {
+		t.Fatal("expected cache hit for matching subsecond updated timestamp")
+	}
+	if !got.Updated.Equal(cachedTime) {
+		t.Errorf("updated: got %s, want %s", got.Updated, cachedTime)
+	}
+}
+
 func TestGetIssueDetail_NotFound(t *testing.T) {
 	c := openTestCache(t)
 
@@ -337,6 +354,83 @@ func TestUpsertAndGetIssueLinks(t *testing.T) {
 	got, _ = c.GetIssueLinks("PROJ-99")
 	if len(got) != 0 {
 		t.Errorf("expected 0 links for PROJ-99, got %d", len(got))
+	}
+}
+
+func TestInvalidateIssue(t *testing.T) {
+	c := openTestCache(t)
+	updated := time.Now().UTC().Truncate(time.Second)
+	if err := c.UpsertIssues("PROJ", []jira.Issue{
+		{Key: "PROJ-1", Summary: "target issue", Status: "In Progress", Priority: "High", Updated: updated, Board: "Delivery", Sprint: "Sprint 1"},
+		{Key: "PROJ-2", Summary: "unrelated issue", Status: "To Do", Priority: "Low", Updated: updated, Board: "Delivery", Sprint: "Sprint 1"},
+	}); err != nil {
+		t.Fatalf("UpsertIssues: %v", err)
+	}
+	if err := c.UpsertIssueDetails([]*jira.IssueDetail{
+		{Key: "PROJ-1", Summary: "target issue", Status: "To Do", IssueType: "Task", Updated: updated},
+		{Key: "PROJ-2", Summary: "unrelated issue", Status: "To Do", IssueType: "Task", Updated: updated},
+	}); err != nil {
+		t.Fatalf("UpsertIssueDetails: %v", err)
+	}
+	if err := c.UpsertComments([]jira.Comment{
+		{ID: "comment-1", IssueKey: "PROJ-1", Body: "stale comment", Created: updated},
+		{ID: "comment-2", IssueKey: "PROJ-2", Body: "unrelated comment", Created: updated},
+	}); err != nil {
+		t.Fatalf("UpsertComments: %v", err)
+	}
+	if err := c.UpsertIssueLinks([]jira.IssueLink{
+		{SourceKey: "PROJ-1", TargetKey: "PROJ-3", LinkType: "Blocks"},
+		{SourceKey: "PROJ-4", TargetKey: "PROJ-1", LinkType: "Relates"},
+		{SourceKey: "PROJ-2", TargetKey: "PROJ-3", LinkType: "Relates"},
+	}); err != nil {
+		t.Fatalf("UpsertIssueLinks: %v", err)
+	}
+
+	if err := c.InvalidateIssue("PROJ-1"); err != nil {
+		t.Fatalf("InvalidateIssue: %v", err)
+	}
+	if _, ok := c.GetIssueDetail("PROJ-1", time.Time{}); ok {
+		t.Error("expected invalidated issue detail to be absent")
+	}
+	if _, ok := c.GetIssueDetail("PROJ-2", time.Time{}); !ok {
+		t.Error("expected unrelated issue detail to remain")
+	}
+	issues, err := c.GetIssues("PROJ")
+	if err != nil {
+		t.Fatalf("GetIssues: %v", err)
+	}
+	if len(issues) != 1 || issues[0].Key != "PROJ-2" {
+		t.Errorf("expected only unrelated summary issue to remain, got %#v", issues)
+	}
+	boards, err := c.GetBoards("PROJ")
+	if err != nil {
+		t.Fatalf("GetBoards: %v", err)
+	}
+	if len(boards) != 1 || len(boards[0].Issues) != 1 || boards[0].Issues[0].Key != "PROJ-2" {
+		t.Errorf("expected only unrelated board issue to remain, got %#v", boards)
+	}
+	comments, err := c.GetCommentsByKeys([]string{"PROJ-1", "PROJ-2"}, time.Time{})
+	if err != nil {
+		t.Fatalf("GetCommentsByKeys: %v", err)
+	}
+	if len(comments) != 1 || comments[0].IssueKey != "PROJ-2" {
+		t.Errorf("expected only unrelated comment to remain, got %#v", comments)
+	}
+	for _, source := range []string{"PROJ-1", "PROJ-4"} {
+		links, err := c.GetIssueLinks(source)
+		if err != nil {
+			t.Fatalf("GetIssueLinks(%s): %v", source, err)
+		}
+		if len(links) != 0 {
+			t.Errorf("expected links involving PROJ-1 to be removed from %s, got %#v", source, links)
+		}
+	}
+	links, err := c.GetIssueLinks("PROJ-2")
+	if err != nil {
+		t.Fatalf("GetIssueLinks(PROJ-2): %v", err)
+	}
+	if len(links) != 1 || links[0].TargetKey != "PROJ-3" {
+		t.Errorf("expected unrelated link to remain, got %#v", links)
 	}
 }
 

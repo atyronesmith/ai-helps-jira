@@ -40,6 +40,7 @@ func runTransition(cmd *cobra.Command, args []string) error {
 	if err := client.TransitionIssue(args[0], args[1]); err != nil {
 		return err
 	}
+	invalidateIssueCache(args[0])
 
 	pterm.FgGreen.Printfln("Transitioned %s", args[0])
 	return nil

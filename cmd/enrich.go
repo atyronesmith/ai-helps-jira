@@ -130,6 +130,7 @@ func runEnrich(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
+		invalidateIssueCache(issueKey)
 		pterm.FgGreen.Printfln("\nIssue updated: %s - %s/browse/%s",
 			issueKey, cfg.JiraServer, issueKey)
 	} else {

@@ -400,6 +400,7 @@ func (h *Handlers) HandleEditIssue(ctx context.Context, req mcp.CallToolRequest)
 	if err := client.EditIssue(key, fields); err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.invalidateIssueCache(key)
 
 	return textResult(fmt.Sprintf("Issue %s updated. Fields changed: %s", key, strings.Join(changed, ", "))), nil
 }
@@ -457,6 +458,7 @@ func (h *Handlers) HandleTransition(ctx context.Context, req mcp.CallToolRequest
 	if err := client.TransitionIssue(key, transitionID); err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.invalidateIssueCache(key)
 
 	return textResult(fmt.Sprintf("Issue %s transitioned successfully.", key)), nil
 }
@@ -482,6 +484,7 @@ func (h *Handlers) HandleAddComment(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.invalidateIssueCache(key)
 
 	return textResult(fmt.Sprintf("Comment added to %s (ID: %s).", key, comment.ID)), nil
 }
@@ -544,6 +547,7 @@ func (h *Handlers) HandleAddWorklog(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.invalidateIssueCache(key)
 
 	return textResult(fmt.Sprintf("Worklog added to %s: %s (ID: %s, started: %s).",
 		key, wl.TimeSpent, wl.ID, wl.Started.Format("2006-01-02 15:04"))), nil
@@ -570,6 +574,7 @@ func (h *Handlers) HandleLinkIssues(ctx context.Context, req mcp.CallToolRequest
 	if err := client.LinkIssues(inward, outward, linkType); err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.invalidateIssueCache(inward, outward)
 
 	return textResult(fmt.Sprintf("Linked %s → %s (type: %s).", inward, outward, linkType)), nil
 }
@@ -595,6 +600,7 @@ func (h *Handlers) HandleAttachFile(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.invalidateIssueCache(key)
 
 	return textResult(fmt.Sprintf("File %q attached to %s.", filename, key)), nil
 }
@@ -618,6 +624,7 @@ func (h *Handlers) HandleWatchIssue(ctx context.Context, req mcp.CallToolRequest
 	if err := client.WatchIssue(key); err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.invalidateIssueCache(key)
 
 	return textResult(fmt.Sprintf("Now watching %s.", key)), nil
 }
@@ -641,6 +648,7 @@ func (h *Handlers) HandleUnwatchIssue(ctx context.Context, req mcp.CallToolReque
 	if err := client.UnwatchIssue(key); err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.invalidateIssueCache(key)
 
 	return textResult(fmt.Sprintf("Stopped watching %s.", key)), nil
 }
@@ -670,6 +678,7 @@ func (h *Handlers) HandleAddLabels(ctx context.Context, req mcp.CallToolRequest)
 	if err := client.AddLabels(key, labels); err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.invalidateIssueCache(key)
 
 	return textResult(fmt.Sprintf("Labels added to %s: %s", key, strings.Join(labels, ", "))), nil
 }
@@ -699,6 +708,7 @@ func (h *Handlers) HandleRemoveLabels(ctx context.Context, req mcp.CallToolReque
 	if err := client.RemoveLabels(key, labels); err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.invalidateIssueCache(key)
 
 	return textResult(fmt.Sprintf("Labels removed from %s: %s", key, strings.Join(labels, ", "))), nil
 }
@@ -782,6 +792,7 @@ func (h *Handlers) HandleVoteIssue(ctx context.Context, req mcp.CallToolRequest)
 	if err := client.VoteIssue(key); err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.invalidateIssueCache(key)
 
 	return textResult(fmt.Sprintf("Voted for %s.", key)), nil
 }
@@ -805,6 +816,7 @@ func (h *Handlers) HandleUnvoteIssue(ctx context.Context, req mcp.CallToolReques
 	if err := client.UnvoteIssue(key); err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.invalidateIssueCache(key)
 
 	return textResult(fmt.Sprintf("Vote removed from %s.", key)), nil
 }

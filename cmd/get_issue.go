@@ -10,11 +10,13 @@ import (
 	"github.com/atyronesmith/ai-helps-jira/internal/cache"
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
+	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 )
 
 var (
-	flagNoComments bool
-	flagNoLinks    bool
+	flagNoComments      bool
+	flagNoLinks         bool
+	flagGetIssueRefresh bool
 )
 
 var getIssueCmd = &cobra.Command{
@@ -27,6 +29,7 @@ var getIssueCmd = &cobra.Command{
 func init() {
 	getIssueCmd.Flags().BoolVar(&flagNoComments, "no-comments", false, "Skip fetching comments.")
 	getIssueCmd.Flags().BoolVar(&flagNoLinks, "no-links", false, "Skip fetching linked issues.")
+	getIssueCmd.Flags().BoolVar(&flagGetIssueRefresh, "refresh", false, "Fetch current issue details, links, and comments from JIRA.")
 	rootCmd.AddCommand(getIssueCmd)
 }
 
@@ -50,8 +53,16 @@ func runGetIssue(cmd *cobra.Command, args []string) error {
 
 	issueKey := args[0]
 
-	// Check detail cache first (zero time = return cached regardless of age)
-	detail, ok := db.GetIssueDetail(issueKey, time.Time{})
+	// Check JIRA's lightweight updated timestamp before trusting cached details.
+	// If the lookup fails, proceed as a cache miss to avoid serving stale data.
+	var detail *jira.IssueDetail
+	var ok bool
+	if !flagGetIssueRefresh {
+		fresh, searchErr := client.SearchJQL(fmt.Sprintf("key = %s", jql.QuoteIdent(issueKey)), 1)
+		if searchErr == nil && len(fresh) == 1 && !fresh[0].Updated.IsZero() {
+			detail, ok = db.GetIssueDetail(issueKey, fresh[0].Updated)
+		}
+	}
 	if ok {
 		if flagVerbose >= 2 {
 			pterm.FgLightGreen.Printfln("cache: detail HIT %s", issueKey)
@@ -59,6 +70,11 @@ func runGetIssue(cmd *cobra.Command, args []string) error {
 	} else {
 		if flagVerbose >= 2 {
 			pterm.FgLightYellow.Printfln("cache: detail MISS %s", issueKey)
+		}
+		// Related data is only trusted when its issue detail was fresh too.
+		// This also makes --refresh reload links and comments below.
+		if err := db.InvalidateIssue(issueKey); err != nil {
+			return err
 		}
 		detail, err = client.GetIssue(issueKey)
 		if err != nil {

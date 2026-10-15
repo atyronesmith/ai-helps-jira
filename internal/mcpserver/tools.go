@@ -814,6 +814,7 @@ func (h *Handlers) HandleEnrich(ctx context.Context, req mcp.CallToolRequest) (*
 		if err := client.UpdateIssue(issueKey, fullDesc, enrichment.Labels); err != nil {
 			return errorResult(fmt.Sprintf("applied failed: %v", err)), nil
 		}
+		h.invalidateIssueCache(issueKey)
 	}
 
 	resultID := h.store.Save(ResultEnrich, fmt.Sprintf("Enrich: %s", issueKey), &EnrichResultData{

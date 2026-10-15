@@ -35,6 +35,7 @@ func runAttachFile(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	invalidateIssueCache(args[0])
 
 	pterm.FgGreen.Printfln("Attached %s to %s", filename, args[0])
 	return nil

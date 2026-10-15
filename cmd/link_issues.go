@@ -50,6 +50,7 @@ func runLinkIssues(cmd *cobra.Command, args []string) error {
 	if err := client.LinkIssues(flagLinkInward, flagLinkOutward, flagLinkType); err != nil {
 		return err
 	}
+	invalidateIssueCache(flagLinkInward, flagLinkOutward)
 
 	pterm.FgGreen.Printfln("Linked %s → %s (%s)", flagLinkInward, flagLinkOutward, flagLinkType)
 	return nil

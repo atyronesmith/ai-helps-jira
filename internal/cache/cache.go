@@ -523,6 +523,43 @@ func (c *Cache) GetIssueLinks(sourceKey string) ([]jira.IssueLink, error) {
 	return links, rows.Err()
 }
 
+// InvalidateIssue removes an issue from summary/board caches along with its
+// cached detail, comments, and links involving key.
+// All deletions run in one transaction so callers never observe a partially
+// invalidated issue view.
+func (c *Cache) InvalidateIssue(key string) error {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin issue cache invalidation: %w", err)
+	}
+	defer tx.Rollback()
+
+	deletes := []struct {
+		query string
+		args  []any
+	}{
+		{"DELETE FROM issue_boards WHERE issue_key = ?", []any{key}},
+		{"DELETE FROM issues WHERE key = ?", []any{key}},
+		{"DELETE FROM issue_details WHERE key = ?", []any{key}},
+		{"DELETE FROM comments WHERE issue_key = ?", []any{key}},
+		{"DELETE FROM issue_links WHERE source_key = ? OR target_key = ?", []any{key, key}},
+	}
+	for _, deletion := range deletes {
+		result, err := tx.Exec(deletion.query, deletion.args...)
+		if err != nil {
+			return fmt.Errorf("invalidate issue cache %s: %w", key, err)
+		}
+		if _, err := result.RowsAffected(); err != nil {
+			return fmt.Errorf("count invalidated issue cache rows for %s: %w", key, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit issue cache invalidation for %s: %w", key, err)
+	}
+	return nil
+}
+
 // LastDigestRun returns the last time a digest was run for the given query key,
 // or zero time if never run.
 func (c *Cache) LastDigestRun(queryKey string) time.Time {
@@ -593,7 +630,7 @@ func (c *Cache) UpsertIssueDetail(detail *jira.IssueDetail) error {
 		detail.Key, detail.Summary, detail.Description, detail.Status, detail.Priority,
 		detail.IssueType, string(labelsJSON), detail.Assignee, detail.AssigneeID,
 		detail.ParentKey, detail.ParentSummary,
-		detail.Updated.Format(time.RFC3339),
+		detail.Updated.Format(time.RFC3339Nano),
 		time.Now().UTC().Format(time.RFC3339),
 	)
 	if err != nil {
@@ -685,7 +722,7 @@ func (c *Cache) UpsertIssueDetails(details []*jira.IssueDetail) error {
 		labelsJSON, _ := json.Marshal(d.Labels)
 		_, err := stmt.Exec(d.Key, d.Summary, d.Description, d.Status, d.Priority,
 			d.IssueType, string(labelsJSON), d.Assignee, d.AssigneeID,
-			d.ParentKey, d.ParentSummary, d.Updated.Format(time.RFC3339), now)
+			d.ParentKey, d.ParentSummary, d.Updated.Format(time.RFC3339Nano), now)
 		if err != nil {
 			return fmt.Errorf("upsert issue detail %s: %w", d.Key, err)
 		}

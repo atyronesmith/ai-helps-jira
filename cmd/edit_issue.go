@@ -79,6 +79,7 @@ func runEditIssue(cmd *cobra.Command, args []string) error {
 	if err := client.EditIssue(issueKey, fields); err != nil {
 		return err
 	}
+	invalidateIssueCache(issueKey)
 
 	pterm.FgGreen.Printfln("Updated %s", issueKey)
 	return nil
