@@ -2,8 +2,12 @@ package format
 
 import (
 	"fmt"
+	"os"
+	"sync"
+	"time"
 
 	"github.com/pterm/pterm"
+	"golang.org/x/term"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
 )
@@ -379,7 +383,69 @@ func DisplayCommentSummary(issue *jira.IssueDetail, summary *CommentSummaryData)
 	fmt.Println()
 }
 
-func StatusPrinter(msg string) *pterm.SpinnerPrinter {
-	s, _ := pterm.DefaultSpinner.Start(msg)
+// StatusPrinter returns a race-free, TTY-aware loading spinner.
+//
+// pterm's SpinnerPrinter.Start launches a background goroutine that reads the
+// spinner's IsActive flag while Stop writes it with no synchronization, which
+// the race detector flags and which can tear on a real terminal. This wrapper
+// instead coordinates the animator with a stop channel closed exactly once and
+// joins it on Stop, so there is no shared-flag race. The animation only runs
+// when stdout is a TTY; when output is captured (pipes, tests) it is a quiet
+// no-op so spinner frames don't pollute the stream.
+type statusPrinter struct {
+	msg  string
+	stop chan struct{}
+	once sync.Once
+	done chan struct{}
+	tty  bool
+}
+
+// spinnerFrames cycles through on a TTY.
+var spinnerFrames = []rune{'\\', '|', '/', '-'}
+
+func StatusPrinter(msg string) *statusPrinter {
+	s := &statusPrinter{
+		msg:  msg,
+		stop: make(chan struct{}),
+		done: make(chan struct{}),
+		tty:  term.IsTerminal(int(os.Stdout.Fd())),
+	}
+	if s.tty {
+		go func() {
+			defer close(s.done)
+			s.animate()
+		}()
+	}
 	return s
+}
+
+func (s *statusPrinter) animate() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	idx := 0
+	for {
+		s.render(idx)
+		select {
+		case <-s.stop:
+			return
+		case <-ticker.C:
+			idx++
+		}
+	}
+}
+
+func (s *statusPrinter) render(idx int) {
+	// \r returns to line start, \033[K clears to end of line.
+	frame := string(spinnerFrames[idx%len(spinnerFrames)])
+	fmt.Fprintf(os.Stdout, "\r\033[K%s %s", frame, s.msg)
+}
+
+// Stop halts the spinner and clears its line. It is safe to call more than
+// once and always returns only after the animator has fully stopped.
+func (s *statusPrinter) Stop() {
+	s.once.Do(func() { close(s.stop) })
+	if s.tty {
+		<-s.done
+		fmt.Fprint(os.Stdout, "\r\033[K")
+	}
 }

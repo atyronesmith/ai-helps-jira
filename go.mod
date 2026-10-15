@@ -10,6 +10,7 @@ require (
 	github.com/mark3labs/mcp-go v0.46.0
 	github.com/pterm/pterm v0.12.83
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/term v0.42.0
 	modernc.org/sqlite v1.48.0
 )
 
