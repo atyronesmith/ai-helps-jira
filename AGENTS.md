@@ -16,6 +16,18 @@ make container-stop # Stop and remove container
 
 Always run `go build ./...` after making changes to verify compilation.
 
+## Delegation
+
+- For coding tasks with substantive implementation work, proactively delegate the
+  implementation to `gpt-6-luna` subagents using `fork_turns: "none"` so they
+  receive only the bounded task context they need.
+- Split work into non-overlapping file or component ownership when parallelism is
+  useful. The root agent remains responsible for planning, reviewing and
+  integrating the changes, resolving conflicts, and running the final required
+  tests and `go build ./...`.
+- Keep trivial edits and tightly ordered work in the root agent when delegation
+  overhead would exceed the work itself.
+
 ## Project Overview
 
 Go CLI tool and MCP server for JIRA Cloud. Provides daily summaries, natural language search, AI digest reports, ticket enrichment, weekly status reports, comment summarization, backlog health checks, duplicate detection, full CRUD operations, and Confluence integration (page/blog CRUD, search, analytics, comments, labels). All features are exposed both as CLI commands and 35 MCP tools. Supports stdio and SSE transports, with container deployment for shared multi-client access. Confluence tools support `body_file` parameter for large content that would exceed LLM context limits.
