@@ -1,4 +1,7 @@
 name: build
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -8,6 +11,7 @@ jobs:
   build:
     name: Build & Vet
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -19,6 +23,21 @@ jobs:
   doc-lint:
     name: Doc Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/doc-lint.sh
+
+  test:
+    name: Race Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -race -count=1 ./...
+      - run: go test -race -tags=oracle -count=1 ./internal/jqloracle
+      - name: Test oracle runner
+        run: python3 -m unittest discover -s scripts -p 'test_run_jql_oracle.py' -v

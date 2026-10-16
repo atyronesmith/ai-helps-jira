@@ -1,0 +1,69 @@
+name: JQL Jira Oracle
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trust-guard:
+    name: Verify trusted default branch
+    runs-on: ubuntu-latest
+    outputs:
+      trusted: ${{ steps.guard.outputs.trusted }}
+    steps:
+      - name: Reject untrusted refs before checkout
+        id: guard
+        env:
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "Oracle workflow must be dispatched from the repository default branch." >&2
+            exit 1
+          fi
+          echo "trusted=true" >> "$GITHUB_OUTPUT"
+
+  oracle:
+    name: Strict Jira oracle
+    needs: trust-guard
+    if: needs.trust-guard.outputs.trusted == 'true'
+    environment: jira-oracle
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check non-secret oracle configuration
+        id: config
+        env:
+          JIRA_PROJECT: ${{ vars.JIRA_PROJECT }}
+          JIRA_ORACLE_ISSUE_KEY: ${{ vars.JIRA_ORACLE_ISSUE_KEY }}
+          JIRA_ORACLE_SPRINT_ID: ${{ vars.JIRA_ORACLE_SPRINT_ID }}
+          JIRA_ORACLE_RELEASE: ${{ vars.JIRA_ORACLE_RELEASE }}
+        run: |
+          if [ -z "$JIRA_PROJECT" ] || [ -z "$JIRA_ORACLE_ISSUE_KEY" ] || [ -z "$JIRA_ORACLE_SPRINT_ID" ] || [ -z "$JIRA_ORACLE_RELEASE" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "## JQL oracle: SKIPPED" >> "$GITHUB_STEP_SUMMARY"
+            echo "Required repository variables JIRA_PROJECT, JIRA_ORACLE_ISSUE_KEY, JIRA_ORACLE_SPRINT_ID, and JIRA_ORACLE_RELEASE must all be configured." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run strict Jira oracle
+        id: run-oracle
+        if: steps.config.outputs.configured == 'true'
+        env:
+          JIRA_SERVER: ${{ secrets.JIRA_SERVER }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_PROJECT: ${{ vars.JIRA_PROJECT }}
+          JIRA_ORACLE_ISSUE_KEY: ${{ vars.JIRA_ORACLE_ISSUE_KEY }}
+          JIRA_ORACLE_SPRINT_ID: ${{ vars.JIRA_ORACLE_SPRINT_ID }}
+          JIRA_ORACLE_RELEASE: ${{ vars.JIRA_ORACLE_RELEASE }}
+        run: python3 scripts/run-jql-oracle.py

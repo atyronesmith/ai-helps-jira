@@ -12,22 +12,25 @@
 package llm
 
 import (
+	"os"
 	"testing"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
+	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 	"github.com/atyronesmith/ai-helps-jira/internal/jqloracle"
 	"github.com/atyronesmith/ai-helps-jira/internal/nl2jql"
 )
 
-// oracleProject is the real, live project key used for every positive case
-// in this corpus. Strict validation checks not just field names but value
-// existence, so a positive case naming a project must name one that
-// actually exists on the tenant -- a fictitious "Support" or "ENG" would
-// fail for the wrong reason (hallucinated value) and make the corpus
-// untrustworthy. FIELDCTO is this tenant's own project (see .env /
-// JIRA_PROJECT), so every GenerateJQL* call site already scopes to it by
-// default and it is guaranteed to exist.
-const oracleProject = "FIELDCTO"
+// oracleProject requires an explicitly configured, real tenant project. Oracle
+// fixtures must never depend on a developer's local tenant or load .env files.
+func oracleProject(t *testing.T) string {
+	t.Helper()
+	project := os.Getenv("JIRA_PROJECT")
+	if project == "" {
+		t.Skip("oracle SKIPPED: JIRA_PROJECT must name a real tenant project")
+	}
+	return project
+}
 
 // oracleClient builds the live Jira client once per test, skipping (not
 // failing) when credentials are not exported. That keeps `go test
@@ -53,7 +56,10 @@ func assertValid(t *testing.T, c *jqloracle.Client, jql string) *jqloracle.Query
 	}
 	r := results[0]
 	if len(r.Errors) > 0 {
-		t.Errorf("expected %q to be valid, got errors: %v", jql, r.Errors)
+		t.Fatalf("expected %q to be valid, got errors: %v", jql, r.Errors)
+	}
+	if r.Structure == nil || r.Structure.Where == nil {
+		t.Fatalf("expected a parsed WHERE structure for %q", jql)
 	}
 	return &r
 }
@@ -104,7 +110,7 @@ func assertScopedCorrectly(t *testing.T, c *jqloracle.Client, jql string) {
 // CONTRIBUTING.md).
 func TestOracle_EnsureProjectScope_FIELDCTO2807(t *testing.T) {
 	c := oracleClient(t)
-	cfg := &config.Config{JiraProject: oracleProject}
+	cfg := &config.Config{JiraProject: oracleProject(t)}
 
 	cases := []struct {
 		name string
@@ -136,10 +142,10 @@ func TestOracle_KnownBadScoping_FIELDCTO2807(t *testing.T) {
 	badForms := []string{
 		// Unparenthesised OR + appended project scope: AND binds tighter
 		// than OR, so this parses as
-		// "issuetype = Bug OR (issuetype = Story AND project = FIELDCTO)" --
+		// "issuetype = Bug OR (issuetype = Story AND project = PROJ)" --
 		// the first branch escapes the scope entirely.
-		"issuetype = Bug OR issuetype = Story AND project = " + oracleProject,
-		"status = Open OR priority = High AND project = " + oracleProject,
+		"issuetype = Bug OR issuetype = Story AND project = " + jql.QuoteIdent(oracleProject(t)),
+		"status = Open OR priority = High AND project = " + jql.QuoteIdent(oracleProject(t)),
 	}
 	for _, bad := range badForms {
 		t.Run(bad, func(t *testing.T) {
@@ -169,7 +175,7 @@ func TestOracle_KnownBadScoping_FIELDCTO2807(t *testing.T) {
 // unlike the OR case above which is syntactically valid but wrongly scoped.
 func TestOracle_KnownBadOrderByPlacement_FIELDCTO2807(t *testing.T) {
 	c := oracleClient(t)
-	assertRejected(t, c, "status = Closed ORDER BY created DESC AND project = "+oracleProject)
+	assertRejected(t, c, "status = Closed ORDER BY created DESC AND project = "+jql.QuoteIdent(oracleProject(t)))
 }
 
 // TestOracle_FastPath_FIELDCTO2808 covers the same-field collapsing fix:
@@ -210,25 +216,25 @@ func TestOracle_KnownBadCollapsing_FIELDCTO2808(t *testing.T) {
 
 // TestOracle_FastPathShapes exercises every remaining nl2jql fast-path
 // rendering shape not already covered by the 2807/2808 regressions above:
-// a lone predicate for each field, the "open" NOT IN expansion, and a
+// a lone predicate for each field, the "open" status-category comparison, and a
 // multi-word captured value. All are scoped through ensureProjectScope
 // first, exactly as the real pipeline does in translateCascade.
 func TestOracle_FastPathShapes(t *testing.T) {
 	c := oracleClient(t)
-	cfg := &config.Config{JiraProject: oracleProject}
+	cfg := &config.Config{JiraProject: oracleProject(t)}
 
 	cases := []struct {
 		name  string
 		query string
 	}{
-		{"project alone", "in " + oracleProject},
+		{"project alone", "in " + oracleProject(t)},
 		{"issuetype alone", "bugs"},
 		{"status done", "done"},
 		{"status in progress", "in progress"},
-		{"status open (NOT IN expansion)", "open"},
+		{"status open (status category)", "open"},
 		{"assignee self", "my issues"},
 		{"assignee assigned to me", "assigned to me"},
-		{"combined", "my open bugs in " + oracleProject},
+		{"combined", "my open bugs in " + oracleProject(t)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -251,10 +257,10 @@ func TestOracle_Hallucinations(t *testing.T) {
 	c := oracleClient(t)
 
 	t.Run("nonexistent field", func(t *testing.T) {
-		assertRejected(t, c, "project = "+oracleProject+` AND sprintName = "Q3" AND storyPoints > 3`)
+		assertRejected(t, c, "project = "+jql.QuoteIdent(oracleProject(t))+` AND sprintName = "Q3" AND storyPoints > 3`)
 	})
 	t.Run("nonexistent status value", func(t *testing.T) {
-		assertRejected(t, c, "project = "+oracleProject+` AND status = "Pending Zorblax"`)
+		assertRejected(t, c, "project = "+jql.QuoteIdent(oracleProject(t))+` AND status = "Pending Zorblax"`)
 	})
 }
 
@@ -263,6 +269,6 @@ func TestOracle_Hallucinations(t *testing.T) {
 // mode shares with the default parse mode.
 func TestOracle_SyntaxErrors(t *testing.T) {
 	c := oracleClient(t)
-	assertRejected(t, c, "project = "+oracleProject+" AND status = Open AND")
-	assertRejected(t, c, "project = "+oracleProject+" AND ( ) AND")
+	assertRejected(t, c, "project = "+jql.QuoteIdent(oracleProject(t))+" AND status = Open AND")
+	assertRejected(t, c, "project = "+jql.QuoteIdent(oracleProject(t))+" AND ( ) AND")
 }

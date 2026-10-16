@@ -16,7 +16,7 @@ As of 2026-10-12. Phases are tracked by the FIELDCTO items below; merges are on 
 | 2812 | Interpolation sites | ✅ done (merged `2be2005`, with 2818) — two config-sourced raw `project = %s` sites (`cmd/find_similar.go:85`, `internal/mcpserver/tools.go:1437`) remain by design as accepted low-risk |
 | 2817 | Relative-date unit fix | ✅ done (merged `0cef9b6`) |
 | 2818 | Board-query guard | ✅ done (merged `2be2005`, with 2812) |
-| 2813 | AST-based construction | ⏳ open — `participle` AST + canonical renderer not yet landed |
+| 2813 | AST-based construction | ⏳ deferred — see [implementation handoff](FIELDCTO-2813-implementation-plan.md) |
 
 ## Background
 
@@ -256,6 +256,10 @@ Consolidate on `jql.Quote()` and `jql.QuoteIdent()`. Note that `quoteIfNeeded` i
 not a third.
 
 ### [FIELDCTO-2813](https://redhat.atlassian.net/browse/FIELDCTO-2813) — AST-based construction (5 SP)
+
+Implementation is currently deferred. The detailed design, migration sequence,
+test matrix, and closure checklist are preserved in
+[FIELDCTO-2813-implementation-plan.md](FIELDCTO-2813-implementation-plan.md).
 
 Define the AST (`Clause`, `And`, `Or`, `Not`, `OrderBy`, `Query`), parse with `participle`, and
 render canonically — parenthesising `Or` nodes whenever they sit under an `And`. The precedence

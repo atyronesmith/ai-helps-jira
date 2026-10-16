@@ -12,18 +12,24 @@ package jira
 
 import (
 	"fmt"
-	"strings"
+	"os"
+	"strconv"
 	"testing"
-	"time"
 
+	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 	"github.com/atyronesmith/ai-helps-jira/internal/jqloracle"
 )
 
-// oracleProject mirrors internal/llm's constant of the same purpose: the
-// one real, live project key this corpus scopes positive cases to, so
-// strict validation's value-existence check has something true to check
-// against. See JIRA_PROJECT in .env.
-const oracleProject = "FIELDCTO"
+// oracleProject requires an explicitly configured, real tenant project. Oracle
+// fixtures must never depend on a developer's local tenant or load .env files.
+func oracleProject(t *testing.T) string {
+	t.Helper()
+	project := os.Getenv("JIRA_PROJECT")
+	if project == "" {
+		t.Skip("oracle SKIPPED: JIRA_PROJECT must name a real tenant project")
+	}
+	return project
+}
 
 func oracleClient(t *testing.T) *jqloracle.Client {
 	t.Helper()
@@ -42,32 +48,22 @@ func assertValid(t *testing.T, c *jqloracle.Client, jql string) *jqloracle.Query
 	}
 	r := results[0]
 	if len(r.Errors) > 0 {
-		t.Errorf("expected %q to be valid, got errors: %v", jql, r.Errors)
+		t.Fatalf("expected %q to be valid, got errors: %v", jql, r.Errors)
+	}
+	if r.Structure == nil || r.Structure.Where == nil {
+		t.Fatalf("expected a parsed WHERE structure for %q", jql)
 	}
 	return &r
 }
 
-// assertFieldRecognized is a weaker check than assertValid, needed for the
-// SearchByRelease template below: this tenant has no fixVersion/release
-// defined on FIELDCTO at all (verified live -- `fixVersion is not EMPTY`
-// matches zero issues), so no literal release name can pass full strict
-// validation without first mutating the tenant to create one, which this
-// suite must not do. The next best live check is that the field name
-// itself is recognised -- i.e. the only error is a value-existence error
-// naming the field, never a field-existence error -- which still catches
-// the hallucination mode this corpus cares about (a model inventing a
-// field name) even though it cannot assert the release name is real.
-func assertFieldRecognized(t *testing.T, c *jqloracle.Client, jql, field string) {
+// oracleFixture reads only explicitly supplied non-secret tenant fixture values.
+func oracleFixture(t *testing.T, name string) string {
 	t.Helper()
-	results, err := c.ParseStrict([]string{jql})
-	if err != nil {
-		t.Fatalf("ParseStrict transport error: %v", err)
+	value := os.Getenv(name)
+	if value == "" {
+		t.Skipf("oracle SKIPPED: %s must name a real tenant fixture", name)
 	}
-	for _, e := range results[0].Errors {
-		if strings.Contains(e, fmt.Sprintf("Field '%s' does not exist", field)) {
-			t.Errorf("%q: field %q was not recognised by this tenant: %v", jql, field, e)
-		}
-	}
+	return value
 }
 
 // TestOracle_WeeklyActivityJQL validates the shared weekly-status query
@@ -78,7 +74,7 @@ func assertFieldRecognized(t *testing.T, c *jqloracle.Client, jql, field string)
 func TestOracle_WeeklyActivityJQL(t *testing.T) {
 	c := oracleClient(t)
 
-	jql, err := WeeklyActivityJQL(oracleProject, "currentUser()", "2026-07-01", "2026-07-31")
+	jql, err := WeeklyActivityJQL(oracleProject(t), "currentUser()", "2026-07-01", "2026-07-31")
 	if err != nil {
 		t.Fatalf("WeeklyActivityJQL: %v", err)
 	}
@@ -98,15 +94,8 @@ func TestOracle_WeeklyActivityJQL(t *testing.T) {
 	}
 }
 
-// TestOracle_WeeklyActivityJQL_InvalidEndDate locks in the error path: an
-// unparseable end date must fail before ever reaching Jira (WeeklyActivityJQL
-// itself rejects it), so there is nothing to submit to the oracle here --
-// this documents that the input is validated locally, not remotely.
-func TestOracle_WeeklyActivityJQL_InvalidEndDate(t *testing.T) {
-	if _, err := WeeklyActivityJQL(oracleProject, "currentUser()", "2026-07-01", "not-a-date"); err == nil {
-		t.Fatal("expected WeeklyActivityJQL to reject an invalid end date locally")
-	}
-}
+// Local date rejection is covered by TestWeeklyActivityJQLRejectsBadEndDate
+// in the ordinary suite; only tests that contact Jira use TestOracle_ names.
 
 // TestOracle_HandBuiltTemplates reconstructs every remaining fmt.Sprintf
 // JQL template in the tree (see docs/jql-validation-plan.md's inventory,
@@ -120,6 +109,11 @@ func TestOracle_WeeklyActivityJQL_InvalidEndDate(t *testing.T) {
 func TestOracle_HandBuiltTemplates(t *testing.T) {
 	c := oracleClient(t)
 	const assignee = "currentUser()"
+	project := jql.QuoteIdent(oracleProject(t))
+	sprintID, err := strconv.Atoi(oracleFixture(t, "JIRA_ORACLE_SPRINT_ID"))
+	if err != nil || sprintID <= 0 {
+		t.Fatal("JIRA_ORACLE_SPRINT_ID must be a positive integer")
+	}
 
 	cases := []struct {
 		name   string
@@ -133,7 +127,7 @@ func TestOracle_HandBuiltTemplates(t *testing.T) {
 				"assignee = %s AND project = %s "+
 					"AND status NOT IN (Done, Closed, Resolved) "+
 					"ORDER BY priority ASC, status ASC",
-				assignee, oracleProject,
+				assignee, project,
 			),
 		},
 		{
@@ -144,7 +138,7 @@ func TestOracle_HandBuiltTemplates(t *testing.T) {
 					"AND status NOT IN (Done, Closed, Resolved) "+
 					"AND updated >= \"%s\" "+
 					"ORDER BY priority ASC, status ASC",
-				assignee, oracleProject, time.Now().Add(-7*24*time.Hour).Format("2006-01-02 15:04"),
+				assignee, project, "2026-07-01 00:00",
 			),
 		},
 		{
@@ -152,7 +146,7 @@ func TestOracle_HandBuiltTemplates(t *testing.T) {
 			"internal/jira/client.go Client.getSprintIssues",
 			fmt.Sprintf(
 				"assignee = %s AND sprint = %d AND project = %s ORDER BY priority ASC",
-				assignee, 123, oracleProject,
+				assignee, sprintID, project,
 			),
 		},
 		{
@@ -169,7 +163,7 @@ func TestOracle_HandBuiltTemplates(t *testing.T) {
 			"cmd/find_similar.go runFindSimilar and internal/mcpserver/tools.go find-similar handler (identical template)",
 			fmt.Sprintf(
 				"project = %s AND status NOT IN (Done, Closed, Resolved) ORDER BY updated DESC",
-				oracleProject,
+				project,
 			),
 		},
 	}
@@ -181,18 +175,19 @@ func TestOracle_HandBuiltTemplates(t *testing.T) {
 		})
 	}
 
-	// SearchByRelease is checked separately with the weaker
-	// assertFieldRecognized: this tenant has no fixVersion/release defined
-	// on FIELDCTO at all (confirmed live -- `fixVersion is not EMPTY`
-	// matches zero issues), so no literal release name can satisfy full
-	// strict validation here without mutating the tenant to create one.
+	// A real release fixture lets this case assert strict validity and parsed
+	// shape, rather than accepting every error except an unknown-field error.
 	t.Run("SearchByRelease", func(t *testing.T) {
 		t.Logf("source: internal/jira/client.go Client.SearchByRelease")
-		jql := fmt.Sprintf(
-			"fixVersion = %q AND project = %s ORDER BY issuetype ASC, priority ASC",
-			"2026.1", oracleProject,
+		query := fmt.Sprintf(
+			"fixVersion = %s AND project = %s ORDER BY issuetype ASC, priority ASC",
+			jql.Quote(oracleFixture(t, "JIRA_ORACLE_RELEASE")), project,
 		)
-		assertFieldRecognized(t, c, jql, "fixVersion")
+		r := assertValid(t, c, query)
+		if !r.Structure.Where.HasTopLevelFieldPredicate("fixVersion") ||
+			!r.Structure.Where.HasTopLevelFieldPredicate("project") {
+			t.Fatalf("expected release and project predicates in %q", query)
+		}
 	})
 }
 
@@ -205,14 +200,16 @@ func TestOracle_HandBuiltTemplates(t *testing.T) {
 // project predicate here.
 func TestOracle_CrudRefetch_KeyIsIdentityScoped(t *testing.T) {
 	c := oracleClient(t)
-	// FIELDCTO-2816 is a real issue (verified live), so this exercises a
-	// genuine identity lookup rather than hitting "issue does not exist".
-	jql := fmt.Sprintf("key = %s", oracleProject+"-2816")
-	r := assertValid(t, c, jql)
+	// Strict parsing checks value existence, so use a configured visible issue.
+	query := fmt.Sprintf("key = %s", jql.QuoteIdent(oracleFixture(t, "JIRA_ORACLE_ISSUE_KEY")))
+	r := assertValid(t, c, query)
 	if r.Structure == nil || r.Structure.Where == nil {
-		t.Fatalf("expected a parsed structure for %q", jql)
+		t.Fatalf("expected a parsed structure for %q", query)
+	}
+	if !r.Structure.Where.HasTopLevelFieldPredicate("key") && !r.Structure.Where.HasTopLevelFieldPredicate("issuekey") {
+		t.Fatalf("expected a key predicate in %q", query)
 	}
 	if r.Structure.Where.HasTopLevelFieldPredicate("project") {
-		t.Errorf("did not expect a project predicate in a key-identity query %q", jql)
+		t.Errorf("did not expect a project predicate in a key-identity query %q", query)
 	}
 }
