@@ -20,19 +20,20 @@
 </article>
 
 {{if .Data.Issues}}
+<article><p>{{.Data.Summary}}</p></article>
 <div class="grid-2">
     <article>
-        <h3>Status Distribution</h3>
+        <h3>Status Distribution (shown issues{{if .Data.HasMore}}; preview is truncated{{end}})</h3>
         <div class="chart-container"><canvas id="statusChart"></canvas></div>
     </article>
     <article>
-        <h3>Priority Distribution</h3>
+        <h3>Priority Distribution (shown issues{{if .Data.HasMore}}; preview is truncated{{end}})</h3>
         <div class="chart-container"><canvas id="priorityChart"></canvas></div>
     </article>
 </div>
 
 <article>
-    <h3>Issues ({{.Data.MatchingTotal}}{{if gt .Data.MatchingTotal (len .Data.Issues)}} matching, {{len .Data.Issues}} shown{{end}})</h3>
+    <h3>Issues ({{len .Data.Issues}} shown{{if .Data.HasMore}}; more matching issues exist{{end}})</h3>
     <table>
         <thead><tr><th>Key</th><th>Status</th><th>Priority</th><th>Summary</th></tr></thead>
         <tbody>
@@ -49,11 +50,7 @@
 </article>
 {{else}}
 <article>
-    {{if .Data.MatchingTotal}}
-    <p>{{.Data.MatchingTotal}} matching issues; showing 0.</p>
-    {{else}}
-    <p>No issues found.</p>
-    {{end}}
+    <p>{{.Data.Summary}}</p>
 </article>
 {{end}}
 {{end}}

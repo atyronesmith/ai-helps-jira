@@ -39,6 +39,10 @@ func NewClient(cfg *config.Config) (*Client, error) {
 
 // doRequest executes an authenticated request and decodes the JSON response.
 func (c *Client) doRequest(method, path string, body any, out any) error {
+	return c.doRequestContext(context.Background(), method, path, body, out)
+}
+
+func (c *Client) doRequestContext(ctx context.Context, method, path string, body any, out any) error {
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -48,7 +52,7 @@ func (c *Client) doRequest(method, path string, body any, out any) error {
 		reader = bytes.NewReader(b)
 	}
 
-	req, err := http.NewRequest(method, c.base+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reader)
 	if err != nil {
 		return err
 	}
@@ -96,14 +100,17 @@ func (c *Client) doRequest(method, path string, body any, out any) error {
 // --- Search (v3 API) ---
 
 type searchRequest struct {
-	JQL        string   `json:"jql"`
-	MaxResults int      `json:"maxResults"`
-	Fields     []string `json:"fields"`
+	JQL           string   `json:"jql"`
+	MaxResults    int      `json:"maxResults"`
+	Fields        []string `json:"fields"`
+	NextPageToken string   `json:"nextPageToken,omitempty"`
 }
 
 type searchResponse struct {
-	Issues []apiIssue `json:"issues"`
-	Total  *int       `json:"total"`
+	Issues        []apiIssue `json:"issues"`
+	Total         *int       `json:"total"`
+	NextPageToken *string    `json:"nextPageToken"`
+	IsLast        *bool      `json:"isLast"`
 }
 
 type apiIssue struct {
@@ -146,35 +153,8 @@ type apiKeyedName struct {
 // repairs: a rejected query returns an error rather than a silently
 // rewritten one.
 func (c *Client) searchIssues(rawJQL string, max int) ([]Issue, error) {
-	issues, _, err := c.searchIssuesWithTotal(rawJQL, max)
-	return issues, err
-}
-
-func (c *Client) searchIssuesWithTotal(rawJQL string, max int) ([]Issue, int, error) {
-	if err := jql.Validate(rawJQL, jql.Options{DefaultProject: c.project}); err != nil {
-		return nil, 0, err
-	}
-	req := searchRequest{
-		JQL:        rawJQL,
-		MaxResults: max,
-		Fields:     []string{"summary", "status", "priority", "updated", "assignee"},
-	}
-	var resp searchResponse
-	if err := c.doRequest("POST", "/rest/api/3/search/jql", req, &resp); err != nil {
-		// Every caller of searchIssues funnels through here, so embedding the
-		// JQL at this single chokepoint — rather than at each of the ~10
-		// "JIRA search failed" call sites in cmd/ and internal/mcpserver/ —
-		// guarantees a failed query is diagnosable everywhere, not just at
-		// the sites someone remembered to annotate (FIELDCTO-2814).
-		return nil, 0, fmt.Errorf("JQL %q: %w", rawJQL, err)
-	}
-	total := len(resp.Issues)
-	if resp.Total != nil {
-		total = *resp.Total
-	}
-	slog.Info("search returned", "count", len(resp.Issues), "total", total,
-		"jql_prefix", truncate(rawJQL, 60))
-	return parseAPIIssues(resp.Issues), total, nil
+	result, err := c.SearchJQLResult(context.Background(), rawJQL, SearchOptions{Limit: max})
+	return result.Issues, err
 }
 
 func parseAPIIssues(raw []apiIssue) []Issue {
@@ -227,22 +207,13 @@ func (c *Client) GetOpenIssuesSince(since time.Time) ([]Issue, error) {
 	return c.searchIssues(q, 100)
 }
 
-// SearchJQL runs an arbitrary JQL query and returns matching issues. It is
-// one of several Client methods that funnel into searchIssues, which is the
-// actual chokepoint where the structural JQL guard is enforced
-// (FIELDCTO-2810) and errors are annotated with the offending JQL
-// (FIELDCTO-2814).
+// SearchJQL returns at most max rows, following continuation pages as needed.
+// Use SearchJQLResult when completeness or matching counts matter. This row-only
+// compatibility method shares that validated boundary and propagates failures
+// with the offending JQL. Zero max selects the default 50-row limit.
 func (c *Client) SearchJQL(rawJQL string, max int) ([]Issue, error) {
 	slog.Info("search_jql", "jql", rawJQL, "max", max)
 	return c.searchIssues(rawJQL, max)
-}
-
-// SearchJQLWithTotal runs an arbitrary JQL query and returns both the issues
-// in the requested page and Jira's total count of matching issues. The older
-// SearchJQL API remains available for callers that only need the page.
-func (c *Client) SearchJQLWithTotal(rawJQL string, max int) ([]Issue, int, error) {
-	slog.Info("search_jql", "jql", rawJQL, "max", max)
-	return c.searchIssuesWithTotal(rawJQL, max)
 }
 
 // --- Boards & Sprints (Agile REST API — still v1.0) ---

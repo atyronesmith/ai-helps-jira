@@ -21,23 +21,47 @@ type SummaryResult struct {
 
 // QueryResultData holds query results for the web template.
 type QueryResultData struct {
-	Query      string
-	Route      string
-	JQL        string
-	Issues     []jira.Issue
-	Total      int
-	User       string
-	JiraServer string
-	QueriedAt  time.Time
+	Query       string
+	Route       string
+	JQL         string
+	Issues      []jira.Issue
+	Search      *jira.SearchInfo
+	SearchError string
+	User        string
+	JiraServer  string
+	QueriedAt   time.Time
 }
 
-// MatchingTotal keeps older persisted query results sensible when they lack
-// the Jira total field, while new results retain Jira's authoritative count.
-func (q *QueryResultData) MatchingTotal() int {
-	if q.Total == 0 && len(q.Issues) > 0 {
-		return len(q.Issues)
+// Metadata normalizes results saved before search metadata existed. Historical
+// row counts and numeric Total fields are not evidence of an exact total.
+func (q *QueryResultData) Metadata() jira.SearchInfo {
+	if q == nil {
+		return jira.SearchInfo{TotalKind: jira.CountUnknown}
 	}
-	return q.Total
+	if q.Search == nil {
+		return jira.SearchInfo{Returned: len(q.Issues), TotalKind: jira.CountUnknown}
+	}
+	info := *q.Search
+	if info.TotalKind == "" {
+		info.TotalKind = jira.CountUnknown
+	}
+	if info.Returned == 0 && len(q.Issues) > 0 {
+		info.Returned = len(q.Issues)
+	}
+	return info
+}
+
+func (q *QueryResultData) Summary() string {
+	summary := format.SearchSummary(q.Metadata())
+	if q != nil && q.SearchError != "" {
+		summary += " | Search error: " + q.SearchError
+	}
+	return summary
+}
+
+func (q *QueryResultData) HasMore() bool {
+	info := q.Metadata()
+	return info.HasMore != nil && *info.HasMore
 }
 
 // DigestResultData holds digest data for the web template.

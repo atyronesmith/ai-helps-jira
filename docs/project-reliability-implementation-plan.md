@@ -1,7 +1,8 @@
 # Project Reliability Implementation Plan
 
-Status: Phase 0—Regression gates implemented and locally verified on 2026-10-16;
-Phases 1–7 remain proposed. Hosted CI/oracle setup and execution remain pending.
+Status: Phase 0—Regression gates and Phase 1—Complete searches and honest counts
+implemented and locally verified on 2026-10-16.
+Phases 2–7 remain proposed. Hosted CI/oracle setup and execution remain pending.
 Review date: 2026-10-16.
 
 ## Intent
@@ -13,8 +14,8 @@ consistent behavior before expanding the feature roadmap.
 
 This plan captures the project review of the current working tree, including
 uncommitted work. Phase 0 implementation was explicitly requested on 2026-10-16.
-Later phases still require authorization. Jira mutations, deployments, and commits
-are outside this delivery.
+Phase 1 was subsequently authorized. Later phases still require authorization.
+Jira mutations and deployments are outside this delivery.
 
 ## Keep
 
@@ -139,8 +140,8 @@ variables skip execution with an explicit summary; missing secrets fail the step
 with a `SKIPPED` summary. Only an explicit runner `PASS` establishes a live pass.
 
 Phase 0's implementation and local acceptance checks are complete; hosted
-activation/live validation are pending external configuration. Phase 1—Complete
-searches and honest counts has not been implemented by this delivery.
+activation/live validation are pending external configuration. The Phase 0 delivery
+did not implement Phase 1; its subsequent implementation is recorded below.
 
 ## Phase 1: Complete searches and honest counts
 
@@ -163,6 +164,77 @@ or repeated pagination tokens; failure after the first page; exact versus
 estimated versus unknown counts.
 
 Reference: [Atlassian issue-search API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/).
+
+### Phase 1 implementation contract
+
+Implemented on 2026-10-16. Root designed the pagination/count contract and execution
+boundary, reviewed/integrated the changes, and verified the complete suite. Luna 6
+implemented bounded CLI/formatting, MCP/dashboard, and search-regression work.
+
+- `SearchJQLResult(ctx, jql, SearchOptions)` is the validated token-search boundary;
+  the legacy row-only `SearchJQL` delegates to it. Page size and retained-row limit
+  are independent. Default policy is 100 requested rows per page, at most 100
+  pages, and an overall 60-second deadline (or earlier caller cancellation).
+- `SearchInfo` records returned and enumerated rows, whether all matches are in
+  the returned rows, optional knowledge of additional matches, an optional total
+  and its evidence, and a stop reason. Exact counts can coexist with incomplete
+  row previews. The old `SearchJQLWithTotal` integer fallback is removed.
+- Token chains are followed regardless of page length. Only an explicit terminal
+  `isLast` verifies enumeration; missing metadata remains unknown/incomplete.
+  Tokens are opaque. Repeated, malformed, or contradictory pagination; duplicate
+  or missing issue keys; and invalid/changing reported totals interrupt retrieval.
+- Exact counts are selected by CLI `--count`, MCP `exact_count`, or original
+  wording starting with `how many`/`count`. Other phrasings can use the explicit
+  flag. Wording and executed JQL are preserved. Enumeration retains only the
+  requested preview and verifies the count after reaching the terminal page.
+- Unfinished counts return an error with partial rows and stop metadata. A
+  reported total is labeled unverified until enumeration validates it. The model
+  supports estimated labels, but this delivery never calls the approximate-count
+  endpoint. Counts describe visible matches during traversal, not an atomic Jira
+  snapshot; concurrent source changes can invalidate traversal.
+- CLI, MCP text, and dashboard share a count/completeness formatter. Empty partial
+  output never claims that there are no matches. Dashboard charts describe the
+  shown rows, and historical numeric totals are treated as unknown rather than
+  retroactively verified. Interrupted MCP searches keep inspectable partial output.
+- This phase changes query search results. Row-only compatibility callers still
+  request bounded lists and cannot expose metadata themselves. Cache membership
+  reconciliation/isolation and offline completeness remain Phase 2 work. The
+  separate board-scoped Agile guard and its existing retrieval path are preserved.
+
+### Phase 1 verification results
+
+- **Passed:** `go build ./...`, `go vet ./...`, and the integrated full
+  `go test -race -count=1 -timeout=90s ./...` suite. Existing Phase 3 ambiguous
+  status-intent cases remain explicitly skipped; this phase does not fix them.
+- **Passed:** pagination regressions for several pages, short server pages,
+  missing totals, empty terminal/unknown pages, terminal and nonterminal display
+  limits, server overshoot, malformed/repeated/cyclic tokens, missing pagination,
+  and stale “more” information after advancing a page.
+- **Passed:** exact-count enumeration beyond the retained preview, unverified
+  reported totals, estimated/unknown/exact output labels, duplicate keys and
+  inconsistent totals, failure after page one, page-budget exhaustion, pre-canceled
+  and in-flight contexts, and deterministic cancellation between decoded pages.
+  Default-policy tests assert 100-page and 50-retained-row bounds plus HTTP
+  deadlines; an earlier caller deadline is preserved.
+- **Passed:** CLI and MCP automatic/explicit count selection, original wording and
+  context propagation, invalid arguments, partial error previews, verified empty
+  versus unknown empty output, legacy dashboard totals becoming unknown, and
+  charts limited to shown rows. Only complete, error-free query row sets warm the
+  issue cache; synchronization/membership reconciliation is still Phase 2.
+- **Passed:** `make doc-lint`, `git diff --check`, and secret scans of the changed
+  source/documentation artifacts.
+- A cancellation mock initially stalled because it waited on the server request
+  context without consuming the POST body. It now drains the body and bounds its
+  wait; the full race suite passed after the fix. Review also corrected outdated
+  count expectations without changing unrelated digest behavior.
+- **Live Jira/oracle validation not run.** New behavior is tested with local
+  fixtures and mock transports; no credentials were discovered, no Jira business
+  operations were performed, and no JQL generator was changed. The strict-parse
+  oracle remains a separate explicitly configured validation step.
+
+Phase 1 implementation and local acceptance checks are complete. Existing local
+harness artifacts were preserved. This phase has not been deployed. Phase 2 cache
+synchronization/isolation and later phases remain planned.
 
 ## Phase 2: Cache synchronization and isolation
 

@@ -59,7 +59,7 @@ Go CLI tool and MCP server for JIRA Cloud. Provides daily summaries, natural lan
 ## Architecture
 
 - **`cmd/`** — CLI entry points using cobra. Each file is one subcommand.
-- **`internal/jira/`** — JIRA REST API v3 client. `client.go` has HTTP/read operations, `crud.go` has writes, and `models.go` has data types. Search calls through `searchIssues` and `SearchJQLWithTotal` converge on `searchIssuesWithTotal`, which validates JQL before execution. The board-scoped Agile path in `getKanbanIssues` has a separate structural guard without a default-project requirement. Verify both boundaries when changing validation.
+- **`internal/jira/`** — JIRA REST API v3 client. `client.go` has HTTP/read operations, `crud.go` has writes, and `models.go` has data types. Search calls through `searchIssues` and `SearchJQL` converge on `SearchJQLResult` (`search.go`), which validates JQL and follows enhanced-search tokens with caller cancellation and a bounded execution policy. `SearchInfo` distinguishes preview rows, completeness, and exact/reported/unknown totals; the old integer-total API has been removed. The board-scoped Agile path in `getKanbanIssues` has a separate structural guard without a default-project requirement. Verify both boundaries when changing validation.
 - **`internal/jql/`** — Structural JQL validator and quote helpers. `Validate()` checks balanced quotes/parens, a single terminal `ORDER BY`, no dangling operators, and the scope invariant; `Quote()` and `QuoteIdent()` are the canonical quoting helpers for interpolated values. Tracked by the JQL hardening epic in `docs/jql-validation-plan.md`.
 - **`internal/jqloracle/`** — Shared helper for build-tagged oracle tests that POST generated JQL to Jira's `/rest/api/3/jql/parse?validation=strict`. The default suite remains hermetic. The live oracle runs through a separate default-branch manual workflow; ordinary CI runs only its local protocol tests.
 - **`internal/nl2jql/`** — Deterministic-first natural-language-to-JQL pipeline: `Normalizer` (date + fuzzy-name repair) → strict `participle` AST parse → LLM `FallbackEngine` used only when parsing fails. `engine.go` orchestrates; `parser.go`, `normalizer.go`, `fallback.go` are the stages.
@@ -212,7 +212,7 @@ make container-stop  # Stop and remove the container
 
 - [Project reliability plan](docs/project-reliability-implementation-plan.md) —
   phases, acceptance criteria, known correctness gaps, and Phase 0 regression-gate
-  results. Phases 1–7 remain planned.
+  results. Phase 1 implements complete query searches/count metadata; Phases 2–7 remain planned.
 - [JQL AST handoff](docs/FIELDCTO-2813-implementation-plan.md) — deferred shared
   JQL parser/renderer work, separate from the existing natural-language AST.
 - [JQL metadata analysis](docs/jql-metadata-resolver-analysis.md) — proposed cached

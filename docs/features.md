@@ -82,6 +82,7 @@ Type queries in plain English; a deterministic parser translates to JQL (an LLM 
 ```sh
 jira-cli query "show me all critical bugs from last week"
 jira-cli query --dry-run "show me all critical bugs from last week"
+jira-cli query --count "my open bugs" --max 10
 jira-cli train-jql
 jira-cli train-jql report
 ```
@@ -93,6 +94,14 @@ jira-cli train-jql report
 4. Unless `--dry-run` was selected, execute JQL via existing `searchIssues()`
 5. Display results in standard issue table
 6. Optionally show the generated JQL for learning (`--show-jql`)
+
+Query searches follow enhanced-search continuation tokens and expose returned rows,
+completeness, and optional count evidence across CLI, MCP, and dashboard. `--count`
+or MCP `exact_count` scans beyond the displayed preview (also selected by anchored
+`how many`/`count` wording), subject to 100 pages and a 60-second deadline. Counts
+are exact only after terminal enumeration; Jira-supplied totals remain unverified
+until then. Missing metadata and interruptions cannot become exact row counts.
+The approximate-count endpoint is not used. See README for policy details.
 
 `train-jql` uses the same production translation path but never executes the
 generated or corrected JQL. Reviews are appended to the private local corpus at

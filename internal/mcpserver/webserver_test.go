@@ -26,11 +26,13 @@ func TestNewWebServerParsesTemplates(t *testing.T) {
 	}
 }
 
-func TestQueryViewRendersAuthoritativeTotal(t *testing.T) {
+func TestQueryViewRendersSearchMetadata(t *testing.T) {
 	store := &ResultStore{results: make(map[string]*StoredResult)}
+	total := 73
+	hasMore := true
 	id := store.Save(ResultQuery, "Query: open bugs", &QueryResultData{
 		Query:  "open bugs",
-		Total:  73,
+		Search: &jira.SearchInfo{Returned: 2, Total: &total, TotalKind: jira.CountReported, HasMore: &hasMore},
 		Issues: []jira.Issue{{Key: "TEST-1", Summary: "First issue", Status: "Open"}, {Key: "TEST-2", Summary: "Second issue", Status: "Open"}},
 	})
 	ws := NewWebServer(store, nil, 0, "127.0.0.1")
@@ -38,8 +40,19 @@ func TestQueryViewRendersAuthoritativeTotal(t *testing.T) {
 	if err := ws.tmpls["query.html"].ExecuteTemplate(&buf, "layout", store.results[id]); err != nil {
 		t.Fatalf("query view render: %v", err)
 	}
-	if !strings.Contains(buf.String(), "Issues (73 matching, 2 shown)") {
-		t.Errorf("query view did not render authoritative total and displayed count: %s", buf.String())
+	if !strings.Contains(buf.String(), "Jira-reported matching total (unverified): 73") || !strings.Contains(buf.String(), "Issues (2 shown; more matching issues exist)") || !strings.Contains(buf.String(), "Status Distribution (shown issues; preview is truncated)") {
+		t.Errorf("query view did not render typed metadata and shown-row labels: %s", buf.String())
+	}
+}
+
+func TestLegacyQueryMetadataDoesNotInferExactTotal(t *testing.T) {
+	var old QueryResultData
+	if err := json.Unmarshal([]byte(`{"Issues":[{"key":"TEST-1"}],"Total":1}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	info := old.Metadata()
+	if info.Total != nil || info.TotalKind != jira.CountUnknown || info.Complete {
+		t.Fatalf("legacy metadata = %+v; want unknown, unverified metadata", info)
 	}
 }
 

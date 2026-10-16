@@ -16,6 +16,7 @@ import (
 
 	"github.com/atyronesmith/ai-helps-jira/internal/cache"
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
+	"github.com/atyronesmith/ai-helps-jira/internal/jira"
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
 )
 
@@ -251,6 +252,9 @@ func TestAllToolDefsHaveDescriptions(t *testing.T) {
 	}
 	if _, ok := queryTool.InputSchema.Properties["query"]; !ok {
 		t.Error("jira_query schema is missing the legacy query alias")
+	}
+	if _, ok := queryTool.InputSchema.Properties["exact_count"]; !ok {
+		t.Error("jira_query schema is missing exact_count")
 	}
 	querySchema, _ := json.Marshal(queryTool.InputSchema.Properties["natural_query"])
 	for _, required := range []string{"verbatim", "Which of my open jiras should I work on next?", "my open Jiras", "do not look up or replace", "return the MCP error", "do not bypass it with REST or shell"} {
@@ -794,7 +798,7 @@ func jqlSearchServerWithTotal(t *testing.T, issues []map[string]any, total int, 
 			*recorded = req.JQL
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"issues": issues, "total": total})
+		_ = json.NewEncoder(w).Encode(map[string]any{"issues": issues, "total": total, "isLast": true})
 	}))
 	t.Cleanup(ts.Close)
 	return ts
@@ -894,15 +898,15 @@ func TestHandleQuery_FastPathDrivesSearchAndStores(t *testing.T) {
 	if len(data.Issues) != 2 {
 		t.Errorf("stored issues = %d, want 2", len(data.Issues))
 	}
-	if data.Total != 2 {
-		t.Errorf("stored total = %d, want 2", data.Total)
+	if data.Search == nil || data.Search.Total == nil || *data.Search.Total != 2 || data.Search.TotalKind != jira.CountExact {
+		t.Errorf("stored search metadata = %+v, want verified exact total 2", data.Search)
 	}
 
 	text := resultText(res)
 	assertContains(t, text, "project = TEST AND status = Open")
 	assertContains(t, text, "TEST-1")
 	assertContains(t, text, "TEST-2")
-	assertContains(t, text, "**2 issues found:**")
+	assertContains(t, text, "Exact matching total: 2")
 	// Two issues are well under the default 50 cap, so no cap warning.
 	if strings.Contains(text, "max_results cap") {
 		t.Errorf("unexpected max_results cap warning:\n%s", text)
@@ -954,12 +958,12 @@ func TestIsRecommendationQuery(t *testing.T) {
 	}
 }
 
-func TestHandleQuery_UsesAuthoritativeTotalAndRetainsCapWarning(t *testing.T) {
+func TestHandleQuery_CountQuestionEnumeratesExactCount(t *testing.T) {
 	h := newTestHandlers(t)
 	setTestJIRAEnv(t)
 
 	var recorded string
-	ts := jqlSearchServerWithTotal(t, sampleJQLIssues("TEST-1", "TEST-2"), 73, &recorded)
+	ts := jqlSearchServer(t, sampleJQLIssues("TEST-1", "TEST-2"), &recorded)
 	t.Setenv("JIRA_SERVER", ts.URL)
 	h.translate = func(_ context.Context, _ *config.Config, _ string) (*llm.QueryResult, error) {
 		return &llm.QueryResult{JQL: "project = TEST AND status = Open", Route: "fast_path"}, nil
@@ -976,8 +980,7 @@ func TestHandleQuery_UsesAuthoritativeTotalAndRetainsCapWarning(t *testing.T) {
 		t.Fatalf("unexpected error result: %s", resultText(res))
 	}
 	text := resultText(res)
-	assertContains(t, text, "73 matching issues; showing 2")
-	assertContains(t, text, "Hit the max_results cap (2)")
+	assertContains(t, text, "Exact matching total: 2")
 
 	list := h.store.List()
 	if len(list) != 1 {
@@ -987,8 +990,8 @@ func TestHandleQuery_UsesAuthoritativeTotalAndRetainsCapWarning(t *testing.T) {
 	if !ok {
 		t.Fatalf("stored data type = %T, want *QueryResultData", list[0].Data)
 	}
-	if data.Total != 73 {
-		t.Errorf("stored total = %d, want 73", data.Total)
+	if data.Search == nil || data.Search.Total == nil || *data.Search.Total != 2 || data.Search.TotalKind != jira.CountExact {
+		t.Errorf("stored search metadata = %+v, want verified exact total 2", data.Search)
 	}
 	if got := len(data.Issues); got != 2 {
 		t.Errorf("stored issue rows = %d, want 2", got)
@@ -1180,9 +1183,8 @@ func TestHandleTranslateQueryReportsLocalValidationFailure(t *testing.T) {
 	}
 }
 
-// When the search returns exactly maxResults issues the handler emits the cap
-// warning so the caller knows results may be truncated.
-func TestHandleQuery_HitMaxResultsCap(t *testing.T) {
+// Reaching the display limit on a terminal page does not imply truncation.
+func TestHandleQuery_TerminalAtDisplayLimitIsComplete(t *testing.T) {
 	h := newTestHandlers(t)
 	setTestJIRAEnv(t)
 
@@ -1204,7 +1206,10 @@ func TestHandleQuery_HitMaxResultsCap(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("unexpected error result: %s", resultText(res))
 	}
-	assertContains(t, resultText(res), "Hit the max_results cap (3)")
+	assertContains(t, resultText(res), "Completeness: complete")
+	if strings.Contains(resultText(res), "cap") || strings.Contains(resultText(res), "more matches") {
+		t.Fatalf("terminal search incorrectly claimed truncation: %s", resultText(res))
+	}
 }
 
 // The digest NL path routes its issues argument through digestTranslate and feeds

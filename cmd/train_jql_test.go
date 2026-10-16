@@ -35,9 +35,9 @@ func TestRunQueryDryRunUsesTokenlessConfigAndCachedProjectsOnly(t *testing.T) {
 		t.Fatal("dry-run invoked the project warm-up/fetch path")
 		return nil
 	}
-	querySearcher = func(*config.Config, string, int) ([]jira.Issue, error) {
+	querySearcher = func(context.Context, *config.Config, string, jira.SearchOptions) (jira.SearchResult, error) {
 		t.Fatal("dry-run invoked Jira search")
-		return nil, nil
+		return jira.SearchResult{}, nil
 	}
 	queryTranslator = func(_ context.Context, cfg *config.Config, input string, projects []jira.Project) (*llm.QueryResult, error) {
 		if cfg.JiraAPIToken != "" || cfg.JiraServer != "" || cfg.JiraEmail != "" {
@@ -122,9 +122,9 @@ func TestFinishQueryDryRunDoesNotSearch(t *testing.T) {
 	err := finishQuery(cmd, &config.Config{JiraProject: "SUP"}, &llm.QueryResult{
 		Input: "show open bugs", NormalizedInput: "show open bugs", Route: llm.RouteFastPath,
 		ParseError: "unexpected token: bugs", JQL: `project = "SUP" AND statusCategory != Done`,
-	}, nil, true, 10, false, func(*config.Config, string, int) ([]jira.Issue, error) {
+	}, nil, true, 10, false, false, func(context.Context, *config.Config, string, jira.SearchOptions) (jira.SearchResult, error) {
 		called = true
-		return nil, nil
+		return jira.SearchResult{}, nil
 	})
 	if err != nil {
 		t.Fatal(err)

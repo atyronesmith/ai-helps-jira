@@ -135,11 +135,29 @@ jira-cli query "show me all critical bugs from last week"
 jira-cli query "unresolved stories assigned to me" --show-jql
 jira-cli query "epics created this month" --max 10
 jira-cli query --dry-run "issues I closed in June 2026"
+# Count all matches, retaining at most 10 issue rows for display
+jira-cli query --count "my open bugs" --max 10
 
 # Interactively review translations and save a private local feedback corpus
 jira-cli train-jql
 jira-cli train-jql report
 ```
+
+Query results distinguish displayed rows from matching totals. List searches follow
+continuation tokens until the display limit or an explicit terminal page; a short
+page alone never proves completion. `--count` (or a question beginning with
+`how many` or `count`) enumerates matches while retaining at most `--max` rows.
+An exact total requires a completed enumeration. Each search allows up to 100
+pages of at most 100 requested rows and 60 seconds; interruptions report partial
+rows and return an error. Missing pagination metadata is shown as incomplete,
+with an unknown or unverified Jira-reported total. No approximate-count endpoint
+is used. The count reflects the visible matches encountered during traversal,
+not an atomic snapshot of a changing Jira project.
+
+The MCP `jira_query` tool follows the same policy; `exact_count: true` requests
+count enumeration and `max_results` limits its displayed preview. The dashboard
+shows the same completeness and count evidence. Legacy saved query results have
+unknown completeness and totals.
 
 ### Digest
 

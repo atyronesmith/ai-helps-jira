@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"regexp"
 	"strings"
@@ -147,7 +148,8 @@ func queryToolDef() mcp.Tool {
 		mcp.WithString("query", mcp.Description("Deprecated compatibility alias for natural_query. Pass the original natural-language wording, never JQL.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
-		mcp.WithNumber("max_results", mcp.Description("Maximum results. Default 50.")),
+		mcp.WithNumber("max_results", mcp.Description("Maximum issues to return in the displayed preview. Default 50; must be a positive integer.")),
+		mcp.WithBoolean("exact_count", mcp.Description("Enumerate all matching issues to verify an exact count (up to 100 pages of 100 rows, within 60 seconds). Automatically enabled for recognized 'how many' and 'count' questions.")),
 		readOnlyAnnotations(),
 	)
 }
@@ -554,15 +556,27 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 	if looksLikeJQL(naturalQuery) {
 		return errorResult("natural_query looks like JQL; pass the user's original natural-language wording verbatim so it can be translated"), nil
 	}
+	maxResults := 50
+	args := req.GetArguments()
+	if args != nil {
+		if raw, exists := args["max_results"]; exists {
+			value, ok := raw.(float64)
+			maxInt := float64(int(^uint(0) >> 1))
+			if !ok || math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 || value >= maxInt || value != math.Trunc(value) {
+				return errorResult("max_results must be a positive integer"), nil
+			}
+			maxResults = int(value)
+		}
+		if raw, exists := args["exact_count"]; exists {
+			if _, ok := raw.(bool); !ok {
+				return errorResult("exact_count must be a boolean"), nil
+			}
+		}
+	}
 
 	cfg, err := loadConfig(req)
 	if err != nil {
 		return errorResult(err.Error()), nil
-	}
-
-	maxResults := int(getFloat(req, "max_results"))
-	if maxResults <= 0 {
-		maxResults = 50
 	}
 
 	slog.Info("query", "input", naturalQuery)
@@ -580,68 +594,54 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 		return errorResult(err.Error()), nil
 	}
 
-	issues, total, err := client.SearchJQLWithTotal(result.JQL, maxResults)
-	if err != nil {
-		return errorResult(fmt.Sprintf("JIRA search failed: %v", err)), nil
-	}
-
-	// Cache results
-	if len(issues) > 0 {
+	searchResult, searchErr := client.SearchJQLResult(ctx, result.JQL, jira.SearchOptions{
+		Limit: maxResults, ExactCount: getBool(req, "exact_count") || llm.IsCountQuery(naturalQuery),
+	})
+	issues := searchResult.Issues
+	info := searchResult.SearchInfo
+	if len(issues) > 0 && searchErr == nil && info.Complete {
 		h.cache.UpsertIssues(cfg.JiraProject, issues)
 	}
-
-	// JQL is executed above exactly as generated. displayJQL resolves any
-	// relative dates ("-365d") to absolute ones for the human-facing text and
-	// dashboard only, so a rolling window is visible for what it is next to
-	// the natural-language request that produced it.
+	// Keep useful partial search output available to the caller and dashboard.
 	displayJQL := jql.ResolveRelativeDatesForDisplay(result.JQL, time.Now())
+	var resultID string
 
-	// Store for web
-	resultID := h.store.Save(ResultQuery, fmt.Sprintf("Query: %s", naturalQuery), &QueryResultData{
-		Query:      naturalQuery,
-		Route:      result.Route,
-		JQL:        displayJQL,
-		Issues:     issues,
-		Total:      total,
-		User:       cfg.Assignee(),
-		JiraServer: cfg.JiraServer,
-		QueriedAt:  time.Now(),
-	})
-
-	// Build text
+	// Build the same preview text for successful and interrupted searches.
 	var text strings.Builder
 	fmt.Fprintf(&text, "## Query: %s\n\n", naturalQuery)
 	if result.Route != "" {
 		fmt.Fprintf(&text, "**Route:** `%s`\n\n", result.Route)
 	}
 	fmt.Fprintf(&text, "**JQL:** `%s`\n\n", displayJQL)
-	if total == 0 {
-		text.WriteString("No issues found.\n")
-	} else {
-		if total > len(issues) {
-			fmt.Fprintf(&text, "**%d matching issues; showing %d:**\n\n", total, len(issues))
-		} else {
-			fmt.Fprintf(&text, "**%d issues found:**\n\n", total)
-		}
+	searchError := ""
+	if searchErr != nil {
+		searchError = searchErr.Error()
 	}
+	text.WriteString(format.SearchSummary(info) + "\n\n")
 	if len(issues) > 0 {
 		for _, issue := range issues {
 			fmt.Fprintf(&text, "- [%s](%s/browse/%s) [%s] (%s) %s\n",
 				issue.Key, cfg.JiraServer, issue.Key, issue.Status, issue.Priority, issue.Summary)
 		}
-		if len(issues) == maxResults {
-			fmt.Fprintf(&text, "\n_Hit the max_results cap (%d) — there may be more matching issues not shown. Re-run with a higher max_results or a narrower query._\n", maxResults)
-		}
+	}
+	if info.HasMore != nil && *info.HasMore {
+		fmt.Fprintf(&text, "\n_The max_results preview cap is %d; more matching issues exist._\n", maxResults)
 	}
 	if isRecommendationQuery(naturalQuery) {
-		if total > len(issues) || len(issues) > 10 {
+		if (info.HasMore != nil && *info.HasMore) || !info.Complete || len(issues) > 10 {
 			text.WriteString("\nFor this recommendation request, treat these results as candidates. Shortlist using the returned priority, status, and summary, disclose the shortlist, then inspect each shortlisted issue with jira_get_issue before recommending.\n")
 		} else {
 			text.WriteString("\nFor this recommendation request, inspect each candidate with jira_get_issue, then use the issue content to make your recommendation.\n")
 		}
 	}
+	resultID = h.store.Save(ResultQuery, fmt.Sprintf("Query: %s", naturalQuery), &QueryResultData{
+		Query: naturalQuery, Route: result.Route, JQL: displayJQL, Issues: issues, Search: &info, SearchError: searchError,
+		User: cfg.Assignee(), JiraServer: cfg.JiraServer, QueriedAt: time.Now(),
+	})
 	fmt.Fprintf(&text, "\n---\nRich dashboard: %s\n", h.viewURL(resultID))
-
+	if searchErr != nil {
+		return errorResult(fmt.Sprintf("JIRA search failed: %v\n\n%s", searchErr, text.String())), nil
+	}
 	return textResult(text.String()), nil
 }
 

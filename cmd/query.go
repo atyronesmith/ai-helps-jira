@@ -23,14 +23,15 @@ var (
 	flagShowJQL        bool
 	flagDryRun         bool
 	flagMaxResults     int
+	flagExactCount     bool
 	queryTranslator    = llm.GenerateJQLWithProjects
 	queryProjectLoader = fetchProjectList
-	querySearcher      = func(cfg *config.Config, query string, max int) ([]jira.Issue, error) {
+	querySearcher      = func(ctx context.Context, cfg *config.Config, query string, opts jira.SearchOptions) (jira.SearchResult, error) {
 		client, err := jira.NewClient(cfg)
 		if err != nil {
-			return nil, err
+			return jira.SearchResult{}, err
 		}
-		return client.SearchJQL(query, max)
+		return client.SearchJQLResult(ctx, query, opts)
 	}
 )
 
@@ -54,13 +55,18 @@ func init() {
 	queryCmd.Flags().BoolVar(&flagShowJQL, "show-jql", false,
 		"Print the generated JQL before results.")
 	queryCmd.Flags().IntVar(&flagMaxResults, "max", 50,
-		"Maximum number of results to return.")
+		"Maximum number of issue rows to display (default 50).")
+	queryCmd.Flags().BoolVar(&flagExactCount, "count", false,
+		"Enumerate all matching issues and report an exact count (page size 100, at most 100 pages, 60-second deadline).")
 	queryCmd.Flags().BoolVar(&flagDryRun, "dry-run", false,
 		"Translate and locally validate JQL without searching JIRA.")
 	rootCmd.AddCommand(queryCmd)
 }
 
 func runQuery(cmd *cobra.Command, args []string) error {
+	if cmd.Flags().Changed("max") && flagMaxResults <= 0 {
+		return fmt.Errorf("--max must be greater than zero")
+	}
 	loadConfig := config.Load
 	if flagDryRun {
 		loadConfig = config.LoadTranslation
@@ -97,31 +103,27 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	} else {
 		projects = queryProjectLoader(cfg, db)
 	}
-	result, err := queryTranslator(context.Background(), cfg, naturalQuery, projects)
+	result, err := queryTranslator(cmd.Context(), cfg, naturalQuery, projects)
 	spinner.Stop()
 	if err != nil {
 		return fmt.Errorf("failed to generate JQL: %w", err)
 	}
-	return finishQuery(cmd, cfg, result, db, flagDryRun, flagMaxResults, flagShowJQL, querySearcher)
+	exactCount := flagExactCount || llm.IsCountQuery(naturalQuery)
+	return finishQuery(cmd, cfg, result, db, flagDryRun, flagMaxResults, exactCount, flagShowJQL, querySearcher)
 }
 
-type querySearchFunc func(cfg *config.Config, query string, max int) ([]jira.Issue, error)
+type querySearchFunc func(ctx context.Context, cfg *config.Config, query string, opts jira.SearchOptions) (jira.SearchResult, error)
 
-func finishQuery(cmd *cobra.Command, cfg *config.Config, result *llm.QueryResult, db *cache.Cache, dryRun bool, max int, showJQL bool, search querySearchFunc) error {
+func finishQuery(cmd *cobra.Command, cfg *config.Config, result *llm.QueryResult, db *cache.Cache, dryRun bool, max int, exactCount bool, showJQL bool, search querySearchFunc) error {
 	if dryRun {
 		printTranslation(cmd.OutOrStdout(), cfg.JiraProject, result)
 		return nil
 	}
 	spinner := format.StatusPrinter("Searching JIRA...")
-	issues, err := search(cfg, result.JQL, max)
+	searchResult, err := search(cmd.Context(), cfg, result.JQL, jira.SearchOptions{Limit: max, PageSize: 100, ExactCount: exactCount, MaxPages: 100})
 	spinner.Stop()
-	if err != nil {
-		pterm.FgRed.Printfln("JIRA search failed. The generated JQL may be invalid.")
-		pterm.FgLightWhite.Printfln("JQL: %s", result.JQL)
-		return fmt.Errorf("jira search: %w", err)
-	}
-	if db != nil && len(issues) > 0 {
-		if err := db.UpsertIssues(cfg.JiraProject, issues); err != nil {
+	if db != nil && err == nil && searchResult.Complete && len(searchResult.Issues) > 0 {
+		if err := db.UpsertIssues(cfg.JiraProject, searchResult.Issues); err != nil {
 			slog.Warn("failed to cache query results", "error", err)
 		}
 	}
@@ -130,7 +132,12 @@ func finishQuery(cmd *cobra.Command, cfg *config.Config, result *llm.QueryResult
 		jqlDisplay = jql.ResolveRelativeDatesForDisplay(result.JQL, time.Now())
 		routeDisplay = result.Route
 	}
-	format.DisplayQueryResults(issues, jqlDisplay, routeDisplay)
+	format.DisplayQueryResults(searchResult, jqlDisplay, routeDisplay)
+	if err != nil {
+		pterm.FgRed.Printfln("JIRA search stopped before completion.")
+		pterm.FgLightWhite.Printfln("JQL: %s", result.JQL)
+		return fmt.Errorf("jira search: %w", err)
+	}
 	return nil
 }
 

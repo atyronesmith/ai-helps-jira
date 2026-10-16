@@ -153,7 +153,7 @@ func DisplayEnrichPreview(issue *jira.IssueDetail, desc string, criteria []strin
 // (nl2jql.RouteFastPath / RouteFallback / llm.RouteJSON); when non-empty it
 // is printed alongside the JQL so a reader knows whether a human-written
 // grammar or an LLM produced the query they are about to inspect.
-func DisplayQueryResults(issues []jira.Issue, jql string, route string) {
+func DisplayQueryResults(result jira.SearchResult, jql string, route string) {
 	fmt.Println()
 	if jql != "" {
 		if route != "" {
@@ -162,13 +162,15 @@ func DisplayQueryResults(issues []jira.Issue, jql string, route string) {
 		pterm.FgLightWhite.Printfln("JQL: %s", jql)
 		fmt.Println()
 	}
-	if len(issues) == 0 {
-		pterm.FgYellow.Println("No issues found.")
+	fmt.Println(SearchSummary(result.SearchInfo))
+	if len(result.Issues) == 0 {
+		if result.Complete && result.TotalKind == jira.CountExact && result.Total != nil && *result.Total == 0 {
+			pterm.FgYellow.Println("No issues found.")
+		}
 		fmt.Println()
 		return
 	}
-	printIssueTable("Query Results", issues)
-	pterm.FgLightWhite.Printfln("(%d issues)", len(issues))
+	printIssueTable("Query Results", result.Issues)
 	fmt.Println()
 }
 
