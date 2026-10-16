@@ -129,6 +129,49 @@ func TestSearchJQL(t *testing.T) {
 	}
 }
 
+func TestSearchJQLWithTotal(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(t, w, http.StatusOK, map[string]any{
+			"issues": []map[string]any{
+				{"key": "TEST-1", "fields": map[string]any{"summary": "First", "status": map[string]any{"name": "Open"}}},
+				{"key": "TEST-2", "fields": map[string]any{"summary": "Second", "status": map[string]any{"name": "Open"}}},
+			},
+			"total": 73,
+		})
+	}))
+	defer ts.Close()
+
+	issues, total, err := newTestClient(ts).SearchJQLWithTotal("project = TEST", 2)
+	if err != nil {
+		t.Fatalf("SearchJQLWithTotal: %v", err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("returned issues = %d, want 2", len(issues))
+	}
+	if total != 73 {
+		t.Errorf("total = %d, want 73", total)
+	}
+}
+
+func TestSearchJQLWithTotalFallsBackWhenTotalIsOmitted(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(t, w, http.StatusOK, map[string]any{
+			"issues": []map[string]any{
+				{"key": "TEST-1", "fields": map[string]any{"summary": "First", "status": map[string]any{"name": "Open"}}},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	issues, total, err := newTestClient(ts).SearchJQLWithTotal("project = TEST", 2)
+	if err != nil {
+		t.Fatalf("SearchJQLWithTotal: %v", err)
+	}
+	if len(issues) != 1 || total != 1 {
+		t.Errorf("SearchJQLWithTotal returned %d issues and total %d, want 1 and 1", len(issues), total)
+	}
+}
+
 func TestGetOpenIssues(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		payload := readBody(t, r)

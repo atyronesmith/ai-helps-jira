@@ -10,21 +10,35 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atyronesmith/ai-helps-jira/internal/cache"
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
 	"github.com/atyronesmith/ai-helps-jira/internal/web"
 )
 
 // WebServer serves rich HTML dashboards for MCP tool results.
 type WebServer struct {
-	store    *ResultStore
-	port     int
-	bindHost string
-	tmpls    map[string]*template.Template
+	store     *ResultStore
+	port      int
+	bindHost  string
+	tmpls     map[string]*template.Template
+	startedAt time.Time
 }
 
 // NewWebServer creates a web server with parsed templates.
-func NewWebServer(store *ResultStore, port int, bindHost string) *WebServer {
+func NewWebServer(store *ResultStore, db *cache.Cache, port int, bindHost string) *WebServer {
+	var ws *WebServer
 	funcMap := template.FuncMap{
+		"cacheStatus": func() cacheStatusView {
+			if db == nil {
+				return cacheStatusView{}
+			}
+			stats := db.Stats()
+			hits, lookups := db.IssueDetailLookupStats()
+			return cacheStatusView{CachedIssues: stats.CachedIssues, Hits: hits, Lookups: lookups}
+		},
+		"serverStatus": func() serverStatusView {
+			return ws.status()
+		},
 		"statusClass": func(status string) string {
 			return strings.ReplaceAll(strings.ToLower(status), " ", "-")
 		},
@@ -80,6 +94,7 @@ func NewWebServer(store *ResultStore, port int, bindHost string) *WebServer {
 			}
 			return queryMetaView{}
 		},
+		"resultTitle": resultTitle,
 	}
 
 	// Parse each view template separately with layout to avoid block name collisions.
@@ -91,12 +106,40 @@ func NewWebServer(store *ResultStore, port int, bindHost string) *WebServer {
 		)
 	}
 
-	return &WebServer{
-		store:    store,
-		port:     port,
-		bindHost: bindHost,
-		tmpls:    tmpls,
+	ws = &WebServer{
+		store:     store,
+		port:      port,
+		bindHost:  bindHost,
+		tmpls:     tmpls,
+		startedAt: time.Now(),
 	}
+	return ws
+}
+
+// resultTitle prefers the original natural-language input for query results,
+// including results saved before the title format was fixed. Keep the stored
+// title for other result types and incomplete legacy data.
+func resultTitle(r *StoredResult) string {
+	if r == nil {
+		return ""
+	}
+	if q, ok := r.Data.(*QueryResultData); r.Type == ResultQuery && ok && strings.TrimSpace(q.Query) != "" {
+		return "Query: " + q.Query
+	}
+	return r.Title
+}
+
+type cacheStatusView struct {
+	CachedIssues int
+	Hits         int
+	Lookups      int
+}
+
+func (s cacheStatusView) HitPercent() float64 {
+	if s.Lookups == 0 {
+		return 0
+	}
+	return float64(s.Hits) / float64(s.Lookups) * 100
 }
 
 // Start binds to the configured port (or the next available port if busy)
@@ -104,6 +147,7 @@ func NewWebServer(store *ResultStore, port int, bindHost string) *WebServer {
 func (ws *WebServer) Start() (int, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", ws.handleHealthz)
+	mux.HandleFunc("GET /api/status", ws.handleStatus)
 	mux.HandleFunc("GET /", ws.handleIndex)
 	mux.HandleFunc("GET /view/{id}", ws.handleView)
 	mux.HandleFunc("GET /api/result/{id}", ws.handleAPIResult)
@@ -129,6 +173,7 @@ func (ws *WebServer) Start() (int, error) {
 	}
 
 	ws.port = port
+	ws.startedAt = time.Now()
 	slog.Info("web dashboard starting", "addr", ln.Addr().String())
 	go func() {
 		if err := http.Serve(ln, mux); err != nil {
@@ -137,6 +182,31 @@ func (ws *WebServer) Start() (int, error) {
 	}()
 
 	return port, nil
+}
+
+type serverStatusView struct {
+	Status        string `json:"status"`
+	Uptime        string `json:"uptime"`
+	UptimeSeconds int64  `json:"uptime_seconds"`
+}
+
+func (ws *WebServer) status() serverStatusView {
+	return statusSince(ws.startedAt)
+}
+
+func statusSince(startedAt time.Time) serverStatusView {
+	seconds := int64(time.Since(startedAt).Seconds())
+	if seconds < 0 {
+		seconds = 0
+	}
+	return serverStatusView{Status: "ok", Uptime: (time.Duration(seconds) * time.Second).String(), UptimeSeconds: seconds}
+}
+
+// handleStatus returns non-sensitive process status for the dashboard header.
+func (ws *WebServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(ws.status())
 }
 
 // handleIndex shows all stored results.

@@ -580,7 +580,7 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 		return errorResult(err.Error()), nil
 	}
 
-	issues, err := client.SearchJQL(result.JQL, maxResults)
+	issues, total, err := client.SearchJQLWithTotal(result.JQL, maxResults)
 	if err != nil {
 		return errorResult(fmt.Sprintf("JIRA search failed: %v", err)), nil
 	}
@@ -602,6 +602,7 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 		Route:      result.Route,
 		JQL:        displayJQL,
 		Issues:     issues,
+		Total:      total,
 		User:       cfg.Assignee(),
 		JiraServer: cfg.JiraServer,
 		QueriedAt:  time.Now(),
@@ -614,10 +615,16 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 		fmt.Fprintf(&text, "**Route:** `%s`\n\n", result.Route)
 	}
 	fmt.Fprintf(&text, "**JQL:** `%s`\n\n", displayJQL)
-	if len(issues) == 0 {
+	if total == 0 {
 		text.WriteString("No issues found.\n")
 	} else {
-		fmt.Fprintf(&text, "**%d issues found:**\n\n", len(issues))
+		if total > len(issues) {
+			fmt.Fprintf(&text, "**%d matching issues; showing %d:**\n\n", total, len(issues))
+		} else {
+			fmt.Fprintf(&text, "**%d issues found:**\n\n", total)
+		}
+	}
+	if len(issues) > 0 {
 		for _, issue := range issues {
 			fmt.Fprintf(&text, "- [%s](%s/browse/%s) [%s] (%s) %s\n",
 				issue.Key, cfg.JiraServer, issue.Key, issue.Status, issue.Priority, issue.Summary)
@@ -627,7 +634,7 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 		}
 	}
 	if isRecommendationQuery(naturalQuery) {
-		if len(issues) > 10 {
+		if total > len(issues) || len(issues) > 10 {
 			text.WriteString("\nFor this recommendation request, treat these results as candidates. Shortlist using the returned priority, status, and summary, disclose the shortlist, then inspect each shortlisted issue with jira_get_issue before recommending.\n")
 		} else {
 			text.WriteString("\nFor this recommendation request, inspect each candidate with jira_get_issue, then use the issue content to make your recommendation.\n")

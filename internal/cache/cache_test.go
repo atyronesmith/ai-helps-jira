@@ -207,6 +207,56 @@ func TestGetIssueDetail_NotFound(t *testing.T) {
 	}
 }
 
+func TestIssueDetailLookupStatsUseLastTenAndCountBatchMisses(t *testing.T) {
+	c := openTestCache(t)
+	updated := time.Now().UTC().Truncate(time.Second)
+	if err := c.UpsertIssueDetail(&jira.IssueDetail{Key: "PROJ-1", Summary: "one", Updated: updated}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The batch freshness classifier records missing/stale items; the caller's
+	// subsequent GetIssueDetail call records a fresh hit exactly once.
+	fresh := c.GetFreshDetailKeys(map[string]time.Time{
+		"PROJ-1": updated,
+		"PROJ-2": updated,
+	})
+	if !fresh["PROJ-1"] {
+		t.Fatal("expected PROJ-1 to be fresh")
+	}
+	if _, ok := c.GetIssueDetail("PROJ-1", updated); !ok {
+		t.Fatal("expected fresh detail hit")
+	}
+	hits, lookups := c.IssueDetailLookupStats()
+	if hits != 1 || lookups != 2 {
+		t.Fatalf("after batch: got %d hits in %d lookups, want 1 in 2", hits, lookups)
+	}
+
+	// Add enough samples to roll the window past its first two entries.
+	for i := 0; i < 10; i++ {
+		c.RecordIssueDetailLookup(i >= 8)
+	}
+	hits, lookups = c.IssueDetailLookupStats()
+	if hits != 2 || lookups != 10 {
+		t.Fatalf("rolling window: got %d hits in %d lookups, want 2 in 10", hits, lookups)
+	}
+}
+
+func TestStatsCountDistinctCachedIssuesAcrossTables(t *testing.T) {
+	c := openTestCache(t)
+	if err := c.UpsertIssues("PROJ", []jira.Issue{{Key: "PROJ-1", Summary: "one"}, {Key: "PROJ-2", Summary: "two"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.UpsertIssueDetail(&jira.IssueDetail{Key: "PROJ-1", Summary: "one"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.UpsertIssueDetail(&jira.IssueDetail{Key: "PROJ-3", Summary: "detail only"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Stats().CachedIssues; got != 3 {
+		t.Fatalf("CachedIssues = %d, want 3 distinct issue keys including detail-only key", got)
+	}
+}
+
 func TestUpsertIssueDetails_Batch(t *testing.T) {
 	c := openTestCache(t)
 

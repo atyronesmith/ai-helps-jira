@@ -103,7 +103,7 @@ type searchRequest struct {
 
 type searchResponse struct {
 	Issues []apiIssue `json:"issues"`
-	Total  int        `json:"total"`
+	Total  *int       `json:"total"`
 }
 
 type apiIssue struct {
@@ -146,8 +146,13 @@ type apiKeyedName struct {
 // repairs: a rejected query returns an error rather than a silently
 // rewritten one.
 func (c *Client) searchIssues(rawJQL string, max int) ([]Issue, error) {
+	issues, _, err := c.searchIssuesWithTotal(rawJQL, max)
+	return issues, err
+}
+
+func (c *Client) searchIssuesWithTotal(rawJQL string, max int) ([]Issue, int, error) {
 	if err := jql.Validate(rawJQL, jql.Options{DefaultProject: c.project}); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	req := searchRequest{
 		JQL:        rawJQL,
@@ -161,11 +166,15 @@ func (c *Client) searchIssues(rawJQL string, max int) ([]Issue, error) {
 		// "JIRA search failed" call sites in cmd/ and internal/mcpserver/ —
 		// guarantees a failed query is diagnosable everywhere, not just at
 		// the sites someone remembered to annotate (FIELDCTO-2814).
-		return nil, fmt.Errorf("JQL %q: %w", rawJQL, err)
+		return nil, 0, fmt.Errorf("JQL %q: %w", rawJQL, err)
 	}
-	slog.Info("search returned", "count", len(resp.Issues), "total", resp.Total,
+	total := len(resp.Issues)
+	if resp.Total != nil {
+		total = *resp.Total
+	}
+	slog.Info("search returned", "count", len(resp.Issues), "total", total,
 		"jql_prefix", truncate(rawJQL, 60))
-	return parseAPIIssues(resp.Issues), nil
+	return parseAPIIssues(resp.Issues), total, nil
 }
 
 func parseAPIIssues(raw []apiIssue) []Issue {
@@ -226,6 +235,14 @@ func (c *Client) GetOpenIssuesSince(since time.Time) ([]Issue, error) {
 func (c *Client) SearchJQL(rawJQL string, max int) ([]Issue, error) {
 	slog.Info("search_jql", "jql", rawJQL, "max", max)
 	return c.searchIssues(rawJQL, max)
+}
+
+// SearchJQLWithTotal runs an arbitrary JQL query and returns both the issues
+// in the requested page and Jira's total count of matching issues. The older
+// SearchJQL API remains available for callers that only need the page.
+func (c *Client) SearchJQLWithTotal(rawJQL string, max int) ([]Issue, int, error) {
+	slog.Info("search_jql", "jql", rawJQL, "max", max)
+	return c.searchIssuesWithTotal(rawJQL, max)
 }
 
 // --- Boards & Sprints (Agile REST API — still v1.0) ---

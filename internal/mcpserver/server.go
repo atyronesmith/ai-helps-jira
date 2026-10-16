@@ -149,7 +149,7 @@ func Run(cfg Config) error {
 	}
 
 	// Start web server (finds an available port starting from cfg.WebPort)
-	ws := NewWebServer(store, cfg.WebPort, bindHost)
+	ws := NewWebServer(store, db, cfg.WebPort, bindHost)
 	actualPort, err := ws.Start()
 	if err != nil {
 		slog.Error("web dashboard failed to start", "error", err)

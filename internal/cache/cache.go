@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -17,6 +18,10 @@ import (
 
 type Cache struct {
 	db *sql.DB
+
+	lookupMu      sync.Mutex
+	detailLookups []bool
+	lookupNext    int
 }
 
 func Open() (*Cache, error) {
@@ -655,6 +660,7 @@ func (c *Cache) GetIssueDetail(key string, knownUpdated time.Time) (*jira.IssueD
 	).Scan(&summary, &description, &status, &priority, &issueType, &labelsJSON,
 		&assigneeName, &assigneeID, &parentKey, &parentSummary, &updatedStr)
 	if err != nil {
+		c.RecordIssueDetailLookup(false)
 		return nil, false
 	}
 
@@ -662,8 +668,10 @@ func (c *Cache) GetIssueDetail(key string, knownUpdated time.Time) (*jira.IssueD
 
 	// If we know the current updated time, check freshness
 	if !knownUpdated.IsZero() && knownUpdated.After(cachedUpdated) {
+		c.RecordIssueDetailLookup(false)
 		return nil, false
 	}
+	c.RecordIssueDetailLookup(true)
 
 	var labels []string
 	_ = json.Unmarshal([]byte(labelsJSON), &labels)
@@ -758,6 +766,9 @@ func (c *Cache) GetFreshDetailKeys(updatedByKey map[string]time.Time) map[string
 		args...,
 	)
 	if err != nil {
+		for range updatedByKey {
+			c.RecordIssueDetailLookup(false)
+		}
 		return fresh
 	}
 	defer rows.Close()
@@ -774,7 +785,42 @@ func (c *Cache) GetFreshDetailKeys(updatedByKey map[string]time.Time) map[string
 			}
 		}
 	}
+	// Fresh keys are read again through GetIssueDetail by the callers that use
+	// this classifier. Record only misses here so each eligible lookup is counted
+	// once, whether it was absent or stale.
+	for key := range updatedByKey {
+		if !fresh[key] {
+			c.RecordIssueDetailLookup(false)
+		}
+	}
 	return fresh
+}
+
+// RecordIssueDetailLookup adds one hit or miss to the rolling window used by
+// dashboard cache statistics. The window is process-local and holds the most
+// recent ten cache-eligible issue-detail lookups.
+func (c *Cache) RecordIssueDetailLookup(hit bool) {
+	c.lookupMu.Lock()
+	defer c.lookupMu.Unlock()
+	if len(c.detailLookups) < 10 {
+		c.detailLookups = append(c.detailLookups, hit)
+		return
+	}
+	c.detailLookups[c.lookupNext] = hit
+	c.lookupNext = (c.lookupNext + 1) % 10
+}
+
+// IssueDetailLookupStats returns hit and sample counts for the rolling window.
+func (c *Cache) IssueDetailLookupStats() (hits, lookups int) {
+	c.lookupMu.Lock()
+	defer c.lookupMu.Unlock()
+	for _, hit := range c.detailLookups {
+		lookups++
+		if hit {
+			hits++
+		}
+	}
+	return hits, lookups
 }
 
 // UpsertProjects caches the tenant's project list (key + display name),
@@ -846,6 +892,7 @@ func (c *Cache) GetProjects() ([]jira.Project, time.Time, bool) {
 
 // CacheStats holds row counts for each cache table.
 type CacheStats struct {
+	CachedIssues int
 	Issues       int
 	IssueBoards  int
 	IssueDetails int
@@ -860,6 +907,9 @@ type CacheStats struct {
 // Stats returns row counts for all cache tables.
 func (c *Cache) Stats() CacheStats {
 	var s CacheStats
+	_ = c.db.QueryRow(`SELECT COUNT(*) FROM (
+		SELECT key FROM issues UNION SELECT key FROM issue_details
+	)`).Scan(&s.CachedIssues)
 	_ = c.db.QueryRow("SELECT COUNT(*) FROM issues").Scan(&s.Issues)
 	_ = c.db.QueryRow("SELECT COUNT(*) FROM issue_boards").Scan(&s.IssueBoards)
 	_ = c.db.QueryRow("SELECT COUNT(*) FROM issue_details").Scan(&s.IssueDetails)

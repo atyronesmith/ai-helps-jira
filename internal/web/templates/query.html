@@ -32,7 +32,7 @@
 </div>
 
 <article>
-    <h3>Issues ({{len .Data.Issues}})</h3>
+    <h3>Issues ({{.Data.MatchingTotal}}{{if gt .Data.MatchingTotal (len .Data.Issues)}} matching, {{len .Data.Issues}} shown{{end}})</h3>
     <table>
         <thead><tr><th>Key</th><th>Status</th><th>Priority</th><th>Summary</th></tr></thead>
         <tbody>
@@ -48,7 +48,13 @@
     </table>
 </article>
 {{else}}
-<article><p>No issues found.</p></article>
+<article>
+    {{if .Data.MatchingTotal}}
+    <p>{{.Data.MatchingTotal}} matching issues; showing 0.</p>
+    {{else}}
+    <p>No issues found.</p>
+    {{end}}
+</article>
 {{end}}
 {{end}}
 

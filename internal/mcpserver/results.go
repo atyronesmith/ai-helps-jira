@@ -25,9 +25,19 @@ type QueryResultData struct {
 	Route      string
 	JQL        string
 	Issues     []jira.Issue
+	Total      int
 	User       string
 	JiraServer string
 	QueriedAt  time.Time
+}
+
+// MatchingTotal keeps older persisted query results sensible when they lack
+// the Jira total field, while new results retain Jira's authoritative count.
+func (q *QueryResultData) MatchingTotal() int {
+	if q.Total == 0 && len(q.Issues) > 0 {
+		return len(q.Issues)
+	}
+	return q.Total
 }
 
 // DigestResultData holds digest data for the web template.

@@ -41,6 +41,11 @@
         .badge-weekly_status { background: #e0f2f1; color: #00695c; }
         .chart-container { max-width: 400px; margin: 0 auto; }
         nav { margin-bottom: 1em; }
+        .cache-status { display: flex; gap: 1.5rem; flex-wrap: wrap; margin: 0 0 1rem; padding: 0.65rem 1rem; background: #f4f6f8; border-radius: 6px; }
+        .cache-status small { color: #555; }
+        .server-status { display: flex; gap: 1.5rem; flex-wrap: wrap; margin: 0 0 1rem; padding: 0.65rem 1rem; background: #f4f6f8; border-radius: 6px; }
+        .server-status small { color: #555; }
+        .server-status-unhealthy { color: var(--status-blocked); }
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
         @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
         table { font-size: 0.9em; }
@@ -53,12 +58,51 @@
         <ul><li><strong><a href="/">JIRA CLI Dashboard</a></strong></li></ul>
     </nav>
     <main class="container">
+        {{with serverStatus}}
+        <section class="server-status" aria-label="Server status">
+            <span>Server <strong id="server-health">{{if eq .Status "ok"}}Healthy{{else}}Unhealthy{{end}}</strong></span>
+            <span>Uptime <strong id="server-uptime">{{.Uptime}}</strong></span>
+            <small id="server-status-updated">Updated just now</small>
+        </section>
+        {{end}}
+        {{with cacheStatus}}
+        <section class="cache-status" aria-label="Cache status">
+            <span><strong>{{.CachedIssues}}</strong> cached Jira issues</span>
+            <span><strong>{{if .Lookups}}{{printf "%.1f%%" .HitPercent}}{{else}}—{{end}}</strong> cache hit rate <small>(last 10 eligible issue-detail lookups: {{.Hits}}/{{.Lookups}} hits)</small></span>
+        </section>
+        {{end}}
         {{block "content" .}}{{end}}
     </main>
     <footer class="container">
         <small class="timestamp">Powered by jira-cli MCP server</small>
     </footer>
     {{block "scripts" .}}{{end}}
+    <script>
+        (() => {
+            const health = document.getElementById('server-health');
+            const uptime = document.getElementById('server-uptime');
+            const updated = document.getElementById('server-status-updated');
+            if (!health || !uptime || !updated) return;
+            const refreshStatus = async () => {
+                try {
+                    const response = await fetch('/api/status', {cache: 'no-store'});
+                    if (!response.ok) throw new Error('status request failed');
+                    const status = await response.json();
+                    health.textContent = status.status === 'ok' ? 'Healthy' : 'Unhealthy';
+                    health.classList.toggle('server-status-unhealthy', status.status !== 'ok');
+                    uptime.textContent = status.uptime;
+                    updated.textContent = 'Updated just now';
+                } catch (_) {
+                    health.textContent = 'Unreachable';
+                    health.classList.add('server-status-unhealthy');
+                    uptime.textContent = 'Unavailable';
+                    updated.textContent = 'Could not reach server';
+                }
+            };
+            refreshStatus();
+            window.setInterval(refreshStatus, 15000);
+        })();
+    </script>
 </body>
 </html>
 {{end}}

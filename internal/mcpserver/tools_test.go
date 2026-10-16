@@ -777,6 +777,10 @@ func assertContains(t *testing.T, s, substr string) {
 // jqlSearchServer returns an httptest server that answers a POST to
 // /rest/api/3/search/jql, recording the received JQL into *recorded.
 func jqlSearchServer(t *testing.T, issues []map[string]any, recorded *string) *httptest.Server {
+	return jqlSearchServerWithTotal(t, issues, len(issues), recorded)
+}
+
+func jqlSearchServerWithTotal(t *testing.T, issues []map[string]any, total int, recorded *string) *httptest.Server {
 	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/rest/api/3/search/jql" {
@@ -790,7 +794,7 @@ func jqlSearchServer(t *testing.T, issues []map[string]any, recorded *string) *h
 			*recorded = req.JQL
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"issues": issues, "total": len(issues)})
+		_ = json.NewEncoder(w).Encode(map[string]any{"issues": issues, "total": total})
 	}))
 	t.Cleanup(ts.Close)
 	return ts
@@ -890,6 +894,9 @@ func TestHandleQuery_FastPathDrivesSearchAndStores(t *testing.T) {
 	if len(data.Issues) != 2 {
 		t.Errorf("stored issues = %d, want 2", len(data.Issues))
 	}
+	if data.Total != 2 {
+		t.Errorf("stored total = %d, want 2", data.Total)
+	}
 
 	text := resultText(res)
 	assertContains(t, text, "project = TEST AND status = Open")
@@ -944,6 +951,47 @@ func TestIsRecommendationQuery(t *testing.T) {
 	}
 	if isRecommendationQuery("Show my open issues") {
 		t.Error("ordinary search was classified as a recommendation request")
+	}
+}
+
+func TestHandleQuery_UsesAuthoritativeTotalAndRetainsCapWarning(t *testing.T) {
+	h := newTestHandlers(t)
+	setTestJIRAEnv(t)
+
+	var recorded string
+	ts := jqlSearchServerWithTotal(t, sampleJQLIssues("TEST-1", "TEST-2"), 73, &recorded)
+	t.Setenv("JIRA_SERVER", ts.URL)
+	h.translate = func(_ context.Context, _ *config.Config, _ string) (*llm.QueryResult, error) {
+		return &llm.QueryResult{JQL: "project = TEST AND status = Open", Route: "fast_path"}, nil
+	}
+
+	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{
+		"natural_query": "count open bugs",
+		"max_results":   float64(2),
+	}))
+	if err != nil {
+		t.Fatalf("HandleQuery returned err: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(res))
+	}
+	text := resultText(res)
+	assertContains(t, text, "73 matching issues; showing 2")
+	assertContains(t, text, "Hit the max_results cap (2)")
+
+	list := h.store.List()
+	if len(list) != 1 {
+		t.Fatalf("stored results = %d, want 1", len(list))
+	}
+	data, ok := list[0].Data.(*QueryResultData)
+	if !ok {
+		t.Fatalf("stored data type = %T, want *QueryResultData", list[0].Data)
+	}
+	if data.Total != 73 {
+		t.Errorf("stored total = %d, want 73", data.Total)
+	}
+	if got := len(data.Issues); got != 2 {
+		t.Errorf("stored issue rows = %d, want 2", got)
 	}
 }
 
