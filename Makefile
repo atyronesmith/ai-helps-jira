@@ -16,9 +16,14 @@ PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 IMAGE     := jira-cli
 CONTAINER := jira-cli-mcp
 CONTAINER_HOST ?= 127.0.0.1
+unexport CONTAINER_HOST IMAGE CONTAINER
+export JIRA_CONTAINER_HOST := $(CONTAINER_HOST)
+export JIRA_CONTAINER_IMAGE := $(IMAGE)
+export JIRA_CONTAINER_NAME := $(CONTAINER)
+BWS_ENV_FILE ?= .env
 
 .PHONY: all build clean install uninstall test lint fmt vet tidy run \
-        release check doc-lint restart-mcp container container-build container-run container-stop \
+        release check doc-lint restart-mcp container container-build container-run container-run-bitwarden container-stop \
         container-scan container-sign container-sbom help
 
 all: check build  ## Run checks then build
@@ -100,6 +105,9 @@ container-run: container-stop container-build  ## Run MCP Streamable HTTP server
 	@echo ""
 	@echo "Claude Code .mcp.json (for a client on this host):"
 	@echo '  {"mcpServers": {"jira-cli": {"type": "http", "url": "http://localhost:8081/mcp"}}}'
+
+container-run-bitwarden: container-build  ## Run container with JIRA token fetched from Bitwarden Secrets Manager
+	@scripts/container-run-bitwarden.sh "$(BWS_ENV_FILE)"
 
 container-stop:  ## Stop and remove the MCP container
 	podman stop $(CONTAINER) 2>/dev/null || true

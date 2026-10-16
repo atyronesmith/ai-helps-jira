@@ -6,6 +6,8 @@ No Go toolchain or source code needed — just a container runtime and your JIRA
 
 The included `make container-run` target and the manual examples below publish both services on `127.0.0.1` only. The MCP endpoint and dashboard do not provide client authentication. To make them reachable from other machines, configure an authenticated reverse proxy and firewall restrictions first, then explicitly change the host publish address; do not expose the unauthenticated ports directly to an untrusted network.
 
+For macOS hosts using Bitwarden Secrets Manager, `make container-run-bitwarden` retrieves the JIRA token on the host and mounts it as a Podman secret. This requires the Bitwarden Secrets Manager CLI (`bws`), `jq`, and Podman. Store a machine access token in macOS Keychain under service `jira-bws-access-token` and account `$USER` (or configure `BWS_ACCESS_TOKEN_KEYCHAIN_SERVICE` and `BWS_ACCESS_TOKEN_KEYCHAIN_ACCOUNT`). Set `BWS_JIRA_API_TOKEN_ID` to the UUID of the Bitwarden secret whose key is exactly `JIRA_API_TOKEN`; it can be in the process environment or in `.env`. The launcher uses a private temporary copy of `.env` with `JIRA_API_TOKEN` omitted, so the original file remains compatible with non-Bitwarden workflows while the mounted secret remains authoritative.
+
 ## Prerequisites
 
 - A JIRA Cloud account with an API token
