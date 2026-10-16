@@ -346,17 +346,30 @@ func GenerateJQLWithProjects(ctx context.Context, cfg *config.Config, naturalQue
 func translateCascade(ctx context.Context, cfg *config.Config, naturalQuery string, projects []jira.Project, build func(*config.Config, []jira.Project) (*nl2jql.Translator, error)) (*QueryResult, error) {
 	slog.Info("generating JQL", "query", naturalQuery, "projects", len(projects))
 
+	var parseError string
 	if translator, err := build(cfg, projects); err != nil {
 		slog.Warn("nl2jql translator unavailable; falling back to LLM JSON path", "error", err)
 	} else if res, err := translator.Translate(ctx, naturalQuery); err != nil {
+		parseError = res.ParseError
 		slog.Warn("nl2jql translation failed; falling back to LLM JSON path", "error", err)
 	} else {
 		res.JQL = ensureProjectScope(res.JQL, cfg)
 		slog.Info("generated JQL via nl2jql", "jql", res.JQL, "route", res.Route)
-		return &QueryResult{JQL: res.JQL, Route: res.Route}, nil
+		return &QueryResult{
+			Input:           res.Input,
+			NormalizedInput: res.NormalizedInput,
+			ParseError:      res.ParseError,
+			JQL:             res.JQL,
+			Route:           res.Route,
+		}, nil
 	}
 
-	return generateJQLLLM(ctx, cfg, naturalQuery)
+	result, err := generateJQLLLM(ctx, cfg, naturalQuery)
+	if err != nil {
+		return nil, err
+	}
+	result.ParseError = parseError
+	return result, nil
 }
 
 // projectPredicateRe matches any JQL predicate on the project field so

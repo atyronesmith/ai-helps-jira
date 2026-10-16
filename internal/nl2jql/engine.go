@@ -105,8 +105,11 @@ const (
 // that produced it -- RouteFastPath for the deterministic parser, RouteFallback
 // for the LLM fallback.
 type Result struct {
-	JQL   string
-	Route string
+	Input           string
+	NormalizedInput string
+	ParseError      string
+	JQL             string
+	Route           string
 }
 
 // Translate converts a natural-language Jira question into JQL.
@@ -133,6 +136,14 @@ func (t *Translator) Translate(ctx context.Context, query string) (Result, error
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
+	if jql, ok := translateClosedMonthQuery(q, t.normalizer.clock()()); ok {
+		log.Info("jql translation: fast path used (closed-month history intent)",
+			slog.String("route", RouteFastPath),
+			slog.String("query", q),
+			slog.String("jql", jql),
+		)
+		return Result{Input: query, NormalizedInput: q, JQL: jql, Route: RouteFastPath}, nil
+	}
 
 	// ------------------------------------------------------------------
 	// 1) Normalization. Normalize never errors; unknown fragments pass
@@ -151,7 +162,7 @@ func (t *Translator) Translate(ctx context.Context, query string) (Result, error
 			slog.String("normalized", normalized),
 			slog.String("jql", jql),
 		)
-		return Result{JQL: jql, Route: RouteFastPath}, nil
+		return Result{Input: query, NormalizedInput: normalized, JQL: jql, Route: RouteFastPath}, nil
 	}
 
 	// ------------------------------------------------------------------
@@ -172,7 +183,7 @@ func (t *Translator) Translate(ctx context.Context, query string) (Result, error
 	if err != nil {
 		// Preserve causality: the caller can still see ErrUnmappable etc.
 		// via errors.Is on the wrapped error.
-		return Result{}, fmt.Errorf("%sfallback engine failed: %w", op, err)
+		return Result{Input: query, NormalizedInput: normalized, ParseError: parseErr.Error()}, fmt.Errorf("%sfallback engine failed: %w", op, err)
 	}
 
 	log.Info("jql translation: fallback path used (LLM)",
@@ -180,7 +191,7 @@ func (t *Translator) Translate(ctx context.Context, query string) (Result, error
 		slog.String("query", q),
 		slog.String("jql", jql),
 	)
-	return Result{JQL: jql, Route: RouteFallback}, nil
+	return Result{Input: query, NormalizedInput: normalized, ParseError: parseErr.Error(), JQL: jql, Route: RouteFallback}, nil
 }
 
 // logger is nil-safe so even a zero-valued Translator degrades gracefully.

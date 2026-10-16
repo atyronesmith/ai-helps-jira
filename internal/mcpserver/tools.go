@@ -142,11 +142,22 @@ func summaryToolDef() mcp.Tool {
 
 func queryToolDef() mcp.Tool {
 	return mcp.NewTool("jira_query",
-		mcp.WithDescription("Search JIRA using natural language. Translates to JQL (deterministic parser first, LLM fallback for complex queries), executes, returns results with rich HTML view."),
-		mcp.WithString("query", mcp.Required(), mcp.Description("Natural language query (e.g. 'show me all critical bugs from last week').")),
+		mcp.WithDescription("Search JIRA using natural language. Translates to JQL (deterministic parser first, LLM fallback for complex queries), executes, and returns candidate issues with a rich HTML view. For recommendation or prioritization requests, this tool retrieves candidates but does not recommend: inspect each issue with jira_get_issue when the candidate count is reasonably bounded, then reason over the issue content. If there are too many, shortlist by returned priority, status, and summary, disclose the shortlist, and inspect those issues with jira_get_issue."),
+		mcp.WithString("natural_query", mcp.Required(), mcp.Description("Pass the user's exact original wording verbatim (e.g. 'Which of my open jiras should I work on next?'). Keep phrases like 'my open Jiras' unchanged; do not look up or replace 'me'/'my' with a username or email. For recommendations, use these results as candidates and inspect them with jira_get_issue; the host assistant makes the recommendation. If translation errors, return the MCP error; do not bypass it with REST or shell.")),
+		mcp.WithString("query", mcp.Description("Deprecated compatibility alias for natural_query. Pass the original natural-language wording, never JQL.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
 		mcp.WithNumber("max_results", mcp.Description("Maximum results. Default 50.")),
+		readOnlyAnnotations(),
+	)
+}
+
+func translateQueryToolDef() mcp.Tool {
+	return mcp.NewTool("jira_translate_query",
+		mcp.WithDescription("Translate the user's original natural-language Jira request to JQL and run local structural validation. Does not search Jira or save issue results."),
+		mcp.WithString("natural_query", mcp.Required(), mcp.Description("Pass the user's exact original wording verbatim. Do not pretranslate it to JQL.")),
+		mcp.WithString("user", mcp.Description("JIRA user email.")),
+		mcp.WithString("project", mcp.Description("JIRA project key.")),
 		readOnlyAnnotations(),
 	)
 }
@@ -531,12 +542,24 @@ func (h *Handlers) HandleSummary(ctx context.Context, req mcp.CallToolRequest) (
 }
 
 func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	naturalQuery := getString(req, "natural_query")
+	if naturalQuery == "" {
+		// Keep accepting older clients that still send the original wording in
+		// `query`; new clients must use natural_query per the published schema.
+		naturalQuery = getString(req, "query")
+	}
+	if strings.TrimSpace(naturalQuery) == "" {
+		return errorResult("natural_query is required; pass the user's original wording"), nil
+	}
+	if looksLikeJQL(naturalQuery) {
+		return errorResult("natural_query looks like JQL; pass the user's original natural-language wording verbatim so it can be translated"), nil
+	}
+
 	cfg, err := loadConfig(req)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
 
-	naturalQuery := getString(req, "query")
 	maxResults := int(getFloat(req, "max_results"))
 	if maxResults <= 0 {
 		maxResults = 50
@@ -603,12 +626,91 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 			fmt.Fprintf(&text, "\n_Hit the max_results cap (%d) — there may be more matching issues not shown. Re-run with a higher max_results or a narrower query._\n", maxResults)
 		}
 	}
+	if isRecommendationQuery(naturalQuery) {
+		if len(issues) > 10 {
+			text.WriteString("\nFor this recommendation request, treat these results as candidates. Shortlist using the returned priority, status, and summary, disclose the shortlist, then inspect each shortlisted issue with jira_get_issue before recommending.\n")
+		} else {
+			text.WriteString("\nFor this recommendation request, inspect each candidate with jira_get_issue, then use the issue content to make your recommendation.\n")
+		}
+	}
 	fmt.Fprintf(&text, "\n---\nRich dashboard: %s\n", h.viewURL(resultID))
 
 	return textResult(text.String()), nil
 }
 
+// isRecommendationQuery recognizes common requests where the host assistant
+// should rank retrieved issues after inspecting their content.
+func isRecommendationQuery(query string) bool {
+	query = strings.ToLower(strings.TrimSpace(query))
+	return strings.Contains(query, "should i work on next") ||
+		strings.Contains(query, "what should i work on") ||
+		strings.Contains(query, "which should i work on") ||
+		strings.Contains(query, "prioritize") ||
+		strings.Contains(query, "prioritise") ||
+		strings.Contains(query, "recommend")
+}
+
+// HandleTranslateQuery translates and structurally validates a query without
+// executing it or writing issue results to the cache/store.
+func (h *Handlers) HandleTranslateQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	naturalQuery := getString(req, "natural_query")
+	if strings.TrimSpace(naturalQuery) == "" {
+		return errorResult("natural_query is required; pass the user's original wording"), nil
+	}
+	if looksLikeJQL(naturalQuery) {
+		return errorResult("natural_query looks like JQL; pass the user's original natural-language wording verbatim so it can be translated"), nil
+	}
+
+	cfg, err := loadConfig(req)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+	result, err := h.translate(ctx, cfg, naturalQuery)
+	if err != nil {
+		return errorResult(fmt.Sprintf("JQL generation failed: %v", err)), nil
+	}
+
+	type validationResult struct {
+		Valid bool   `json:"valid"`
+		Error string `json:"error,omitempty"`
+	}
+	validation := validationResult{Valid: true}
+	if err := jql.Validate(result.JQL, jql.Options{DefaultProject: cfg.JiraProject}); err != nil {
+		validation.Valid = false
+		validation.Error = err.Error()
+	}
+	response := struct {
+		Input           string           `json:"input"`
+		NormalizedInput string           `json:"normalized_input,omitempty"`
+		Route           string           `json:"route,omitempty"`
+		JQL             string           `json:"jql"`
+		Validation      validationResult `json:"validation"`
+		ParseError      string           `json:"parse_error,omitempty"`
+	}{
+		Input:           naturalQuery,
+		NormalizedInput: result.NormalizedInput,
+		Route:           result.Route,
+		JQL:             result.JQL,
+		Validation:      validation,
+		ParseError:      result.ParseError,
+	}
+	encoded, err := json.MarshalIndent(response, "", "  ")
+	if err != nil {
+		return errorResult(fmt.Sprintf("encode translation result: %v", err)), nil
+	}
+	return textResult(string(encoded)), nil
+}
+
 var issueKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]+-\d+$`)
+var obviousJQLPredicate = regexp.MustCompile(`(?i)(?:^|\b(?:AND|OR)\b)\s*(?:assignee|status|statusCategory|project|issuetype|priority|reporter|creator|resolution|resolved|labels?|sprint|fixversion|component|updated|created|due(?:date)?|key|parent|summary|description)\s*(?:!=|!~|>=|<=|=|~|>|<|\b(?:NOT\s+IN|IN|IS\s+NOT|IS)\b)`)
+
+// looksLikeJQL rejects clear field/operator predicates before they can be
+// mislabeled and stored as natural-language input. Requiring a known JIRA field
+// followed by a JQL operator avoids rejecting ordinary prose that merely names
+// a field (for example, "show me issues with status updates").
+func looksLikeJQL(query string) bool {
+	return obviousJQLPredicate.MatchString(strings.TrimSpace(query))
+}
 
 func (h *Handlers) HandleDigest(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	cfg, err := loadConfig(req)

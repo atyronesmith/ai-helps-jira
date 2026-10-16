@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -33,6 +34,29 @@ func TestMCPServerDiscovery(t *testing.T) {
 	if got := initResult.ServerInfo.Version; got != version {
 		t.Errorf("server version = %q, want %q", got, version)
 	}
+	for _, required := range []string{
+		"exact original natural-language wording",
+		"jira_query.natural_query",
+		"jira_translate_query.natural_query",
+		"does not search",
+		"Do not pretranslate it to JQL",
+		"replace my/me with a username or email",
+		"call jira_lookup_user first",
+		"deterministic translation",
+		"configured LLM fallback",
+		"report that error",
+		"do not seek credentials",
+		"direct REST or shell calls",
+		"Which of my open jiras should I work on next?",
+		"retrieve candidate issues",
+		"call jira_get_issue for each candidate",
+		"disclose that shortlist",
+		"host assistant should reason",
+	} {
+		if !strings.Contains(initResult.Instructions, required) {
+			t.Errorf("server instructions missing %q: %q", required, initResult.Instructions)
+		}
+	}
 
 	toolResult, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
 	if err != nil {
@@ -41,6 +65,7 @@ func TestMCPServerDiscovery(t *testing.T) {
 
 	expected := []string{
 		"jira_summary",
+		"jira_translate_query",
 		"jira_query",
 		"jira_digest",
 		"jira_enrich",
@@ -80,12 +105,25 @@ func TestMCPServerDiscovery(t *testing.T) {
 		t.Fatalf("discovered %d tools, want %d", len(toolResult.Tools), len(expected))
 	}
 	got := make(map[string]bool, len(toolResult.Tools))
+	discovered := make(map[string]mcp.Tool, len(toolResult.Tools))
 	for _, tool := range toolResult.Tools {
 		got[tool.Name] = true
+		discovered[tool.Name] = tool
 	}
 	for _, name := range expected {
 		if !got[name] {
 			t.Errorf("discovered tools missing %q", name)
+		}
+	}
+	for name, required := range map[string][]string{
+		"jira_query":     {"does not recommend", "jira_get_issue"},
+		"jira_get_issue": {"inspect jira_query candidates", "shortlisted issue"},
+	} {
+		tool := discovered[name]
+		for _, phrase := range required {
+			if !strings.Contains(tool.Description, phrase) {
+				t.Errorf("discovered %s description missing %q: %q", name, phrase, tool.Description)
+			}
 		}
 	}
 }
@@ -134,7 +172,7 @@ func TestMCPServerStreamableHTTPDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools over Streamable HTTP: %v", err)
 	}
-	if got, want := len(toolResult.Tools), 35; got != want {
+	if got, want := len(toolResult.Tools), 36; got != want {
 		t.Fatalf("discovered %d tools over Streamable HTTP, want %d", got, want)
 	}
 
@@ -148,6 +186,7 @@ func TestMCPServerStreamableHTTPDiscovery(t *testing.T) {
 		"jira_transition",
 		"jira_add_comment",
 		"jira_query",
+		"jira_translate_query",
 	} {
 		if !got[name] {
 			t.Errorf("Streamable HTTP discovery missing %q", name)

@@ -90,9 +90,9 @@ Ask Claude Code to list available tools or run:
 Use jira_summary to show my current issues
 ```
 
-You should see 35 tools available:
+You should see 36 tools available:
 
-**Core & AI-powered:** `jira_summary`, `jira_query`, `jira_digest`, `jira_enrich`, `jira_weekly_status`, `jira_create_epic`, `jira_summarize_comments`, `jira_backlog_health`, `jira_find_similar`
+**Core & AI-powered:** `jira_summary`, `jira_translate_query`, `jira_query`, `jira_digest`, `jira_enrich`, `jira_weekly_status`, `jira_create_epic`, `jira_summarize_comments`, `jira_backlog_health`, `jira_find_similar`
 
 **Confluence:** `jira_confluence_analytics`, `jira_confluence_update`, `jira_confluence_get_page`, `jira_confluence_search`, `jira_confluence_list_pages`, `jira_confluence_get_comments`, `jira_confluence_add_label`, `jira_confluence_create_page`, `jira_confluence_create_blog`
 
@@ -105,6 +105,7 @@ You should see 35 tools available:
 | Tool | Use When |
 |------|----------|
 | `jira_summary` | You need an overview of assigned issues and sprint status |
+| `jira_translate_query` | You want to inspect generated JQL and local validation without executing a Jira search |
 | `jira_query` | You want to search JIRA using natural language (e.g. "critical bugs from last week") |
 | `jira_get_issue` | You need full details of a specific issue (description, comments, links) |
 | `jira_get_transitions` | You need to find the transition ID before changing an issue's status |

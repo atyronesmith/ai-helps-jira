@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -182,6 +183,7 @@ func TestAllToolDefsHaveDescriptions(t *testing.T) {
 		tool mcp.Tool
 	}{
 		{"summary", summaryToolDef()},
+		{"translateQuery", translateQueryToolDef()},
 		{"query", queryToolDef()},
 		{"digest", digestToolDef()},
 		{"enrich", enrichToolDef()},
@@ -218,8 +220,8 @@ func TestAllToolDefsHaveDescriptions(t *testing.T) {
 		{"unvoteIssue", unvoteIssueToolDef()},
 	}
 
-	if len(defs) != 35 {
-		t.Errorf("expected 35 tool definitions, got %d", len(defs))
+	if len(defs) != 36 {
+		t.Errorf("expected 36 tool definitions, got %d", len(defs))
 	}
 
 	for _, d := range defs {
@@ -231,6 +233,30 @@ func TestAllToolDefsHaveDescriptions(t *testing.T) {
 				t.Error("tool has no description")
 			}
 		})
+	}
+
+	queryTool := queryToolDef()
+	if !slices.Contains(queryTool.InputSchema.Required, "natural_query") {
+		t.Errorf("jira_query required arguments = %v, want natural_query", queryTool.InputSchema.Required)
+	}
+	translateTool := translateQueryToolDef()
+	if !slices.Contains(translateTool.InputSchema.Required, "natural_query") {
+		t.Errorf("jira_translate_query required arguments = %v, want natural_query", translateTool.InputSchema.Required)
+	}
+	if _, ok := translateTool.InputSchema.Properties["natural_query"]; !ok {
+		t.Error("jira_translate_query schema is missing natural_query")
+	}
+	if _, ok := queryTool.InputSchema.Properties["natural_query"]; !ok {
+		t.Error("jira_query schema is missing natural_query")
+	}
+	if _, ok := queryTool.InputSchema.Properties["query"]; !ok {
+		t.Error("jira_query schema is missing the legacy query alias")
+	}
+	querySchema, _ := json.Marshal(queryTool.InputSchema.Properties["natural_query"])
+	for _, required := range []string{"verbatim", "Which of my open jiras should I work on next?", "my open Jiras", "do not look up or replace", "return the MCP error", "do not bypass it with REST or shell"} {
+		if !strings.Contains(string(querySchema), required) {
+			t.Errorf("natural_query description is missing %q: %s", required, querySchema)
+		}
 	}
 }
 
@@ -825,7 +851,7 @@ func TestHandleQuery_FastPathDrivesSearchAndStores(t *testing.T) {
 		return &llm.QueryResult{JQL: "project = TEST AND status = Open", Route: "fast_path"}, nil
 	}
 
-	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{"query": "my open bugs in TEST"}))
+	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{"natural_query": "my open bugs in TEST"}))
 	if err != nil {
 		t.Fatalf("HandleQuery returned err: %v", err)
 	}
@@ -852,6 +878,12 @@ func TestHandleQuery_FastPathDrivesSearchAndStores(t *testing.T) {
 	if data.Route != "fast_path" {
 		t.Errorf("stored route = %q, want fast_path", data.Route)
 	}
+	if list[0].Title != "Query: my open bugs in TEST" {
+		t.Errorf("stored title = %q, want original query in title", list[0].Title)
+	}
+	if data.Query != "my open bugs in TEST" {
+		t.Errorf("stored natural query = %q, want exact original input", data.Query)
+	}
 	if data.JQL != "project = TEST AND status = Open" {
 		t.Errorf("stored JQL = %q, want the translated JQL", data.JQL)
 	}
@@ -863,9 +895,240 @@ func TestHandleQuery_FastPathDrivesSearchAndStores(t *testing.T) {
 	assertContains(t, text, "project = TEST AND status = Open")
 	assertContains(t, text, "TEST-1")
 	assertContains(t, text, "TEST-2")
+	assertContains(t, text, "**2 issues found:**")
 	// Two issues are well under the default 50 cap, so no cap warning.
 	if strings.Contains(text, "max_results cap") {
 		t.Errorf("unexpected max_results cap warning:\n%s", text)
+	}
+}
+
+func TestHandleQuery_RecommendationAddsIssueInspectionGuidance(t *testing.T) {
+	h := newTestHandlers(t)
+	setTestJIRAEnv(t)
+	var recorded string
+	ts := jqlSearchServer(t, sampleJQLIssues("TEST-1", "TEST-2"), &recorded)
+	t.Setenv("JIRA_SERVER", ts.URL)
+	const query = "Which of my open jiras should I work on next?"
+	h.translate = func(_ context.Context, _ *config.Config, got string) (*llm.QueryResult, error) {
+		if got != query {
+			t.Errorf("translator received %q, want original wording %q", got, query)
+		}
+		return &llm.QueryResult{JQL: "project = TEST AND status = Open", Route: "fast_path"}, nil
+	}
+
+	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{"natural_query": query}))
+	if err != nil {
+		t.Fatalf("HandleQuery returned err: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(res))
+	}
+	text := resultText(res)
+	assertContains(t, text, "inspect each candidate with jira_get_issue")
+	assertContains(t, text, "use the issue content to make your recommendation")
+	if strings.Contains(text, "shortlist using") {
+		t.Errorf("bounded candidate result unexpectedly asks for a shortlist:\n%s", text)
+	}
+}
+
+func TestIsRecommendationQuery(t *testing.T) {
+	for _, query := range []string{
+		"Which of my open jiras should I work on next?",
+		"What should I work on today?",
+		"Prioritise my open issues",
+		"Recommend a Jira to tackle",
+	} {
+		if !isRecommendationQuery(query) {
+			t.Errorf("isRecommendationQuery(%q) = false, want true", query)
+		}
+	}
+	if isRecommendationQuery("Show my open issues") {
+		t.Error("ordinary search was classified as a recommendation request")
+	}
+}
+
+func TestHandleQuery_RejectsPretranslatedJQLWithoutStoring(t *testing.T) {
+	h := newTestHandlers(t)
+	setTestFullEnv(t)
+	translatorCalled := false
+	h.translate = func(_ context.Context, _ *config.Config, _ string) (*llm.QueryResult, error) {
+		translatorCalled = true
+		return &llm.QueryResult{JQL: "project = TEST"}, nil
+	}
+
+	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{
+		"natural_query": "assignee = currentUser() AND status = Closed ORDER BY updated DESC",
+	}))
+	if err != nil {
+		t.Fatalf("HandleQuery returned err: %v", err)
+	}
+	assertIsError(t, res)
+	assertContains(t, resultText(res), "pass the user's original natural-language wording verbatim")
+	if translatorCalled {
+		t.Error("translator was called for pretranslated JQL")
+	}
+	if got := len(h.store.List()); got != 0 {
+		t.Errorf("stored %d results after rejecting JQL input, want none", got)
+	}
+}
+
+func TestLooksLikeJQL(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{`project = PROJ AND statusCategory != Done`, true},
+		{`resolved >= startOfYear()`, true},
+		{`due >= startOfWeek() AND due <= endOfWeek()`, true},
+		{`show me issues with status updates`, false},
+		{`what is the status of my project`, false},
+		{`issues assigned to me`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := looksLikeJQL(tt.input); got != tt.want {
+				t.Errorf("looksLikeJQL(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleQuery_AcceptsLegacyQueryArgument(t *testing.T) {
+	h := newTestHandlers(t)
+	setTestFullEnv(t)
+	const original = "Find tickets where the status is closed and assigned to me."
+	var got string
+	h.translate = func(_ context.Context, _ *config.Config, query string) (*llm.QueryResult, error) {
+		got = query
+		return nil, errors.New("stop after translation")
+	}
+
+	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{"query": original}))
+	if err != nil {
+		t.Fatalf("HandleQuery returned err: %v", err)
+	}
+	assertIsError(t, res)
+	if got != original {
+		t.Errorf("legacy query reached translator as %q, want exact input %q", got, original)
+	}
+	if len(h.store.List()) != 0 {
+		t.Error("stored result despite translation failure")
+	}
+}
+
+func TestHandleTranslateQueryUsesSameTranslationWithoutSearching(t *testing.T) {
+	h := newTestHandlers(t)
+	setTestFullEnv(t)
+	const original = "my open bugs in TEST"
+	const translated = "project = TEST AND statusCategory != Done AND assignee = currentUser()"
+	var searchedJQL string
+	searchServer := jqlSearchServer(t, nil, &searchedJQL)
+	t.Setenv("JIRA_SERVER", searchServer.URL)
+	var translatedInputs []string
+	h.translate = func(_ context.Context, cfg *config.Config, query string) (*llm.QueryResult, error) {
+		translatedInputs = append(translatedInputs, query)
+		if cfg.JiraProject != "TEST" {
+			t.Errorf("translator default project = %q, want TEST", cfg.JiraProject)
+		}
+		return &llm.QueryResult{
+			Input: original, NormalizedInput: original, Route: llm.RouteFastPath, JQL: translated,
+		}, nil
+	}
+
+	translatedRes, err := h.HandleTranslateQuery(context.Background(), makeRequest(map[string]any{"natural_query": original}))
+	if err != nil {
+		t.Fatalf("HandleTranslateQuery returned err: %v", err)
+	}
+	if translatedRes.IsError {
+		t.Fatalf("unexpected translation error: %s", resultText(translatedRes))
+	}
+	var got struct {
+		Input           string `json:"input"`
+		NormalizedInput string `json:"normalized_input"`
+		Route           string `json:"route"`
+		JQL             string `json:"jql"`
+		Validation      struct {
+			Valid bool `json:"valid"`
+		} `json:"validation"`
+	}
+	if err := json.Unmarshal([]byte(resultText(translatedRes)), &got); err != nil {
+		t.Fatalf("decode translation result: %v\n%s", err, resultText(translatedRes))
+	}
+	if got.Input != original || got.NormalizedInput != original || got.Route != llm.RouteFastPath || got.JQL != translated {
+		t.Errorf("translation diagnostics = %+v, want exact input/normalized input, fast_path, and generated JQL", got)
+	}
+	if !got.Validation.Valid {
+		t.Errorf("generated JQL failed validation: %s", resultText(translatedRes))
+	}
+	if len(translatedInputs) != 1 || translatedInputs[0] != original {
+		t.Errorf("translator inputs after translate-only call = %v, want one exact original input", translatedInputs)
+	}
+	if len(h.store.List()) != 0 {
+		t.Errorf("translate-only call stored %d issue results, want none", len(h.store.List()))
+	}
+	if searchedJQL != "" {
+		t.Errorf("translate-only call executed Jira search with %q", searchedJQL)
+	}
+	queryRes, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{"natural_query": original}))
+	if err != nil {
+		t.Fatalf("HandleQuery returned err: %v", err)
+	}
+	if queryRes.IsError {
+		t.Fatalf("unexpected query error: %s", resultText(queryRes))
+	}
+	if len(translatedInputs) != 2 || translatedInputs[1] != original {
+		t.Errorf("translator inputs = %v, want same original wording for both tools", translatedInputs)
+	}
+	if searchedJQL != got.JQL {
+		t.Errorf("jira_query searched %q, translate-only returned %q", searchedJQL, got.JQL)
+	}
+}
+
+func TestHandleTranslateQueryRejectsBlankAndJQL(t *testing.T) {
+	h := newTestHandlers(t)
+	setTestFullEnv(t)
+	called := false
+	h.translate = func(_ context.Context, _ *config.Config, _ string) (*llm.QueryResult, error) {
+		called = true
+		return &llm.QueryResult{JQL: "project = TEST"}, nil
+	}
+	for _, input := range []string{" \n\t", "project = TEST AND status = Open"} {
+		res, err := h.HandleTranslateQuery(context.Background(), makeRequest(map[string]any{"natural_query": input}))
+		if err != nil {
+			t.Fatalf("HandleTranslateQuery(%q) returned err: %v", input, err)
+		}
+		assertIsError(t, res)
+	}
+	if called {
+		t.Error("translator was called for blank or pretranslated JQL")
+	}
+}
+
+func TestHandleTranslateQueryReportsLocalValidationFailure(t *testing.T) {
+	h := newTestHandlers(t)
+	setTestFullEnv(t)
+	h.translate = func(_ context.Context, _ *config.Config, _ string) (*llm.QueryResult, error) {
+		return &llm.QueryResult{JQL: "status = Open", Route: llm.RouteFastPath}, nil
+	}
+	res, err := h.HandleTranslateQuery(context.Background(), makeRequest(map[string]any{"natural_query": "open bugs"}))
+	if err != nil {
+		t.Fatalf("HandleTranslateQuery returned err: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %s", resultText(res))
+	}
+	var got struct {
+		Validation struct {
+			Valid bool   `json:"valid"`
+			Error string `json:"error"`
+		} `json:"validation"`
+	}
+	if err := json.Unmarshal([]byte(resultText(res)), &got); err != nil {
+		t.Fatalf("decode validation result: %v", err)
+	}
+	if got.Validation.Valid || !strings.Contains(got.Validation.Error, "project predicate") {
+		t.Errorf("validation = %+v, want a local project-scope failure", got.Validation)
 	}
 }
 

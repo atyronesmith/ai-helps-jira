@@ -63,3 +63,52 @@ func TestGetEnvOrSecret_NotFound(t *testing.T) {
 		t.Errorf("got %q, want empty", got)
 	}
 }
+
+func TestLoadTranslationNeedsProjectButNotJiraCredentials(t *testing.T) {
+	dir := t.TempDir()
+	oldDirs := secretsDirs
+	secretsDirs = []string{dir}
+	t.Cleanup(func() { secretsDirs = oldDirs })
+	t.Setenv("JIRA_SERVER", "")
+	t.Setenv("JIRA_EMAIL", "")
+	t.Setenv("JIRA_API_TOKEN", "")
+	t.Setenv("JIRA_PROJECT", "OPS")
+	t.Setenv("ANTHROPIC_VERTEX_PROJECT_ID", "vertex-project")
+	t.Setenv("CLOUD_ML_REGION", "us-central1")
+
+	cfg, err := LoadTranslation("person@example.test", "")
+	if err != nil {
+		t.Fatalf("LoadTranslation() error = %v", err)
+	}
+	if cfg.JiraProject != "OPS" || cfg.JiraUser != "person@example.test" {
+		t.Fatalf("translation config lost overrides: %+v", cfg)
+	}
+	if cfg.JiraServer != "" || cfg.JiraEmail != "" || cfg.JiraAPIToken != "" {
+		t.Fatalf("expected optional Jira credentials to remain empty: %+v", cfg)
+	}
+	if cfg.VertexProjectID != "vertex-project" || cfg.VertexRegion != "us-central1" {
+		t.Fatalf("translation config lost LLM provider fields: %+v", cfg)
+	}
+}
+
+func TestLoadTranslationRequiresProjectUnlessOverridden(t *testing.T) {
+	dir := t.TempDir()
+	oldDirs := secretsDirs
+	secretsDirs = []string{dir}
+	t.Cleanup(func() { secretsDirs = oldDirs })
+	t.Setenv("JIRA_SERVER", "")
+	t.Setenv("JIRA_EMAIL", "")
+	t.Setenv("JIRA_API_TOKEN", "")
+	t.Setenv("JIRA_PROJECT", "")
+
+	if _, err := LoadTranslation("", ""); err == nil {
+		t.Fatal("LoadTranslation() succeeded without a default project")
+	}
+	cfg, err := LoadTranslation("", "OVERRIDE")
+	if err != nil {
+		t.Fatalf("LoadTranslation() with project override error = %v", err)
+	}
+	if cfg.JiraProject != "OVERRIDE" {
+		t.Fatalf("project = %q, want OVERRIDE", cfg.JiraProject)
+	}
+}

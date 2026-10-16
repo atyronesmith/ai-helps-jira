@@ -14,7 +14,7 @@ Inspired by the [official Atlassian MCP server](https://github.com/atlassian/mcp
 - **Comment Summarizer** — Summarize long comment threads into key decisions, action items, and open questions.
 - **Backlog Health Check** — Rule-based analysis (stale tickets, missing descriptions, orphaned issues, unassigned active, missing labels) with optional LLM executive summary.
 - **JIRA CRUD** — Create, edit, transition, comment on, link issues, look up users, and attach files — all from CLI or MCP.
-- **MCP Server** — Exposes all 35 tools as Model Context Protocol tools for Claude Code and other MCP clients. Supports stdio and SSE transports. Includes a rich web dashboard.
+- **MCP Server** — Exposes all 36 tools as Model Context Protocol tools for Claude Code and other MCP clients. Supports stdio and SSE transports. Includes a rich web dashboard.
 - **Container Support** — Run as a shared MCP server in podman/docker with SSE transport. Multiple Claude Code instances can connect simultaneously. Red Hat UBI minimal base image with health checks and persistent cache volume.
 - **Multi-LLM Provider Support** — Use any LLM backend: Vertex AI (Claude), OpenAI-compatible APIs (DeepInfra, vLLM, etc.), or Ollama for fully local inference.
 - **SQLite Caching** — Delta fetches only changed issues after the first run. Smart cache invalidation compares JIRA timestamps. Per-issue detail caching means repeat runs skip re-fetching unchanged issues entirely.
@@ -134,6 +134,11 @@ jira-cli -u user@company.com -p MYPROJ summary
 jira-cli query "show me all critical bugs from last week"
 jira-cli query "unresolved stories assigned to me" --show-jql
 jira-cli query "epics created this month" --max 10
+jira-cli query --dry-run "issues I closed in June 2026"
+
+# Interactively review translations and save a private local feedback corpus
+jira-cli train-jql
+jira-cli train-jql report
 ```
 
 ### Digest
@@ -243,7 +248,7 @@ jira-cli lookup-user jsmith
 
 ### MCP Server
 
-The MCP server exposes all 35 tools to Claude Code and other MCP-compatible clients. There are two ways to run it:
+The MCP server exposes all 36 tools to Claude Code and other MCP-compatible clients. There are two ways to run it:
 
 #### Option A: Local binary (stdio, recommended)
 
@@ -306,19 +311,20 @@ Ask Claude Code to run any tool, e.g.:
 Use jira_summary to show my current issues
 ```
 
-You should see 35 tools available.
+You should see 36 tools available.
 
 The MCP server also starts a web dashboard at `http://localhost:18080` (in both stdio and SSE modes). It renders stored tool results as interactive HTML pages with Chart.js charts, Mermaid hierarchy diagrams, color-coded status/priority tables, and side-by-side comparisons. Six tools have dashboard views: summary, query, digest, enrich, create_epic, and weekly_status. See the [Web Dashboard](docs/HOWTO-AI-SETUP.md#web-dashboard) section for details on each view.
 
 For a more detailed setup guide (including troubleshooting), see [docs/HOWTO-AI-SETUP.md](docs/HOWTO-AI-SETUP.md).
 
-#### Available MCP Tools (35)
+#### Available MCP Tools (36)
 
 **Core & AI-powered**
 
 | Tool | Description |
 |------|-------------|
 | `jira_summary` | Daily summary of assigned issues and sprint info |
+| `jira_translate_query` | Translate and locally validate natural language without executing a Jira search |
 | `jira_query` | Natural language search; deterministic parser first, LLM fallback for complex queries |
 | `jira_digest` | Executive digest for Features/Initiatives; natural-language issues translated to JQL (deterministic parser first, LLM fallback) |
 | `jira_enrich` | AI-generated enrichment for sparse tickets |

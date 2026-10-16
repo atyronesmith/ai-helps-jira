@@ -111,11 +111,69 @@ func (n *Normalizer) clock() func() time.Time {
 func (n *Normalizer) Normalize(input string, projectMap map[string]string) string {
 	// Collapse whitespace runs: every downstream regex assumes single spaces.
 	s := strings.Join(strings.Fields(input), " ")
+	s = normalizeRecommendationQuestion(s)
+	s = normalizeDueThisWeekQuestion(s)
 
 	// Dates first: "in the last 3 days" must be consumed before the project
 	// pass starts matching "in <something>".
 	s = n.normalizeDates(s)
 	s = n.normalizeProjects(s, projectMap)
+	s = normalizeOpenStatusPhrases(s)
+	s = normalizeFirstPersonOwnership(s)
+	return s
+}
+
+// normalizeDueThisWeekQuestion handles the narrowly defined first-person
+// request for Jira assigned to the caller and due in the current week.
+// Rewriting the whole anchored question preserves that intent without making
+// generic words such as "due" or "this week" semantically ambiguous.
+var dueThisWeekQuestion = regexp.MustCompile(`(?i)^list jiras? that are due this week[?!.]*$`)
+
+func normalizeDueThisWeekQuestion(s string) string {
+	if dueThisWeekQuestion.MatchString(s) {
+		return "my dueweek"
+	}
+	return s
+}
+
+// recommendationQuestion removes one tightly-scoped recommendation frame
+// while keeping its explicit Jira filter. The recommendation itself belongs
+// to the caller after Jira data is retrieved; the query should retrieve only
+// the requested open work. Keep this anchored so other semantic wording is
+// never discarded as generic filler.
+var recommendationQuestion = regexp.MustCompile(`(?i)^which of (my) (open) ((?:jira )?issues|jiras?) should i work on next[?!.]*$`)
+
+func normalizeRecommendationQuestion(s string) string {
+	if m := recommendationQuestion.FindStringSubmatch(s); m != nil {
+		return strings.Join([]string{m[1], m[2], m[3]}, " ")
+	}
+	return s
+}
+
+// normalizeFirstPersonOwnership maps possessive questions about the caller's
+// work to the parser's existing "my" ownership clause. The intervening
+// count-question words remain harmless filler for the grammar.
+var firstPersonOwnership = regexp.MustCompile(`(?i)\b(?:do\s+)?i\s+have\b`)
+
+func normalizeFirstPersonOwnership(s string) string {
+	return firstPersonOwnership.ReplaceAllString(s, "my")
+}
+
+// openStatusPhrases maps common ways of asking for unfinished Jira work to
+// the parser's canonical "open" token. In particular, a negative terminal
+// status is broader than a list of status names: statusCategory != Done also
+// excludes tenant-specific terminal statuses such as Canceled.
+var openStatusPhrases = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\banything\s+still\s+open\b`),
+	regexp.MustCompile(`(?i)\bunfinished\s+work\b`),
+	regexp.MustCompile(`(?i)\bactive\s+issues\b`),
+	regexp.MustCompile(`(?i)\bnot\s+(?:done|closed|resolved|cancell?ed)(?:\s+or\s+(?:done|closed|resolved|cancell?ed))*\b`),
+}
+
+func normalizeOpenStatusPhrases(s string) string {
+	for _, phrase := range openStatusPhrases {
+		s = phrase.ReplaceAllString(s, "open")
+	}
 	return s
 }
 
@@ -251,11 +309,11 @@ func unitToDays(unit string, sprintLen int) int {
 }
 
 // jqlField canonicalises the free-text field name. "due" / "due date" both
-// map to Jira's duedate field.
+// map to Jira's canonical JQL field; dueDate is an accepted Jira alias.
 func jqlField(raw string) string {
 	switch normalizeName(raw) {
 	case "due", "due date", "duedate":
-		return "duedate"
+		return "due"
 	}
 	return strings.ToLower(strings.TrimSpace(raw))
 }

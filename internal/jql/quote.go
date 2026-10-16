@@ -27,9 +27,10 @@ func Quote(value string) string {
 	return b.String()
 }
 
-// QuoteIdent renders key as a bare JQL word when it contains none of the
-// characters that would require quoting (whitespace or an embedded double
-// quote), and as a quoted string literal via Quote otherwise.
+// QuoteIdent renders key as a bare JQL identifier only when it matches the
+// conservative ASCII identifier syntax used by project keys and simple Jira
+// values. Reserved punctuation (including @, ., parentheses, and operators)
+// is quoted via Quote.
 //
 // This is the "quote only if needed" behavior historically implemented as
 // quoteIfNeeded in internal/nl2jql/parser.go, moved here so there is one
@@ -38,18 +39,28 @@ func Quote(value string) string {
 // already a safe bare word, matching what callers and golden tests expect,
 // while still falling back to full quoting for anything that is not.
 //
-// QuoteIdent is a convenience, not a safety boundary: a value with no
-// whitespace or quote can still be structurally meaningful on its own (JQL
-// requires whitespace around keywords like OR/AND, so a bare word without
-// whitespace cannot introduce a top-level keyword, but unbalanced
-// parentheses in a bare word are still possible and will surface as a
-// rejected query via jql.Validate rather than a silent injection). Callers
-// that cannot vouch for a value's origin -- anything arriving as an MCP tool
-// argument or other external input -- should prefer Quote, which escapes
-// unconditionally.
+// QuoteIdent is a convenience, not a safety boundary. Callers that cannot
+// vouch for a value's origin should prefer Quote, which escapes unconditionally.
 func QuoteIdent(key string) string {
-	if strings.ContainsAny(key, " \t\"") {
+	if !safeBareIdent(key) {
 		return Quote(key)
 	}
 	return key
+}
+
+func safeBareIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	switch strings.ToUpper(s) {
+	case "AND", "OR", "NOT", "IN", "IS", "EMPTY", "NULL", "ORDER", "BY", "WAS", "CHANGED":
+		return false
+	}
+	for i, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || (i > 0 && ((r >= '0' && r <= '9') || r == '-')) {
+			continue
+		}
+		return false
+	}
+	return true
 }

@@ -73,10 +73,11 @@ OUTPUT CONTRACT (non-negotiable):
 
 COMPILATION RULES:
 - Join every predicate with " AND ".
-- Emit fields in this fixed order: project, issuetype, status, assignee, priority, resolution, labels, created, updated, duedate, then any SCHEMA fields.
+- Emit fields in this fixed order: project, issuetype, status/statusCategory, assignee, priority, resolution, labels, created, updated, due, then any SCHEMA fields.
 - "me", "my", "mine", "myself" compile to currentUser(). Never invent usernames.
+- Requests for open, unresolved, active, unfinished, or not-done work compile to statusCategory != Done. Never substitute an issuetype != ... predicate for a requested status filter.
 - Relative dates use JQL relative values: -3d, -2w, startOfDay(), startOfWeek().
-- Quote a string value with double quotes ONLY when it contains whitespace; escape embedded quotes as \".
+- Quote string values with double quotes whenever they contain whitespace or JQL-reserved punctuation (including @ and . in email addresses); escape embedded quotes as \".
 - Use ONLY the fields, projects, and values listed in SCHEMA, plus standard Jira fields. Never invent vocabulary.
 
 SCHEMA (authoritative vocabulary for this tenant):

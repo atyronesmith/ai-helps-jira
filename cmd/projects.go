@@ -25,3 +25,17 @@ func fetchProjectList(cfg *config.Config, db *cache.Cache) []jira.Project {
 		return client, nil
 	}, cache.DefaultProjectTTL)
 }
+
+// cachedProjectList returns only projects already present in the cache. Use it
+// in translation-only flows, which must not construct a Jira client or fetch
+// projects over the network.
+func cachedProjectList(db *cache.Cache) []jira.Project {
+	if db == nil {
+		return nil
+	}
+	projects, _, found := db.GetProjects()
+	if !found {
+		return nil
+	}
+	return projects
+}

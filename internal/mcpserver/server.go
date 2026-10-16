@@ -82,10 +82,12 @@ func newMCPServer(version string, h *Handlers) *server.MCPServer {
 		"jira",
 		version,
 		server.WithToolCapabilities(false),
+		server.WithInstructions("For Jira searches, pass the user's exact original natural-language wording to jira_query.natural_query. Do not pretranslate it to JQL, replace my/me with a username or email, or call jira_lookup_user first. Use jira_translate_query.natural_query when you only need to inspect the translation; it validates locally and does not search. jira_query performs deterministic translation, then uses the configured LLM fallback if needed. For recommendation or prioritization requests (for example, 'Which of my open jiras should I work on next?'), use jira_query to retrieve candidate issues. When the candidate count is reasonably bounded, call jira_get_issue for each candidate to inspect its full issue content before recommending. If there are too many candidates, shortlist using the returned priority, status, and summary, disclose that shortlist in your answer, and inspect those issues with jira_get_issue. The host assistant should reason over the inspected issue content and make the recommendation; jira_query only retrieves candidates and does not make recommendations. If jira_query returns an error, report that error; do not seek credentials or bypass MCP with direct REST or shell calls."),
 	)
 
 	// Register core tools.
 	s.AddTool(summaryToolDef(), h.HandleSummary)
+	s.AddTool(translateQueryToolDef(), h.HandleTranslateQuery)
 	s.AddTool(queryToolDef(), h.HandleQuery)
 	s.AddTool(digestToolDef(), h.HandleDigest)
 	s.AddTool(enrichToolDef(), h.HandleEnrich)

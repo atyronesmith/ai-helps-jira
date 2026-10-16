@@ -11,7 +11,7 @@
 //
 //  2. Render – Query.ToJQL traverses the AST and emits one JQL predicate per
 //     clause, joined with AND in a fixed field order (project, issuetype,
-//     status, assignee). Identical clause sets therefore always render to
+//     status, assignee, priority). Identical clause sets therefore always render to
 //     byte-identical JQL regardless of the order the user wrote them in.
 package nl2jql
 
@@ -35,15 +35,15 @@ import (
 // they can never drift apart.
 var fillerWords = []string{
 	"show", "find", "list", "get", "give", "fetch", "bring", "see",
-	"need", "want", "please", "thank", "thanks",
+	"need", "want", "please", "thank", "thanks", "how", "many",
 	"all", "every", "any", "the", "a", "an", "only", "just",
 	"currently", "still",
-	"issue", "issues", "ticket", "tickets", "item", "items",
+	"issue", "issues", "ticket", "tickets", "item", "items", "jira", "jiras",
 	"of", "for", "to", "and", "or",
 	"that", "those", "these", "it", "them", "us", "you",
 	"is", "are", "was", "were", "be", "been", "being",
 	"have", "has", "had", "do", "does", "did",
-	"on", "with", "related",
+	"on", "with", "related", "work",
 }
 
 // fillerSet lets the renderer strip filler words that the grammar tolerated
@@ -72,6 +72,12 @@ var jqlLexer = lexer.MustStateful(lexer.Rules{
 	"Root": []lexer.Rule{
 		// Layout tokens, elided via participle.Elide below.
 		{Name: "Whitespace", Pattern: `[ \t\r\n]+`},
+		// Explicit email assignees are the one punctuation-bearing value the
+		// deterministic grammar accepts. Keep this narrow; other punctuation
+		// still follows the existing elision/rejection behavior.
+		{Name: "Email", Pattern: `(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}`},
+		{Name: "Number", Pattern: `(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)`},
+		{Name: "Comparison", Pattern: `>=|<=|>|<|=`},
 		{Name: "Punct", Pattern: `[.,!?;:'’]+`},
 
 		// Multi-word phrases win over their single-word prefixes.
@@ -82,6 +88,20 @@ var jqlLexer = lexer.MustStateful(lexer.Rules{
 		// Ownership vocabulary.
 		{Name: "My", Pattern: `(?i)\b(?:my|mine|myself)\b`},
 		{Name: "Me", Pattern: `(?i)\bme\b`},
+
+		// Long priority values precede their prefixes; word boundaries keep
+		// Highest distinct from High and Lowest distinct from Low.
+		{Name: "Highest", Pattern: `(?i)\bhighest\b`},
+		{Name: "Lowest", Pattern: `(?i)\blowest\b`},
+		{Name: "Critical", Pattern: `(?i)\bcritical\b`},
+		{Name: "High", Pattern: `(?i)\bhigh\b`},
+		{Name: "Medium", Pattern: `(?i)\bmedium\b`},
+		{Name: "Low", Pattern: `(?i)\blow\b`},
+		{Name: "PriorityField", Pattern: `(?i)\bpriority\b`},
+		{Name: "StoryPoints", Pattern: `(?i)\bstory[\s_-]+points?\b`},
+		{Name: "DueWeek", Pattern: `(?i)\bdueweek\b`},
+		{Name: "OrderFrame", Pattern: `(?i)\b(?:ordered|sorted|order)\s+by\b`},
+		{Name: "Direction", Pattern: `(?i)\b(?:ascending|asc|descending|desc)\b`},
 
 		// Status vocabulary.
 		{Name: "Open", Pattern: `(?i)\bopen\b`},
@@ -113,12 +133,13 @@ var jqlLexer = lexer.MustStateful(lexer.Rules{
 // The grammar (in EBNF shorthand) is:
 //
 //	Query     = Clause* .
-//	Clause    = Ownership | IssueType | Status | Project | Noise .
+//	Clause    = Ownership | IssueType | Status | Project | OrderBy | Noise .
 //	Ownership = My | AssignedTo Assignment .
 //	Assignment = Me | My | (Word | Filler)+ .
 //	IssueType = Bugs | Epics | Tasks | Stories .
 //	Status    = Open | Done | InProgress .
 //	Project   = In (Word | Filler)+ .
+//	OrderBy   = OrderFrame (Word | Filler | PriorityField | StoryPoints)+ Direction .
 //	Noise     = Filler .
 //
 // Every alternative in Clause starts with a mutually disjoint token set, so
@@ -131,11 +152,23 @@ type Query struct {
 
 // Clause maps to exactly one JQL predicate (or zero, for Noise).
 type Clause struct {
-	Ownership *Ownership `parser:"@@"`
-	IssueType *IssueType `parser:"| @@"`
-	Status    *Status    `parser:"| @@"`
-	Project   *Project   `parser:"| @@"`
-	Noise     *Noise     `parser:"| @@"`
+	Ownership   *Ownership   `parser:"@@"`
+	IssueType   *IssueType   `parser:"| @@"`
+	Status      *Status      `parser:"| @@"`
+	Priority    *Priority    `parser:"| @@"`
+	StoryPoints *StoryPoints `parser:"| @@"`
+	DueWeek     *DueWeek     `parser:"| @@"`
+	OrderBy     *OrderBy     `parser:"| @@"`
+	Project     *Project     `parser:"| @@"`
+	Noise       *Noise       `parser:"| @@"`
+}
+
+// StoryPoints represents a numeric comparison against Jira's human-facing
+// story point field name. Tenant-specific custom field IDs are not embedded.
+type StoryPoints struct {
+	Field    string `parser:"@StoryPoints"`
+	Operator string `parser:"@Comparison"`
+	Value    string `parser:"@Number"`
 }
 
 // Ownership -> assignee = currentUser() | assignee = <name>.
@@ -152,7 +185,7 @@ type Assignment struct {
 	Self bool `parser:"@Me | @My"`
 	// Owner is the raw token run for multi-word names ("John Smith");
 	// spaces are preserved and filler words are stripped during rendering.
-	Owner []string `parser:"| ( @Word | @Filler )+"`
+	Owner []string `parser:"| ( @Email | @Word | @Filler )+"`
 }
 
 // IssueType -> issuetype = Bug | Epic | Task | Story.
@@ -160,9 +193,27 @@ type IssueType struct {
 	Raw string `parser:"@Bugs | @Epics | @Tasks | @Stories"`
 }
 
-// Status -> status NOT IN ("Done", "Closed", "Resolved") | "In Progress" | Done.
+// Status -> statusCategory != Done | "In Progress" | Done.
 type Status struct {
 	Raw string `parser:"@Open | @Done | @InProgress"`
+}
+
+// Priority accepts both "priority Critical" and "Critical priority".
+type Priority struct {
+	Tokens []string `parser:"( @Highest | @Lowest | @Critical | @High | @Medium | @Low ) @PriorityField | @PriorityField ( @Highest | @Lowest | @Critical | @High | @Medium | @Low )"`
+}
+
+// DueWeek represents the exact normalizer output for the supported due-this-week request.
+type DueWeek struct {
+	Token string `parser:"@DueWeek"`
+}
+
+// OrderBy captures one field and an explicit direction. Field aliases are
+// resolved through orderFieldJQL below; arbitrary field names are rejected.
+type OrderBy struct {
+	Frame     string   `parser:"@OrderFrame"`
+	Field     []string `parser:"( @Word | @Filler | @PriorityField | @StoryPoints )+"`
+	Direction string   `parser:"@Direction"`
 }
 
 // Project -> project = <Key>.
@@ -197,14 +248,10 @@ var issueTypeJQL = map[string]string{
 	"story": "Story", "stories": "Story",
 }
 
-// openStatusJQL is the JQL the fast path emits for the "open" vocabulary
-// token. It mirrors QuerySystemPrompt rule #6 so the deterministic route and
-// the JSON LLM route agree: "open" means "not one of the closed statuses"
-// rather than a literal "Open" status, which only matches tenants that name a
-// status "Open". Without this, "open bugs" resolves differently depending on
-// which route a query takes -- the biggest behavioral regression risk for
-// queries that hit the fast path.
-const openStatusJQL = `status NOT IN ("Done", "Closed", "Resolved")`
+// openStatusJQL is the canonical JQL for genuinely unfinished work. Jira
+// status categories include tenant-specific terminal statuses such as Canceled
+// in Done, so checking the category is safer than enumerating status names.
+const openStatusJQL = `statusCategory != Done`
 
 // statusJQL maps the normalised vocabulary token to Jira status names. "open"
 // is deliberately absent: Status.predicate handles it via openStatusJQL so the
@@ -212,6 +259,75 @@ const openStatusJQL = `status NOT IN ("Done", "Closed", "Resolved")`
 var statusJQL = map[string]string{
 	"done":        "Done",
 	"in progress": "In Progress",
+}
+
+var priorityJQL = map[string]string{
+	"critical": "Critical",
+	"highest":  "Highest",
+	"high":     "High",
+	"medium":   "Medium",
+	"low":      "Low",
+	"lowest":   "Lowest",
+}
+
+// orderFieldJQL is intentionally conservative. It includes standard Jira
+// fields and the explicitly supported Story Points/Rank aliases; arbitrary
+// tenant-specific custom field names are excluded.
+var orderFieldJQL = map[string]string{
+	"story points":    `"Story Points"`,
+	"priority":        "priority",
+	"created":         "created",
+	"creation date":   "created",
+	"date created":    "created",
+	"updated":         "updated",
+	"update date":     "updated",
+	"last updated":    "updated",
+	"due":             "due",
+	"due date":        "due",
+	"deadline":        "due",
+	"resolved":        "resolved",
+	"resolution date": "resolved",
+	"status":          "status",
+	"assignee":        "assignee",
+	"reporter":        "reporter",
+	"key":             "key",
+	"issue key":       "key",
+	"work item key":   "key",
+	"jira key":        "key",
+	"summary":         "summary",
+	"title":           "summary",
+	"issuetype":       "issuetype",
+	"issue type":      "issuetype",
+	"work item type":  "issuetype",
+	"type":            "issuetype",
+	"rank":            "Rank",
+	"ranking":         "Rank",
+	"component":       "component",
+	"components":      "component",
+	"fix version":     "fixVersion",
+	"release":         "fixVersion",
+	"version":         "fixVersion",
+	"labels":          "labels",
+	"label":           "labels",
+	"project":         "project",
+}
+
+func (o *OrderBy) clause() (string, error) {
+	field := strings.ToLower(clean(strings.Join(o.Field, " ")))
+	jqlField, ok := orderFieldJQL[field]
+	if !ok {
+		return "", fmt.Errorf("nl2jql: unsupported ORDER BY field %q", field)
+	}
+	direction := strings.ToLower(o.Direction)
+	switch direction {
+	case "ascending", "asc":
+		direction = "ASC"
+	case "descending", "desc":
+		direction = "DESC"
+	default:
+		return "", fmt.Errorf("nl2jql: unsupported ORDER BY direction %q", o.Direction)
+	}
+	return "ORDER BY " + jqlField + " " + direction, nil
 }
 
 // clean strips filler words that the grammar tolerated inside a multi-token
@@ -290,9 +406,8 @@ func (t *IssueType) predicate() pred {
 }
 
 func (s *Status) predicate() pred {
-	// "open" means "not one of the closed statuses", not a literal "Open"
-	// status, so the fast path agrees with QuerySystemPrompt rule #6. It is a
-	// NOT IN expansion rather than an equality, so it never collapses.
+	// "open" means every status outside Jira's Done category, not a literal
+	// "Open" status. It is a non-equality predicate, so it never collapses.
 	if normaliseStatus(s.Raw) == "open" {
 		return rawPred(openStatusJQL)
 	}
@@ -303,12 +418,25 @@ func (s *Status) predicate() pred {
 	return eqPred("status", quoteIfNeeded(v))
 }
 
+func (p *Priority) predicate() pred {
+	for _, raw := range p.Tokens {
+		if value, ok := priorityJQL[strings.ToLower(raw)]; ok {
+			return eqPred("priority", quoteIfNeeded(value))
+		}
+	}
+	return pred{}
+}
+
 func (p *Project) predicate() pred {
 	key := clean(strings.Join(p.Key, " "))
 	if key == "" {
 		return pred{} // "in the ..." with nothing after it
 	}
 	return eqPred("project", quoteIfNeeded(key))
+}
+
+func (s *StoryPoints) predicate() pred {
+	return rawPred(jql.Quote("Story Points") + " " + s.Operator + " " + s.Value)
 }
 
 // renderBucket renders every predicate collected for a single field.
@@ -356,7 +484,7 @@ func renderBucket(bucket []pred) []string {
 // clauses in:
 //
 //   - predicates are always emitted in the fixed field order
-//     project -> issuetype -> status -> assignee;
+//     project -> issuetype -> status -> assignee -> priority;
 //   - exact duplicate predicates are removed ("my ... assigned to me");
 //   - multiple distinct values for the same field collapse into a single
 //     IN (...) membership test, so "bugs and stories" asks for either rather
@@ -378,7 +506,9 @@ func (q *Query) ToJQL() (string, error) {
 		*bucket = append(*bucket, p)
 	}
 
-	var project, issueType, status, assignee []pred
+	var project, issueType, status, assignee, priority, storyPoints []pred
+	dueWeek := false
+	var orderBy *OrderBy
 	for _, clause := range q.Clauses {
 		if clause == nil {
 			continue
@@ -392,20 +522,50 @@ func (q *Query) ToJQL() (string, error) {
 			add(&status, clause.Status.predicate())
 		case clause.Ownership != nil:
 			add(&assignee, clause.Ownership.predicate())
+		case clause.Priority != nil:
+			add(&priority, clause.Priority.predicate())
+		case clause.StoryPoints != nil:
+			add(&storyPoints, clause.StoryPoints.predicate())
+		case clause.DueWeek != nil:
+			dueWeek = true
+		case clause.OrderBy != nil:
+			if orderBy != nil {
+				return "", errors.New("nl2jql: multiple ORDER BY clauses are not supported")
+			}
+			orderBy = clause.OrderBy
 		case clause.Noise != nil:
 			// pure noise: contributes nothing.
 		}
 	}
 
-	parts := make([]string, 0, len(project)+len(issueType)+len(status)+len(assignee))
+	parts := make([]string, 0, len(project)+len(issueType)+len(status)+len(assignee)+len(priority))
 	// Fixed field order: rendering is independent of input clause order.
-	for _, bucket := range [][]pred{project, issueType, status, assignee} {
+	for _, bucket := range [][]pred{project, issueType, status, assignee, priority, storyPoints} {
 		parts = append(parts, renderBucket(bucket)...)
 	}
-	if len(parts) == 0 {
+	if dueWeek {
+		parts = append(parts, "due >= startOfWeek()", "due <= endOfWeek()")
+	}
+	if len(parts) == 0 && orderBy == nil {
 		return "", ErrNoConstraints
 	}
-	return strings.Join(parts, " AND "), nil
+	if dueWeek && orderBy != nil {
+		return "", errors.New("nl2jql: due-this-week and explicit ORDER BY clauses conflict")
+	}
+	result := strings.Join(parts, " AND ")
+	if dueWeek {
+		result += " ORDER BY due ASC"
+	} else if orderBy != nil {
+		clause, err := orderBy.clause()
+		if err != nil {
+			return "", err
+		}
+		if result != "" {
+			result += " "
+		}
+		result += clause
+	}
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------

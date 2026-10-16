@@ -8,7 +8,7 @@ import (
 
 func TestToolDefinitionsHaveExplicitAnnotations(t *testing.T) {
 	tools := []mcp.Tool{
-		summaryToolDef(), queryToolDef(), digestToolDef(), enrichToolDef(), createEpicToolDef(),
+		summaryToolDef(), translateQueryToolDef(), queryToolDef(), digestToolDef(), enrichToolDef(), createEpicToolDef(),
 		weeklyStatusToolDef(), summarizeCommentsToolDef(), backlogHealthToolDef(), findSimilarToolDef(),
 		confluenceAnalyticsToolDef(), confluenceUpdateToolDef(), confluenceGetPageToolDef(),
 		confluenceSearchToolDef(), confluenceListPagesToolDef(), confluenceGetCommentsToolDef(),
@@ -19,8 +19,8 @@ func TestToolDefinitionsHaveExplicitAnnotations(t *testing.T) {
 		addLabelsToolDef(), removeLabelsToolDef(), listSprintsToolDef(), voteIssueToolDef(),
 		unvoteIssueToolDef(),
 	}
-	if len(tools) != 35 {
-		t.Fatalf("got %d tool definitions, want 35", len(tools))
+	if len(tools) != 36 {
+		t.Fatalf("got %d tool definitions, want 36", len(tools))
 	}
 
 	for _, tool := range tools {
@@ -46,6 +46,7 @@ func TestToolAnnotationClassifications(t *testing.T) {
 		idempotent  bool
 	}{
 		{name: "Jira search", tool: queryToolDef(), readOnly: true, destructive: false, idempotent: true},
+		{name: "Jira translation", tool: translateQueryToolDef(), readOnly: true, destructive: false, idempotent: true},
 		{name: "Confluence read", tool: confluenceGetPageToolDef(), readOnly: true, destructive: false, idempotent: true},
 		{name: "Jira create", tool: createIssueToolDef(), readOnly: false, destructive: false, idempotent: false},
 		{name: "Jira edit", tool: editIssueToolDef(), readOnly: false, destructive: true, idempotent: true},

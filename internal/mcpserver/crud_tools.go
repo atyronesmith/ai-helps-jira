@@ -17,7 +17,7 @@ import (
 
 func getIssueToolDef() mcp.Tool {
 	return mcp.NewTool("jira_get_issue",
-		mcp.WithDescription("Get full details of a JIRA issue including description, comments, and linked issues."),
+		mcp.WithDescription("Get full details of a JIRA issue including description, comments, and linked issues. Use this to inspect jira_query candidates before answering recommendation or prioritization requests when the candidate count is reasonably bounded; if candidates were shortlisted, inspect each shortlisted issue."),
 		mcp.WithString("issue_key", mcp.Required(), mcp.Description("JIRA issue key (e.g. PROJ-123).")),
 		mcp.WithBoolean("include_comments", mcp.Description("Include issue comments. Default true.")),
 		mcp.WithBoolean("include_links", mcp.Description("Include linked issues and subtasks. Default true.")),

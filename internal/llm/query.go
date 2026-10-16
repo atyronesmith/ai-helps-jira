@@ -12,9 +12,12 @@ import (
 )
 
 type QueryResult struct {
-	JQL   string `json:"jql"`
-	Route string `json:"route,omitempty"`
-	Days  int    `json:"days,omitempty"` // optional time window extracted from natural language
+	JQL             string `json:"jql"`
+	Route           string `json:"route,omitempty"`
+	Days            int    `json:"days,omitempty"` // optional time window extracted from natural language
+	Input           string `json:"input,omitempty"`
+	NormalizedInput string `json:"normalized_input,omitempty"`
+	ParseError      string `json:"parse_error,omitempty"`
 }
 
 // QueryResult.Route values, one per translation tier, so logs and the web
@@ -47,7 +50,7 @@ Context:
 - The current user is referred to as %s in JQL
 - Today's date is %s
 
-Common JQL fields: project, assignee, reporter, status, priority, issuetype, labels, summary, description, created, updated, resolved, sprint, fixVersion, component.
+Common JQL fields: project, assignee, reporter, status, statusCategory, priority, issuetype, labels, summary, description, created, updated, resolved, sprint, fixVersion, component.
 
 Common statuses: "To Do", "In Progress", "In Review", "Done", "Closed", "Resolved".
 Common priorities: Highest, High, Medium, Low, Lowest.
@@ -59,10 +62,10 @@ Relative date literals are a signed integer plus a single-letter unit: "d" (days
 Rules:
 1. Always scope to project = %s unless the user explicitly asks about a different project or all projects.
 2. If the user mentions "my" or "me", use assignee = %s.
-3. If the user mentions a specific person by name or username, use assignee = "name" or assignee = "email".
+3. If the user mentions a specific person by name, username, or email, quote the assignee value with double quotes, including reserved JQL punctuation such as @ and . (e.g. assignee = "jsmith@example.com").
 4. Use ORDER BY when it improves readability (e.g. priority ASC, created DESC).
 5. If the user mentions a time window for viewing changes or activity (e.g. "last day", "past 2 weeks", "since Monday"), include a "days" field with the number of days. Do NOT put time constraints in the JQL for this — the days field controls a separate comment filter. Only use date constraints in JQL when filtering by issue creation/update dates. Omit the "days" field if no time window is mentioned.
-6. "Open" or "unresolved" issues means status NOT IN ("Done", "Closed", "Resolved") — do NOT enumerate the open statuses individually, and never include Done/Closed/Resolved when the user asked for open work.
+6. Requests for open, unresolved, active, unfinished, or not-done work compile to statusCategory != Done. Never substitute an issuetype != ... predicate for a requested status filter.
 7. JQL is left-to-right with no implicit operator precedence like SQL: AND and OR are evaluated strictly left to right unless you add parentheses. ALWAYS wrap any OR-combined group in parentheses when it is combined with AND, e.g. project = X AND assignee = currentUser() AND (status = "To Do" OR status = "In Progress") — never emit project = X AND assignee = currentUser() AND status = "To Do" OR status = "In Progress", which silently drops the project/assignee scoping from the OR branches.
 8. Respond ONLY with valid JSON (no markdown fences): {"jql": "your JQL here"} or {"jql": "your JQL here", "days": 1}`
 
@@ -109,6 +112,7 @@ func generateJQLLLM(ctx context.Context, cfg *config.Config, naturalQuery string
 	// is idempotent, so it never double-scopes).
 	result.JQL = ensureProjectScope(result.JQL, cfg)
 	result.Route = RouteJSON
+	result.Input = naturalQuery
 	slog.Info("generated JQL", "jql", result.JQL, "route", result.Route)
 	return &result, nil
 }

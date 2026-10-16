@@ -25,6 +25,11 @@ func TestNormalize(t *testing.T) {
 		want  string
 	}{
 		{
+			name:  "exact due this week question is narrowly canonicalized",
+			input: "List jiras that are due this week?",
+			want:  "my dueweek",
+		},
+		{
 			name:  "hero: fuzzy project plus counted days",
 			input: "my open bugs in Spport created in the last 3 days",
 			want:  "my open bugs in SUP created >= -3d",
@@ -60,9 +65,9 @@ func TestNormalize(t *testing.T) {
 			want:  "created >= startOfWeek() and updated >= -7d",
 		},
 		{
-			name:  "due date aliases collapse to duedate",
+			name:  "due date aliases collapse to canonical due field",
 			input: "due date in the last 3 days",
-			want:  "duedate >= -3d",
+			want:  "due >= -3d",
 		},
 		{
 			name:  "typo inside a multi-word key snaps",

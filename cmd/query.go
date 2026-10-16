@@ -3,7 +3,9 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/pterm/pterm"
@@ -18,8 +20,18 @@ import (
 )
 
 var (
-	flagShowJQL    bool
-	flagMaxResults int
+	flagShowJQL        bool
+	flagDryRun         bool
+	flagMaxResults     int
+	queryTranslator    = llm.GenerateJQLWithProjects
+	queryProjectLoader = fetchProjectList
+	querySearcher      = func(cfg *config.Config, query string, max int) ([]jira.Issue, error) {
+		client, err := jira.NewClient(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return client.SearchJQL(query, max)
+	}
 )
 
 var queryCmd = &cobra.Command{
@@ -43,18 +55,26 @@ func init() {
 		"Print the generated JQL before results.")
 	queryCmd.Flags().IntVar(&flagMaxResults, "max", 50,
 		"Maximum number of results to return.")
+	queryCmd.Flags().BoolVar(&flagDryRun, "dry-run", false,
+		"Translate and locally validate JQL without searching JIRA.")
 	rootCmd.AddCommand(queryCmd)
 }
 
 func runQuery(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load(flagUser, flagProject)
+	loadConfig := config.Load
+	if flagDryRun {
+		loadConfig = config.LoadTranslation
+	}
+	cfg, err := loadConfig(flagUser, flagProject)
 	if err != nil {
 		return err
 	}
 	setupLogging()
 
 	naturalQuery := args[0]
-	slog.Info("starting query", "input", naturalQuery)
+	if !flagDryRun {
+		slog.Info("starting query")
+	}
 
 	// Open the cache once and reuse it for the project-list warm-up and the
 	// result cache below. A warm-up never fails a query, so a cache-open error
@@ -71,50 +91,63 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	// fallback for anything it cannot parse -- folding the tenant's cached
 	// project list so human names like "Support" resolve to "SUP".
 	spinner := format.StatusPrinter("Translating query to JQL...")
-	projects := fetchProjectList(cfg, db)
-	result, err := llm.GenerateJQLWithProjects(context.Background(), cfg, naturalQuery, projects)
+	var projects []jira.Project
+	if flagDryRun {
+		projects = cachedProjectList(db)
+	} else {
+		projects = queryProjectLoader(cfg, db)
+	}
+	result, err := queryTranslator(context.Background(), cfg, naturalQuery, projects)
 	spinner.Stop()
 	if err != nil {
 		return fmt.Errorf("failed to generate JQL: %w", err)
 	}
-	slog.Info("JQL generated", "jql", result.JQL)
+	return finishQuery(cmd, cfg, result, db, flagDryRun, flagMaxResults, flagShowJQL, querySearcher)
+}
 
-	// Step 2: Execute JQL against JIRA
-	client, err := jira.NewClient(cfg)
-	if err != nil {
-		return err
+type querySearchFunc func(cfg *config.Config, query string, max int) ([]jira.Issue, error)
+
+func finishQuery(cmd *cobra.Command, cfg *config.Config, result *llm.QueryResult, db *cache.Cache, dryRun bool, max int, showJQL bool, search querySearchFunc) error {
+	if dryRun {
+		printTranslation(cmd.OutOrStdout(), cfg.JiraProject, result)
+		return nil
 	}
-
-	spinner = format.StatusPrinter("Searching JIRA...")
-	issues, err := client.SearchJQL(result.JQL, flagMaxResults)
+	spinner := format.StatusPrinter("Searching JIRA...")
+	issues, err := search(cfg, result.JQL, max)
 	spinner.Stop()
 	if err != nil {
 		pterm.FgRed.Printfln("JIRA search failed. The generated JQL may be invalid.")
 		pterm.FgLightWhite.Printfln("JQL: %s", result.JQL)
 		return fmt.Errorf("jira search: %w", err)
 	}
-
-	// Step 3: Cache results
 	if db != nil && len(issues) > 0 {
 		if err := db.UpsertIssues(cfg.JiraProject, issues); err != nil {
 			slog.Warn("failed to cache query results", "error", err)
 		}
 	}
-
-	// Step 4: Display results
-	//
-	// The deterministic fast path is a closed grammar and can be trusted
-	// silently; the LLM-routed tiers cannot, so their JQL is echoed without
-	// needing --show-jql. Either way, relative dates ("-365d") are resolved
-	// to absolute ones for this display only -- the JQL actually sent to
-	// JIRA above is untouched -- so an opaque rolling window is visible for
-	// what it is next to the request that produced it.
 	jqlDisplay, routeDisplay := "", ""
-	if flagShowJQL || result.Route != llm.RouteFastPath {
+	if showJQL || result.Route != llm.RouteFastPath {
 		jqlDisplay = jql.ResolveRelativeDatesForDisplay(result.JQL, time.Now())
 		routeDisplay = result.Route
 	}
 	format.DisplayQueryResults(issues, jqlDisplay, routeDisplay)
-
 	return nil
+}
+
+func printTranslation(w io.Writer, defaultProject string, result *llm.QueryResult) {
+	if result == nil {
+		return
+	}
+	validation := "valid"
+	if err := jql.Validate(result.JQL, jql.Options{DefaultProject: defaultProject}); err != nil {
+		validation = err.Error()
+	}
+	fmt.Fprintf(w, "Input: %s\n", result.Input)
+	fmt.Fprintf(w, "Normalized input: %s\n", result.NormalizedInput)
+	fmt.Fprintf(w, "Route: %s\n", result.Route)
+	if strings.TrimSpace(result.ParseError) != "" {
+		fmt.Fprintf(w, "Parse error: %s\n", result.ParseError)
+	}
+	fmt.Fprintf(w, "JQL: %s\n", result.JQL)
+	fmt.Fprintf(w, "Local validation: %s\n", validation)
 }

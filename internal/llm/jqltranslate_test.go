@@ -176,12 +176,18 @@ func TestFastPathSkipsProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Translate: %v", err)
 	}
-	want := `project = Support AND issuetype = Bug AND status NOT IN ("Done", "Closed", "Resolved") AND assignee = currentUser()`
+	want := `project = Support AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser()`
 	if res.JQL != want {
 		t.Errorf("fast path JQL = %q, want %q", res.JQL, want)
 	}
 	if res.Route != "fast_path" {
 		t.Errorf("route = %q, want fast_path", res.Route)
+	}
+	if res.Input != "my open bugs in Support" {
+		t.Errorf("input = %q, want exact original input", res.Input)
+	}
+	if res.NormalizedInput == "" {
+		t.Error("normalized input is empty on nl2jql route")
 	}
 	if n := atomic.LoadInt32(&fb.calls); n != 0 {
 		t.Errorf("provider was reached %d times on the fast path, want 0", n)
@@ -204,6 +210,9 @@ func TestFallbackUsedOnParseFailure(t *testing.T) {
 	}
 	if res.Route != "fallback" {
 		t.Errorf("route = %q, want fallback", res.Route)
+	}
+	if res.Input != "external bugs" || res.NormalizedInput == "" || res.ParseError == "" {
+		t.Errorf("fallback diagnostics = input %q normalized %q parse error %q", res.Input, res.NormalizedInput, res.ParseError)
 	}
 	if n := atomic.LoadInt32(&fb.calls); n != 1 {
 		t.Errorf("provider reached %d times, want 1", n)
@@ -243,7 +252,7 @@ func TestGenerateJQLFastPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateJQL: %v", err)
 	}
-	want := `project = Support AND issuetype = Bug AND status NOT IN ("Done", "Closed", "Resolved") AND assignee = currentUser()`
+	want := `project = Support AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser()`
 	if res.JQL != want {
 		t.Errorf("JQL = %q, want %q", res.JQL, want)
 	}
@@ -252,6 +261,82 @@ func TestGenerateJQLFastPath(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&calls); n != 0 {
 		t.Errorf("LLM reached %d times on the fast path, want 0", n)
+	}
+}
+
+func TestGenerateJQLOrderByFastPathAndScope(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_, _ = io.WriteString(w, openAIJSON(`status = Open`))
+	}))
+	defer srv.Close()
+	withOpenAIEnv(t, srv.URL)
+
+	tests := []struct {
+		query string
+		want  string
+	}{
+		{
+			query: "list all my open work items ordered by story points ascending.",
+			want:  `statusCategory != Done AND assignee = currentUser() AND project = PROJ ORDER BY "Story Points" ASC`,
+		},
+		{
+			query: "my bugs sorted by priority desc",
+			want:  `issuetype = Bug AND assignee = currentUser() AND project = PROJ ORDER BY priority DESC`,
+		},
+		{
+			query: "open tasks order by creation date ascending",
+			want:  `issuetype = Task AND statusCategory != Done AND project = PROJ ORDER BY created ASC`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.query, func(t *testing.T) {
+			res, err := GenerateJQL(context.Background(), &config.Config{JiraProject: "PROJ"}, tc.query)
+			if err != nil {
+				t.Fatalf("GenerateJQL: %v", err)
+			}
+			if res.Route != RouteFastPath {
+				t.Errorf("route = %q, want %q", res.Route, RouteFastPath)
+			}
+			if res.JQL != tc.want {
+				t.Errorf("JQL = %q, want %q", res.JQL, tc.want)
+			}
+		})
+	}
+	if n := atomic.LoadInt32(&calls); n != 0 {
+		t.Errorf("LLM reached %d times on the ORDER BY fast path, want 0", n)
+	}
+}
+
+func TestGenerateJQLInvalidOrderByUsesFallback(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_, _ = io.WriteString(w, openAIJSON(`status = Open`))
+	}))
+	defer srv.Close()
+	withOpenAIEnv(t, srv.URL)
+
+	for _, query := range []string{
+		"my issues ordered by sprint ascending",
+		"my issues ordered by priority upwards",
+	} {
+		t.Run(query, func(t *testing.T) {
+			res, err := GenerateJQL(context.Background(), &config.Config{JiraProject: "PROJ"}, query)
+			if err != nil {
+				t.Fatalf("GenerateJQL: %v", err)
+			}
+			if res.Route != RouteFallback {
+				t.Errorf("route = %q, want %q", res.Route, RouteFallback)
+			}
+			if res.ParseError == "" {
+				t.Error("ParseError is empty, want parser diagnostic")
+			}
+		})
+	}
+	if n := atomic.LoadInt32(&calls); n != 2 {
+		t.Errorf("LLM reached %d times for invalid ORDER BY queries, want 2", n)
 	}
 }
 
@@ -316,6 +401,9 @@ func TestGenerateJQLJSONFallbackExtractsDays(t *testing.T) {
 	if res.Route != RouteJSON {
 		t.Errorf("route = %q, want %q (JSON-prompt LLM path)", res.Route, RouteJSON)
 	}
+	if res.Input != "external bugs" || res.NormalizedInput != "" || res.ParseError == "" {
+		t.Errorf("JSON fallback diagnostics = input %q normalized %q parse error %q", res.Input, res.NormalizedInput, res.ParseError)
+	}
 	if n := atomic.LoadInt32(&calls); n != 2 {
 		t.Errorf("LLM reached %d times, want 2 (strict fallback + JSON fallback)", n)
 	}
@@ -346,6 +434,11 @@ func TestEnsureProjectScope(t *testing.T) {
 			"(issuetype = Bug OR issuetype = Story) AND project = SUP",
 		},
 		{
+			"closed-month alternatives remain grouped before scoping",
+			`(status WAS Closed BY currentUser() DURING ("2026/07/01", "2026/08/01") OR status WAS Closed BY currentUser() DURING ("2026/04/01", "2026/05/01"))`, "FIELDCTO",
+			`(status WAS Closed BY currentUser() DURING ("2026/07/01", "2026/08/01") OR status WAS Closed BY currentUser() DURING ("2026/04/01", "2026/05/01")) AND project = FIELDCTO`,
+		},
+		{
 			"OR already inside parentheses is not double-wrapped",
 			`status = Open AND (priority = High OR priority = Highest)`, "SUP",
 			`status = Open AND (priority = High OR priority = Highest) AND project = SUP`,
@@ -363,6 +456,11 @@ func TestEnsureProjectScope(t *testing.T) {
 
 		// FIELDCTO-2807: ORDER BY must stay the final clause; appending after it is
 		// a syntax error Jira rejects with HTTP 400.
+		{
+			"due-this-week sort keeps default scope before ORDER BY",
+			`assignee = currentUser() AND due >= startOfWeek() AND due <= endOfWeek() ORDER BY due ASC`, "FIELDCTO",
+			`assignee = currentUser() AND due >= startOfWeek() AND due <= endOfWeek() AND project = FIELDCTO ORDER BY due ASC`,
+		},
 		{
 			"predicate is inserted before ORDER BY",
 			"status = Closed ORDER BY created DESC", "SUP",
@@ -488,7 +586,7 @@ func TestGenerateJQLForDigestWindowlessFastPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateJQLForDigest: %v", err)
 	}
-	want := `project = Support AND issuetype = Bug AND status NOT IN ("Done", "Closed", "Resolved") AND assignee = currentUser()`
+	want := `project = Support AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser()`
 	if res.JQL != want {
 		t.Errorf("JQL = %q, want %q", res.JQL, want)
 	}
@@ -842,12 +940,27 @@ func TestGenerateJQLWithProjectsResolvesHumanName(t *testing.T) {
 		t.Fatalf("GenerateJQLWithProjects: %v", err)
 	}
 	// With the list, "Support" canonicalizes to its key "SUP" on the fast path.
-	want := `project = SUP AND issuetype = Bug AND status NOT IN ("Done", "Closed", "Resolved") AND assignee = currentUser()`
+	want := `project = SUP AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser()`
 	if res.JQL != want {
 		t.Errorf("JQL = %q, want %q", res.JQL, want)
 	}
 	if res.Route != RouteFastPath {
 		t.Errorf("route = %q, want fast_path (the list resolves the name without the LLM)", res.Route)
+	}
+}
+
+func TestGenerateJQLStoryPointsFastPathKeepsDefaultProjectScope(t *testing.T) {
+	const query = "list all my work items with story points > 3?"
+	res, err := GenerateJQL(context.Background(), &config.Config{JiraProject: "SUP"}, query)
+	if err != nil {
+		t.Fatalf("GenerateJQL: %v", err)
+	}
+	if res.Route != nl2jql.RouteFastPath {
+		t.Errorf("route = %q, want %q", res.Route, nl2jql.RouteFastPath)
+	}
+	want := `assignee = currentUser() AND "Story Points" > 3 AND project = SUP`
+	if res.JQL != want {
+		t.Errorf("JQL = %q, want %q", res.JQL, want)
 	}
 }
 
@@ -864,7 +977,7 @@ func TestGenerateJQLWithProjects_NilListKeepsHumanNameLiteral(t *testing.T) {
 		t.Errorf("route = %q, want fast_path", res.Route)
 	}
 	// No list/alias => "Support" is not canonicalized to "SUP".
-	want := `project = Support AND issuetype = Bug AND status NOT IN ("Done", "Closed", "Resolved") AND assignee = currentUser()`
+	want := `project = Support AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser()`
 	if res.JQL != want {
 		t.Errorf("JQL = %q, want %q (the name must stay literal without a list)", res.JQL, want)
 	}
@@ -885,7 +998,7 @@ func TestGenerateJQLForDigestWithProjectsResolvesHumanName(t *testing.T) {
 	}
 	// With the list, "Support" canonicalizes to its key "SUP" on the fast path,
 	// and a window-less query bakes no separate comment window.
-	want := `project = SUP AND issuetype = Bug AND status NOT IN ("Done", "Closed", "Resolved") AND assignee = currentUser()`
+	want := `project = SUP AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser()`
 	if res.JQL != want {
 		t.Errorf("JQL = %q, want %q", res.JQL, want)
 	}

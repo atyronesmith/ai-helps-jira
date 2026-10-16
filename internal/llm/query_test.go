@@ -52,3 +52,11 @@ func TestQuerySystemPrompt_DoesNotImplyMonthUnit(t *testing.T) {
 		t.Error("QuerySystemPrompt must mention startOfMonth()/endOfMonth() as the calendar-month alternative")
 	}
 }
+
+func TestQuerySystemPromptQuotesExplicitEmails(t *testing.T) {
+	for _, required := range []string{"quote the assignee value", "reserved JQL punctuation", `assignee = "jsmith@example.com"`} {
+		if !strings.Contains(QuerySystemPrompt, required) {
+			t.Errorf("QuerySystemPrompt is missing %q", required)
+		}
+	}
+}

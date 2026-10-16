@@ -77,15 +77,26 @@ fuller description, story points estimate, suggested labels.
 
 Type queries in plain English; a deterministic parser translates to JQL (an LLM handles the complex ones it cannot), then executes and shows results.
 
-**Command:** `jira-cli query "show me all critical bugs from last week"`
+**Commands:**
+
+```sh
+jira-cli query "show me all critical bugs from last week"
+jira-cli query --dry-run "show me all critical bugs from last week"
+jira-cli train-jql
+jira-cli train-jql report
+```
 
 **How it works:**
 1. User provides natural language query as positional arg
-2. Send to Claude with project context + JQL syntax reference
-3. Claude returns JQL string
-4. Execute JQL via existing `searchIssues()`
+2. Run the deterministic translator first, using an LLM fallback only when needed
+3. Validate the generated JQL locally
+4. Unless `--dry-run` was selected, execute JQL via existing `searchIssues()`
 5. Display results in standard issue table
 6. Optionally show the generated JQL for learning (`--show-jql`)
+
+`train-jql` uses the same production translation path but never executes the
+generated or corrected JQL. Reviews are appended to the private local corpus at
+`~/.jira-cli/nl2jql-feedback.jsonl` by default.
 
 **JIRA API:**
 - `POST /rest/api/3/search/jql` — existing `searchIssues()` method

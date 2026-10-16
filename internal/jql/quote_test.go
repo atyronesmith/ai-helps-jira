@@ -76,6 +76,9 @@ func TestQuoteIdent(t *testing.T) {
 		{"bare name", "John", "John"},
 		{"space requires quoting", "John Smith", `"John Smith"`},
 		{"embedded quote requires quoting", `John "JJ" Smith`, `"John \"JJ\" Smith"`},
+		{"email punctuation requires quoting", "aasmith@redhat.com", `"aasmith@redhat.com"`},
+		{"period requires quoting", "release.1", `"release.1"`},
+		{"reserved operator requires quoting", "OR", `"OR"`},
 		{"injection attempt", `" OR project = OTHER`, `"\" OR project = OTHER"`},
 	}
 	for _, tc := range cases {

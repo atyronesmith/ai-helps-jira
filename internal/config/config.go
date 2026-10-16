@@ -49,13 +49,22 @@ type Config struct {
 
 func Load(userOverride, projectOverride string) (*Config, error) {
 	_ = godotenv.Load() // ignore error if no .env file
+	return load(userOverride, projectOverride, true)
+}
 
-	required := []string{
-		"JIRA_SERVER",
-		"JIRA_EMAIL",
-		"JIRA_API_TOKEN",
+// LoadTranslation loads the configuration needed to translate natural language
+// into JQL. Jira credentials are optional because translation-only commands do
+// not make Jira API calls; a default project is still required unless overridden.
+func LoadTranslation(userOverride, projectOverride string) (*Config, error) {
+	_ = godotenv.Load() // ignore error if no .env file
+	return load(userOverride, projectOverride, false)
+}
+
+func load(userOverride, projectOverride string, requireJiraCredentials bool) (*Config, error) {
+	var required []string
+	if requireJiraCredentials {
+		required = append(required, "JIRA_SERVER", "JIRA_EMAIL", "JIRA_API_TOKEN")
 	}
-	// JIRA_PROJECT is only required if no override provided
 	if projectOverride == "" {
 		required = append(required, "JIRA_PROJECT")
 	}
@@ -73,7 +82,6 @@ func Load(userOverride, projectOverride string) (*Config, error) {
 	if project == "" {
 		project = getEnvOrSecret("JIRA_PROJECT")
 	}
-
 	return &Config{
 		JiraServer:      getEnvOrSecret("JIRA_SERVER"),
 		JiraEmail:       getEnvOrSecret("JIRA_EMAIL"),

@@ -3,8 +3,25 @@ package nl2jql
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
+
+func TestFallbackPromptDefinesOpenWorkSemantics(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildSystemPrompt(nil)
+	for _, required := range []string{
+		"open, unresolved, active, unfinished, or not-done work",
+		"statusCategory != Done",
+		"Never substitute an issuetype != ... predicate for a requested status filter",
+		"reserved punctuation (including @ and . in email addresses)",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Errorf("fallback prompt is missing %q", required)
+		}
+	}
+}
 
 // genJSON drives the fallback engine with a canned model response so the
 // JSON-envelope unwrapping (extractJQL) can be asserted in isolation, without a
