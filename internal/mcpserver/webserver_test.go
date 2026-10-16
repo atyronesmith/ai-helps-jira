@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/cache"
+	"github.com/atyronesmith/ai-helps-jira/internal/config"
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
 )
 
@@ -45,14 +46,11 @@ func TestQueryViewRendersSearchMetadata(t *testing.T) {
 	}
 }
 
-func TestLegacyQueryMetadataDoesNotInferExactTotal(t *testing.T) {
-	var old QueryResultData
-	if err := json.Unmarshal([]byte(`{"Issues":[{"key":"TEST-1"}],"Total":1}`), &old); err != nil {
-		t.Fatal(err)
-	}
-	info := old.Metadata()
+func TestMissingCurrentQueryMetadataRemainsUnknown(t *testing.T) {
+	data := QueryResultData{}
+	info := data.Metadata()
 	if info.Total != nil || info.TotalKind != jira.CountUnknown || info.Complete {
-		t.Fatalf("legacy metadata = %+v; want unknown, unverified metadata", info)
+		t.Fatalf("missing metadata = %+v; want unknown, unverified metadata", info)
 	}
 }
 
@@ -179,7 +177,7 @@ func TestIndexEscapesQueryTitle(t *testing.T) {
 
 func TestIndexRendersCacheStatus(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	db, err := cache.Open()
+	db, err := cache.OpenForConfig(&config.Config{JiraServer: "https://test.atlassian.net", JiraEmail: "test@test.com"})
 	if err != nil {
 		t.Fatalf("open cache: %v", err)
 	}

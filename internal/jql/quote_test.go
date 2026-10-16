@@ -99,7 +99,11 @@ func TestQuoteIdent_InjectionCannotEscapeScope(t *testing.T) {
 	rendered := "key = " + QuoteIdent(hostile)
 	// The hostile OR must now be inside the quoted literal, not a top-level
 	// keyword, so a scan for a top-level OR must find nothing.
-	if idx := TopLevelKeywordIndex(BlankQuotedLiterals(rendered), "OR"); idx >= 0 {
+	tree, err := Parse(rendered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, escaped := tree.Where.(Or); escaped {
 		t.Errorf("hostile OR escaped quoting in %q", rendered)
 	}
 }
@@ -110,7 +114,11 @@ func TestQuote_InjectionCannotEscapeScope(t *testing.T) {
 	if err := Validate(rendered, Options{DefaultProject: "FIELDCTO"}); err != nil {
 		t.Fatalf("expected quoted JQL to validate, got: %v", err)
 	}
-	if idx := TopLevelKeywordIndex(BlankQuotedLiterals(rendered), "OR"); idx >= 0 {
+	tree, err := Parse(rendered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, escaped := tree.Where.(Or); escaped {
 		t.Errorf("hostile OR escaped quoting in %q", rendered)
 	}
 }

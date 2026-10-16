@@ -243,7 +243,8 @@ func (h *Handlers) HandleGetIssue(ctx context.Context, req mcp.CallToolRequest) 
 	// which keeps it inside the key clause instead of letting it inject a
 	// top-level OR (FIELDCTO-2812).
 	var knownUpdated time.Time
-	if fresh, searchErr := client.SearchJQL(fmt.Sprintf("key = %s", jql.QuoteIdent(key)), 1); searchErr == nil && len(fresh) == 1 {
+	keyQuery := (&jql.Query{Where: jql.Compare("key", "=", jql.QuoteIdent(key))}).Render()
+	if fresh, searchErr := client.SearchJQL(keyQuery, 1); searchErr == nil && len(fresh) == 1 {
 		knownUpdated = fresh[0].Updated
 	} else {
 		knownUpdated = time.Now()

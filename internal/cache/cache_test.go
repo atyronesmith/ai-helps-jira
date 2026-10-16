@@ -16,8 +16,8 @@ func openTestCache(t *testing.T) *Cache {
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
 	}
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate: %v", err)
+	if err := initializeSchema(db); err != nil {
+		t.Fatalf("initialize schema: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	return &Cache{db: db}

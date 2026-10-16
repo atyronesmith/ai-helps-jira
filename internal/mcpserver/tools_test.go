@@ -36,7 +36,7 @@ func newTestHandlers(t *testing.T) *Handlers {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 
-	db, err := cache.Open()
+	db, err := cache.OpenManager()
 	if err != nil {
 		t.Fatalf("open cache: %v", err)
 	}
@@ -250,8 +250,8 @@ func TestAllToolDefsHaveDescriptions(t *testing.T) {
 	if _, ok := queryTool.InputSchema.Properties["natural_query"]; !ok {
 		t.Error("jira_query schema is missing natural_query")
 	}
-	if _, ok := queryTool.InputSchema.Properties["query"]; !ok {
-		t.Error("jira_query schema is missing the legacy query alias")
+	if _, ok := queryTool.InputSchema.Properties["query"]; ok {
+		t.Error("jira_query schema still exposes the legacy query alias")
 	}
 	if _, ok := queryTool.InputSchema.Properties["exact_count"]; !ok {
 		t.Error("jira_query schema is missing exact_count")
@@ -666,7 +666,7 @@ func TestHandlersMissingConfig(t *testing.T) {
 	}
 	assertIsError(t, result)
 
-	result, err = h.HandleQuery(context.Background(), makeRequest(map[string]any{"query": "test"}))
+	result, err = h.HandleQuery(context.Background(), makeRequest(map[string]any{"natural_query": "test"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -834,7 +834,7 @@ func TestHandleQuery_TranslationErrorSurfaces(t *testing.T) {
 		return nil, errors.New("translation boom")
 	}
 
-	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{"query": "my open bugs"}))
+	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{"natural_query": "my open bugs"}))
 	if err != nil {
 		t.Fatalf("HandleQuery returned err: %v", err)
 	}
@@ -1045,26 +1045,28 @@ func TestLooksLikeJQL(t *testing.T) {
 	}
 }
 
-func TestHandleQuery_AcceptsLegacyQueryArgument(t *testing.T) {
+func TestHandleQuery_RejectsLegacyQueryArgumentBeforeTranslation(t *testing.T) {
 	h := newTestHandlers(t)
-	setTestFullEnv(t)
-	const original = "Find tickets where the status is closed and assigned to me."
-	var got string
-	h.translate = func(_ context.Context, _ *config.Config, query string) (*llm.QueryResult, error) {
-		got = query
-		return nil, errors.New("stop after translation")
+	t.Setenv("JIRA_SERVER", "")
+	t.Setenv("JIRA_EMAIL", "")
+	t.Setenv("JIRA_API_TOKEN", "")
+	t.Setenv("JIRA_PROJECT", "")
+	var calls int
+	h.translate = func(_ context.Context, _ *config.Config, _ string) (*llm.QueryResult, error) {
+		calls++
+		return nil, errors.New("translator must not be called")
 	}
 
-	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{"query": original}))
+	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{"query": "open bugs"}))
 	if err != nil {
 		t.Fatalf("HandleQuery returned err: %v", err)
 	}
 	assertIsError(t, res)
-	if got != original {
-		t.Errorf("legacy query reached translator as %q, want exact input %q", got, original)
+	if calls != 0 {
+		t.Errorf("translator called %d times for legacy-only arguments, want 0", calls)
 	}
 	if len(h.store.List()) != 0 {
-		t.Error("stored result despite translation failure")
+		t.Error("stored result despite rejecting legacy-only arguments")
 	}
 }
 
@@ -1197,8 +1199,8 @@ func TestHandleQuery_TerminalAtDisplayLimitIsComplete(t *testing.T) {
 	}
 
 	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{
-		"query":       "open bugs",
-		"max_results": float64(3),
+		"natural_query": "open bugs",
+		"max_results":   float64(3),
 	}))
 	if err != nil {
 		t.Fatalf("HandleQuery returned err: %v", err)
@@ -1289,7 +1291,7 @@ func TestHandleQuery_SearchErrorSurfacesJiraMessageAndJQL(t *testing.T) {
 		return &llm.QueryResult{JQL: badJQL, Route: "fast_path"}, nil
 	}
 
-	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{"query": "broken query"}))
+	res, err := h.HandleQuery(context.Background(), makeRequest(map[string]any{"natural_query": "broken query"}))
 	if err != nil {
 		t.Fatalf("HandleQuery returned err: %v", err)
 	}

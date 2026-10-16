@@ -1,6 +1,9 @@
 package cache
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,7 +13,7 @@ import (
 
 func TestScopeIsolationAndCanonicalEffectiveOwner(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	manager, err := Open()
+	manager, err := OpenManager()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,19 +83,26 @@ func TestScopeIsolationAndCanonicalEffectiveOwner(t *testing.T) {
 	}
 }
 
-func TestScopeURLNormalizationAndLegacyCacheNotAdopted(t *testing.T) {
+func TestScopeURLNormalizationAndOldCachePathsUntouched(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	legacy, err := Open()
+	legacyDir := filepath.Join(home, ".jira-cli")
+	if err := os.MkdirAll(filepath.Join(legacyDir, "scopes"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(legacyDir, "cache.db")
+	cfg := &config.Config{JiraServer: "HTTPS://JIRA.EXAMPLE.TEST/", JiraEmail: "USER@example.test"}
+	name, err := scopeName(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := legacy.UpsertIssueDetail(&jira.IssueDetail{Key: "APP-1", Summary: "legacy", Updated: time.Now()}); err != nil {
-		t.Fatal(err)
+	oldScoped := filepath.Join(legacyDir, "scopes", name+".db")
+	for _, path := range []string{legacy, oldScoped} {
+		if err := os.WriteFile(path, []byte("preserve"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	legacy.Close()
-
-	first := &config.Config{JiraServer: "HTTPS://JIRA.EXAMPLE.TEST/", JiraEmail: "USER@example.test"}
+	first := cfg
 	second := &config.Config{JiraServer: "https://jira.example.test", JiraEmail: "user@example.test"}
 	a, err := OpenForConfig(first)
 	if err != nil {
@@ -107,8 +117,14 @@ func TestScopeURLNormalizationAndLegacyCacheNotAdopted(t *testing.T) {
 	if a.scopeID != b.scopeID {
 		t.Fatal("normalized site/account did not share scope")
 	}
-	if _, ok := a.GetIssueDetail("APP-1", time.Time{}); ok {
-		t.Fatal("scoped cache adopted unattributed legacy cache data")
+	if got := a.Path(); !strings.Contains(got, filepath.Join(".jira-cli", "cache-v1")) {
+		t.Fatalf("new scope path=%q", got)
+	}
+	for _, path := range []string{legacy, oldScoped} {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != "preserve" {
+			t.Fatalf("old path %s changed: %q %v", path, got, err)
+		}
 	}
 }
 

@@ -82,11 +82,11 @@ func TestRoutingExpectations(t *testing.T) {
 			wantJQL:   "status = Open",
 		},
 		{
-			name:      "a normalised raw-JQL fragment is too strict for the parser",
+			name:      "typed date comparisons stay deterministic",
 			query:     "my open bugs in SUP created >= -3d",
-			wantRoute: "fallback",
-			wantCalls: 1,
-			wantJQL:   "status = Open",
+			wantRoute: RouteFastPath,
+			wantCalls: 0,
+			wantJQL:   "project = SUP AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser() AND created >= -3d",
 		},
 	}
 
@@ -162,7 +162,7 @@ func TestDueThisWeekQuestionUsesFastPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Translate: %v", err)
 	}
-	want := `assignee = currentUser() AND due >= startOfWeek() AND due <= endOfWeek() ORDER BY due ASC`
+	want := `due >= startOfWeek() AND due < startOfWeek("+1")`
 	if result.Route != RouteFastPath {
 		t.Errorf("route = %q, want %q", result.Route, RouteFastPath)
 	}
@@ -172,8 +172,8 @@ func TestDueThisWeekQuestionUsesFastPath(t *testing.T) {
 	if result.Input != query {
 		t.Errorf("input = %q, want exact input %q", result.Input, query)
 	}
-	if result.NormalizedInput != "my dueweek" {
-		t.Errorf("normalized input = %q, want %q", result.NormalizedInput, "my dueweek")
+	if result.NormalizedInput != `List jiras that are due >= startOfWeek() AND due < startOfWeek("+1")?` {
+		t.Errorf("normalized input = %q, want %q", result.NormalizedInput, `List jiras that are due >= startOfWeek() AND due < startOfWeek("+1")?`)
 	}
 	if got := atomic.LoadInt32(&provider.calls); got != 0 {
 		t.Errorf("provider called %d times, want 0", got)
@@ -365,7 +365,7 @@ func TestTranslateExplicitEmailAndCompoundOpenPhrase(t *testing.T) {
 		fail: errors.New("explicit email and open status must be handled deterministically"),
 	}
 	tr := newRoutingTranslator(t, provider)
-	result, err := tr.Translate(context.Background(), "all issues assigned to jsmith@example.com that are not closed or resolved, in PROJ")
+	result, err := tr.Translate(context.Background(), "all issues assigned to jsmith@example.com that are not closed and not resolved, in PROJ")
 	if err != nil {
 		t.Fatalf("Translate: %v", err)
 	}
@@ -384,21 +384,18 @@ func TestTranslateExplicitEmailAndCompoundOpenPhrase(t *testing.T) {
 	}
 }
 
-// TestFallbackReceivesNormalizedInput proves the "cleaner input than before"
-// promise of the Phase-4 example: the normalizer rewrites the natural-language
-// date "created in the last 3 days" into the strict JQL fragment "created >=
-// -3d", which is what trips the parser and routes the query to the LLM. The
-// fallback therefore receives the normalised text, not the raw query.
+// An unsupported custom constraint still reaches fallback with normalization
+// diagnostics intact; supported date bounds alone no longer require a provider.
 func TestFallbackReceivesNormalizedInput(t *testing.T) {
 	t.Parallel()
 	p := &recordingProvider{jql: "status = Open"}
 	tr := newRoutingTranslator(t, p)
 
-	_, err := tr.Translate(context.Background(), "my open bugs in SUP created in the last 3 days")
+	_, err := tr.Translate(context.Background(), "my open bugs in SUP created in the last 3 days with custom constraint")
 	if err != nil {
 		t.Fatalf("Translate: %v", err)
 	}
-	want := "my open bugs in SUP created >= -3d"
+	want := "my open bugs in SUP created >= -3d AND created <= now() with custom constraint"
 	if p.lastInput != want {
 		t.Errorf("fallback received %q, want normalised %q", p.lastInput, want)
 	}

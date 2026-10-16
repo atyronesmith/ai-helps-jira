@@ -3,6 +3,8 @@ package jira
 import (
 	"strings"
 	"testing"
+
+	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 )
 
 func TestWeeklyActivityJQL(t *testing.T) {
@@ -16,8 +18,16 @@ func TestWeeklyActivityJQL(t *testing.T) {
 	want := `project = FIELDCTO AND (status CHANGED BY currentUser() AFTER "2026-08-10" BEFORE "2026-08-18"` +
 		` OR (worklogAuthor = currentUser() AND worklogDate >= "2026-08-10" AND worklogDate <= "2026-08-17"))` +
 		` ORDER BY updated DESC`
-	if got != want {
-		t.Errorf("WeeklyActivityJQL()\n got: %s\nwant: %s", got, want)
+	gotQuery, err := jql.Parse(got)
+	if err != nil {
+		t.Fatalf("parse generated query: %v", err)
+	}
+	wantQuery, err := jql.Parse(want)
+	if err != nil {
+		t.Fatalf("parse expected query: %v", err)
+	}
+	if gotQuery.Render() != wantQuery.Render() {
+		t.Errorf("WeeklyActivityJQL() has a different normalized JQL shape\n got: %s\nwant: %s", gotQuery.Render(), wantQuery.Render())
 	}
 }
 

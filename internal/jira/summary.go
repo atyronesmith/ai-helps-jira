@@ -18,7 +18,11 @@ import (
 func (c *Client) FetchSummary(ctx context.Context, invalidated []string) ([]BoardInfo, []Issue, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	q := fmt.Sprintf("project = %s AND assignee = %s AND statusCategory != Done ORDER BY priority ASC, status ASC", jql.QuoteIdent(c.project), c.assignee)
+	q := (&jql.Query{Where: jql.All(
+		jql.Compare("project", "=", jql.QuoteIdent(c.project)),
+		jql.Compare("assignee", "=", c.assignee),
+		jql.Compare("statusCategory", "!=", "Done"),
+	), OrderBy: []jql.Sort{{Field: "priority", Direction: "ASC"}, {Field: "status", Direction: "ASC"}}}).Render()
 	r, err := c.SearchJQLResult(ctx, q, SearchOptions{Limit: 10000, PageSize: 100, MaxPages: 100, ExactCount: true})
 	if err != nil {
 		return nil, nil, err
@@ -324,7 +328,12 @@ func (c *Client) fetchSummaryBoards(ctx context.Context, _ string) ([]BoardInfo,
 				return nil, fmt.Errorf("list active sprints for board %s: %w", b.Name, err)
 			}
 			for _, s := range sprints {
-				q := fmt.Sprintf("project = %s AND assignee = %s AND sprint = %d AND statusCategory != Done ORDER BY priority ASC", jql.QuoteIdent(c.project), c.assignee, s.ID)
+				q := (&jql.Query{Where: jql.All(
+					jql.Compare("project", "=", jql.QuoteIdent(c.project)),
+					jql.Compare("assignee", "=", c.assignee),
+					jql.Compare("sprint", "=", fmt.Sprint(s.ID)),
+					jql.Compare("statusCategory", "!=", "Done"),
+				), OrderBy: []jql.Sort{{Field: "priority", Direction: "ASC"}}}).Render()
 				sr, err := c.SearchJQLResult(ctx, q, SearchOptions{Limit: 10000, PageSize: 100, MaxPages: 100, ExactCount: true})
 				if err != nil {
 					return nil, fmt.Errorf("fetch sprint %s: %w", s.Name, err)
@@ -341,7 +350,10 @@ func (c *Client) fetchSummaryBoards(ctx context.Context, _ string) ([]BoardInfo,
 				result = append(result, BoardInfo{Name: b.Name, BoardType: "scrum", SprintName: s.Name, Issues: sr.Issues})
 			}
 		} else if strings.EqualFold(b.Type, "kanban") {
-			q := fmt.Sprintf("assignee = %s AND statusCategory != Done ORDER BY priority ASC, status ASC", c.assignee)
+			q := (&jql.Query{Where: jql.All(
+				jql.Compare("assignee", "=", c.assignee),
+				jql.Compare("statusCategory", "!=", "Done"),
+			), OrderBy: []jql.Sort{{Field: "priority", Direction: "ASC"}, {Field: "status", Direction: "ASC"}}}).Render()
 			if err := jql.Validate(q, jql.Options{}); err != nil {
 				return nil, err
 			}

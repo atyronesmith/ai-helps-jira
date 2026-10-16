@@ -12,12 +12,13 @@ import (
 )
 
 type QueryResult struct {
-	JQL             string `json:"jql"`
-	Route           string `json:"route,omitempty"`
-	Days            int    `json:"days,omitempty"` // optional time window extracted from natural language
-	Input           string `json:"input,omitempty"`
-	NormalizedInput string `json:"normalized_input,omitempty"`
-	ParseError      string `json:"parse_error,omitempty"`
+	JQL             string           `json:"jql"`
+	Route           string           `json:"route,omitempty"`
+	Mode            nl2jql.QueryMode `json:"mode,omitempty"`
+	Days            int              `json:"days,omitempty"` // optional time window extracted from natural language
+	Input           string           `json:"input,omitempty"`
+	NormalizedInput string           `json:"normalized_input,omitempty"`
+	ParseError      string           `json:"parse_error,omitempty"`
 }
 
 // QueryResult.Route values, one per translation tier, so logs and the web
@@ -66,7 +67,7 @@ Rules:
 4. Use ORDER BY when it improves readability (e.g. priority ASC, created DESC).
 5. If the user mentions a time window for viewing changes or activity (e.g. "last day", "past 2 weeks", "since Monday"), include a "days" field with the number of days. Do NOT put time constraints in the JQL for this — the days field controls a separate comment filter. Only use date constraints in JQL when filtering by issue creation/update dates. Omit the "days" field if no time window is mentioned.
 6. Requests for open, unresolved, active, unfinished, or not-done work compile to statusCategory != Done. Never substitute an issuetype != ... predicate for a requested status filter.
-7. JQL is left-to-right with no implicit operator precedence like SQL: AND and OR are evaluated strictly left to right unless you add parentheses. ALWAYS wrap any OR-combined group in parentheses when it is combined with AND, e.g. project = X AND assignee = currentUser() AND (status = "To Do" OR status = "In Progress") — never emit project = X AND assignee = currentUser() AND status = "To Do" OR status = "In Progress", which silently drops the project/assignee scoping from the OR branches.
+7. JQL evaluates AND before OR. Add parentheses when needed to preserve the user's intended grouping, especially when an OR group is combined with AND: project = X AND assignee = currentUser() AND (status = "To Do" OR status = "In Progress").
 8. Respond ONLY with valid JSON (no markdown fences): {"jql": "your JQL here"} or {"jql": "your JQL here", "days": 1}`
 
 // generateJQLLLM is the original "always LLM" JQL translation: it builds the
@@ -110,7 +111,10 @@ func generateJQLLLM(ctx context.Context, cfg *config.Config, naturalQuery string
 	// being obeyed: a model that omits the project predicate still gets the
 	// default appended, and an explicit project is preserved (ensureProjectScope
 	// is idempotent, so it never double-scopes).
-	result.JQL = ensureProjectScope(result.JQL, cfg)
+	result.JQL, err = ensureProjectScope(result.JQL, cfg)
+	if err != nil {
+		return nil, err
+	}
 	result.Route = RouteJSON
 	result.Input = naturalQuery
 	slog.Info("generated JQL", "jql", result.JQL, "route", result.Route)

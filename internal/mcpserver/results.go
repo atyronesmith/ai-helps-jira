@@ -32,8 +32,8 @@ type QueryResultData struct {
 	QueriedAt   time.Time
 }
 
-// Metadata normalizes results saved before search metadata existed. Historical
-// row counts and numeric Total fields are not evidence of an exact total.
+// Metadata keeps missing or incomplete metadata explicitly unknown. Returned
+// row counts alone never establish a matching total.
 func (q *QueryResultData) Metadata() jira.SearchInfo {
 	if q == nil {
 		return jira.SearchInfo{TotalKind: jira.CountUnknown}

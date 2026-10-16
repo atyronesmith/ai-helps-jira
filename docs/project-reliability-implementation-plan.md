@@ -1,8 +1,8 @@
 # Project Reliability Implementation Plan
 
-Status: Phases 0–2 implemented and locally verified on 2026-10-16.
-Phases 3–7 remain proposed. Hosted CI execution remains pending; the Phase 2 live
-Jira oracle is unavailable without explicitly exported credentials and fixtures.
+Status: Phases 0–3 implemented and locally verified on 2026-10-16.
+Phases 4–7 remain proposed. Hosted CI execution remains pending; live Jira
+validation is unavailable without explicitly exported credentials and fixtures.
 Review date: 2026-10-16.
 
 ## Intent
@@ -14,7 +14,7 @@ consistent behavior before expanding the feature roadmap.
 
 This plan captures the project review of the current working tree, including
 uncommitted work. Phase 0 implementation was explicitly requested on 2026-10-16.
-Phases 1 and 2 were subsequently authorized. Later phases still require authorization.
+Phases 1–3 were subsequently authorized. Phases 4–7 still require authorization.
 Jira mutations and deployments are outside this delivery.
 
 ## Keep
@@ -405,6 +405,151 @@ done` does not silently produce an impossible filter; mixed type/status Boolean
 groups; user overrides; date paraphrases and boundaries; multiple sort keys;
 project scope around OR; terminal ORDER BY; parse/render/parse equivalence and
 fuzz cases. Compare normalized structure where formatting is immaterial.
+
+### Phase 3 implementation contract
+
+Implemented on 2026-10-16 against Phase 2 commit `6bcbb59`. Root retained
+semantic decisions, replaced the initial parser after review, integrated all
+changes, and performed final verification. Luna 6 implemented bounded generator
+migration, translation boundary work, and additional structural tests.
+
+- `internal/nl2jql` now separates the English grammar from `QueryPlan`: typed
+  Boolean intent, effective/self and explicit ownership, field comparisons,
+  date bounds/windows, closing-transition history, ordered sort keys, and
+  list/count/recommendation mode. Compilation creates the shared JQL tree.
+  Unsupported vocabulary retains conservative LLM fallback; recognized
+  ambiguity returns `ErrAmbiguousIntent` through both ordinary and digest routes
+  without invoking a provider to guess.
+- `AND` and `OR` are grammar tokens. Same-field type enumerations retain `IN`;
+  `open or done` retains the category/status alternatives. Distinct status
+  conjunctions, conflicting owners, ambiguous field associations, and mixed
+  ungrouped alternatives require clarification. Explicit groups such as
+  `my (open bugs or done tasks) in PROJ` preserve both branches and their common
+  filters. `NOT`, numeric/date alternatives, duplicate predicates, and multiple
+  comma-separated sort keys compose structurally. Both formerly skipped
+  ambiguous-status regressions are enabled and pass.
+- `my`, `me`, and first-person closing actors use the configured effective user
+  (`Config.Assignee()`) in both fresh and cached production translators. An
+  explicit assignee remains explicit. A generic due-date request no longer
+  invents ownership or sorting. Recommendation framing preserves its complete
+  filter and records the mode; the host still owns recommendation reasoning.
+- Date fields `created`, `updated`, `resolved`, and `due` become typed bounds.
+  Explicit last/past N days or weeks are rolling inclusive lower bounds through
+  inclusive `now()`. Today/yesterday, this/last week, and this/last month are
+  calendar windows `[start, next start)`. `last <weekday>` denotes the complete
+  most recent previous calendar day, including seven days earlier on that same
+  weekday. Vague counts, arbitrary month-to-day approximations, and assumed
+  sprint lengths are rejected. Jira evaluates date functions and date literals
+  in its configured user timezone/calendar, including its week-start setting.
+  The injected/default process clock supplies named-weekday and current-year
+  context and must align with that Jira timezone; no tenant timezone is fetched.
+- Currently Closed status, resolution-date filtering, and an actor closing an
+  issue remain different intents. Named month alternatives compose a typed
+  `status CHANGED TO Closed BY <effective user>` history expression, with
+  `DURING (start, next-month-start) BEFORE next-month-start` on the same event.
+  This expresses an inclusive lower and exclusive upper calendar bound without
+  rounding away the final minute. Leap February, December rollover, duplicate
+  months, current year, additional type/project filters, and explicit actor
+  ambiguity are covered. Tenant history-operator and timestamp-boundary behavior
+  remains unverified without the live oracle; local tests establish requested
+  structure, not Jira event-matching behavior.
+- `internal/jql` now owns `Clause`, `And`, `Or`, `Not`, `Query`, sorting, a real
+  participle grammar, canonical rendering, and tree-based validation. Atomic
+  clauses support comparisons/text, membership, null checks, functions, quoted
+  and custom fields, and WAS/CHANGED history. `Or` under `And` is grouped; sorts
+  render once at the end. Existing quote helpers remain canonical. Obsolete
+  Boolean/order/quote-balance validation scanners and their scanner-only tests
+  were removed; literal blanking remains solely for the separate display helper.
+- The fresh generator inventory covers open/delta searches, sprint/board
+  queries, Phase 2 complete summary searches, weekly activity, releases,
+  parent/child searches, similarity candidate searches, CLI/MCP identity
+  refetches, deterministic translation, and both existing provider result paths.
+  Active generators compose shared expressions. The provider paths parse
+  external JQL and scope it structurally; malformed generated JQL is terminal.
+  Local execution guards, the key/id exemption, and the separately scoped
+  Kanban guard remain. Parent searches now also validate locally without
+  imposing a default project on the parent relationship.
+- Project scoping evaluates the whole Boolean tree. A fully explicit positive
+  scope is preserved; when no project predicate was supplied the default is
+  conjoined around the entire expression before ordering. Explicit negative or
+  partially scoped project expressions are rejected, rather than silently
+  narrowed into a different or contradictory question. Explicit all-project natural-language requests
+  require named project choices under the existing scope invariant. Production
+  cache synchronization, pagination/count metadata, mutation fences, and weekly
+  fingerprints from Phase 2 remain unchanged.
+
+### Phase 3 verification results
+
+- **Passed:** focused intent/translation regressions, both formerly skipped
+  ambiguous-status cases, all existing Phase 2 behavioral regressions, actual
+  generated-query shapes, AST equality round trips, malformed input and hostile
+  literal cases, ownership override routing, and zero provider calls for
+  supported/ambiguous deterministic intent.
+- **Passed:** `go build ./...`, `go vet ./...`, final integrated
+  `go test -race -count=1 -timeout=120s ./...`, `make doc-lint`, formatting,
+  and `git diff --check`. The suite includes the actual-output
+  `TestGeneratedJQLCorpus` and all CLI/MCP/cache regressions.
+  An initial integrated run caught a stale canonical-order expectation and
+  nonstandard participle struct tags rejected by vet; both were corrected
+  before the final checks.
+- **Passed:** ten-second runs of both `FuzzParseRenderRoundTrip` (579,731
+  executions) and `FuzzQuotedLiteralRoundTrip` (219,114 executions), with
+  normalized AST equality checks. `go test -race -tags=oracle -count=1
+  ./internal/jqloracle` passed its local protocol fixtures; this is not live
+  tenant verification. `go test -tags=oracle ./... -run '^$'` compiled the entire
+  tagged corpus without running live tests. Final build/vet/race runs completed without cache warnings
+  using approved execution; initial sandbox listener/cache restrictions did not
+  count as passing checks.
+- **Live strict Jira oracle: SKIPPED, not passed.**
+  `python3 scripts/run-jql-oracle.py` exited 2: all seven required exported
+  credential/fixture variables were absent. No credential discovery or `.env`
+  loading was used to enable verification. The expanded oracle corpus checks
+  `errors[]` and parsed structure, but tenant vocabulary, history-boundary
+  behavior, and hosted CI remain unverified. This does not close FIELDCTO-2813
+  or its parent epic; its external completion requirements remain pending.
+
+The original untracked `test.sh` and `docs/HARNESS-QWEN-REVERT.md` are preserved.
+No commits, deployments, production Jira searches, mutations, or ticket-status
+changes were performed. Phase 4 fallback consolidation and tenant metadata
+resolution remain separate work; arbitrary LLM output has structural validation,
+not a proof of semantic agreement with every unsupported English request.
+
+### Preproduction database simplification (2026-10-16)
+
+At the user's explicit request, historical database compatibility is removed.
+This supersedes Phase 2's migration implementation details above, while retaining
+its synchronization, scoping, invalidation, and fingerprint behavior.
+
+- Current cache databases use the fresh `~/.jira-cli/cache-v1/<scope-hash>.db`
+  namespace and schema format 1, created directly in a transaction. There is no
+  v1–v8 upgrade chain, duplicate-column exception, or unscoped `cache.Open()` API.
+  Concurrent first opens remain serialized; reopening the current format keeps
+  its data. Initialization failure rolls back, and unsupported versions fail
+  without rewriting data.
+- Old `cache.db` and `scopes/*.db` files are neither opened nor converted. No
+  existing developer files or container volumes were deleted. On first use of
+  the new format the cache is cold and offline summaries require an online
+  reconciliation. The mounted volume still persists across container replacement.
+- The deprecated MCP `jira_query.query` argument alias is removed; clients must
+  use `natural_query` with the user's original wording. This does not conflate
+  database compatibility with the separately planned provider-fallback
+  consolidation in Phase 4.
+- Dashboard result-history lifecycle is unchanged: the files live in the volume,
+  but PID naming and stale-process cleanup still prevent a durability guarantee.
+  Stable instance ownership/retention remains Phase 6 work.
+
+**Verification passed:** current-schema create/reopen and close/open persistence,
+eight concurrent first opens, initialization rollback, unsupported schema
+versions (-1, 2, and 8) remaining unchanged, old-path sentinel preservation,
+scoped cache and adapter regressions, and rejection of the removed query alias
+before translation/storage. Final `go test -race -count=1 -timeout=120s ./...`,
+`go build ./...`, `go vet ./...`, `make doc-lint`, formatting and
+`git diff --check` passed. These tests use temporary directories and mock servers;
+no real container lifecycle or volume-deletion test was run.
+
+No commit, deployment, container replacement, volume removal, or Jira operation
+was performed in this cleanup. The prior Phase 3 changes and both untracked
+harness artifacts remain preserved.
 
 ## Phase 4: One bounded fallback and tenant metadata
 

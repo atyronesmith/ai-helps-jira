@@ -31,34 +31,15 @@ type Cache struct {
 	lookupNext    int
 }
 
-func Open() (*Cache, error) {
-	dir := filepath.Join(os.Getenv("HOME"), ".jira-cli")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create cache dir: %w", err)
-	}
-	dbPath := filepath.Join(dir, "cache.db")
-
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("open cache db: %w", err)
-	}
-
-	if err := migrate(db); err != nil {
-		db.Close()
-		return nil, err
-	}
-	slog.Info("cache opened", "path", dbPath)
-	return &Cache{db: db}, nil
-}
-
 func (c *Cache) Close() error {
 	_, err := c.closeScoped()
 	return err
 }
 
-func migrate(db *sql.DB) error {
-	// Acquire the SQLite writer lock before inspecting the version, so two
-	// first-open operations cannot race to apply the same schema migration.
+// initializeSchema creates the current cache schema in one transaction. The
+// writer lock is acquired before reading user_version so concurrent first opens
+// cannot both inspect an empty database and race to initialize it.
+func initializeSchema(db *sql.DB) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -66,96 +47,50 @@ func migrate(db *sql.DB) error {
 	defer tx.Rollback()
 	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS cache_schema_lock (id INTEGER PRIMARY KEY);
  INSERT OR IGNORE INTO cache_schema_lock(id) VALUES(1)`); err != nil {
-		return fmt.Errorf("lock cache migrations: %w", err)
+		return fmt.Errorf("lock cache initialization: %w", err)
 	}
 	var version int
 	if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read cache schema version: %w", err)
 	}
-	if version > 8 {
-		return fmt.Errorf("cache schema version %d is newer than supported version 8", version)
+	if version != 0 && version != 1 {
+		return fmt.Errorf("unsupported cache schema version %d; expected current format 1", version)
 	}
 	if version == 0 {
-		_, err := tx.Exec(`CREATE TABLE issues (key TEXT PRIMARY KEY, project TEXT NOT NULL, status TEXT NOT NULL, priority TEXT NOT NULL, summary TEXT NOT NULL, updated DATETIME NOT NULL, fetched_at DATETIME NOT NULL);
- CREATE TABLE issue_boards (issue_key TEXT NOT NULL, board TEXT NOT NULL, board_type TEXT NOT NULL, sprint TEXT NOT NULL DEFAULT '', PRIMARY KEY(issue_key,board));
- CREATE TABLE fetch_log (project TEXT NOT NULL, assignee TEXT NOT NULL, fetched_at DATETIME NOT NULL);
- CREATE INDEX idx_issues_project ON issues(project); CREATE INDEX idx_fetch_log_project ON fetch_log(project,assignee);`)
-		if err != nil {
-			return fmt.Errorf("migrate cache v1: %w", err)
+		for _, statement := range currentSchemaStatements {
+			if _, err := tx.Exec(statement); err != nil {
+				return fmt.Errorf("initialize cache schema: %w", err)
+			}
 		}
-		version = 1
-	}
-	for next := version + 1; next <= 8; next++ {
-		if err := migrateVersion(tx, next); err != nil {
-			return fmt.Errorf("migrate v%d: %w", next, err)
+		if _, err := tx.Exec("PRAGMA user_version = 1"); err != nil {
+			return fmt.Errorf("set cache schema version: %w", err)
 		}
-	}
-	if _, err := tx.Exec("PRAGMA user_version = 8"); err != nil {
-		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit cache migrations: %w", err)
+		return fmt.Errorf("commit cache initialization: %w", err)
 	}
 	return nil
 }
 
-func migrateVersion(tx *sql.Tx, v int) error {
-	var script string
-	switch v {
-	case 2:
-		rows, err := tx.Query("PRAGMA table_info(issues)")
-		if err != nil {
-			return err
-		}
-		has := false
-		for rows.Next() {
-			var cid, nn, pk int
-			var name, typ string
-			var def any
-			if err := rows.Scan(&cid, &name, &typ, &nn, &def, &pk); err != nil {
-				rows.Close()
-				return err
-			}
-			if name == "assignee" {
-				has = true
-			}
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
-		if !has {
-			_, err = tx.Exec(`ALTER TABLE issues ADD COLUMN assignee TEXT NOT NULL DEFAULT ''`)
-			return err
-		}
-		return nil
-	case 3:
-		script = `CREATE TABLE comments (id TEXT PRIMARY KEY,issue_key TEXT NOT NULL,author TEXT NOT NULL,author_email TEXT NOT NULL DEFAULT '',body TEXT NOT NULL,created DATETIME NOT NULL,fetched_at DATETIME NOT NULL);
- CREATE TABLE issue_links (source_key TEXT NOT NULL,target_key TEXT NOT NULL,link_type TEXT NOT NULL,direction TEXT NOT NULL,target_summary TEXT NOT NULL DEFAULT '',target_status TEXT NOT NULL DEFAULT '',target_type TEXT NOT NULL DEFAULT '',fetched_at DATETIME NOT NULL,PRIMARY KEY(source_key,target_key,link_type)); CREATE INDEX idx_comments_issue ON comments(issue_key); CREATE INDEX idx_links_source ON issue_links(source_key);`
-	case 4:
-		script = `CREATE TABLE digest_log (query_key TEXT PRIMARY KEY,last_run DATETIME NOT NULL);`
-	case 5:
-		script = `CREATE TABLE weekly_cache (cache_key TEXT PRIMARY KEY,result_json TEXT NOT NULL,cached_at DATETIME NOT NULL);`
-	case 6:
-		script = `CREATE TABLE issue_details (key TEXT PRIMARY KEY,summary TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',status TEXT NOT NULL,priority TEXT NOT NULL DEFAULT '',issue_type TEXT NOT NULL DEFAULT '',labels TEXT NOT NULL DEFAULT '[]',assignee_name TEXT NOT NULL DEFAULT '',assignee_id TEXT NOT NULL DEFAULT '',parent_key TEXT NOT NULL DEFAULT '',parent_summary TEXT NOT NULL DEFAULT '',updated DATETIME NOT NULL,fetched_at DATETIME NOT NULL);`
-	case 7:
-		script = `CREATE TABLE projects (key TEXT PRIMARY KEY,name TEXT NOT NULL DEFAULT '',project_type TEXT NOT NULL DEFAULT '',fetched_at DATETIME NOT NULL);`
-	case 8:
-		for _, q := range []string{`ALTER TABLE issues ADD COLUMN status_category TEXT NOT NULL DEFAULT ''`, `ALTER TABLE issue_details ADD COLUMN status_category TEXT NOT NULL DEFAULT ''`, `ALTER TABLE issue_details ADD COLUMN project TEXT NOT NULL DEFAULT ''`, `ALTER TABLE issue_details ADD COLUMN assignee_email TEXT NOT NULL DEFAULT ''`, `CREATE TABLE cache_epoch (id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL)`, `INSERT INTO cache_epoch(id,revision) VALUES(1,0)`, `CREATE TABLE issue_invalidations (key TEXT PRIMARY KEY,revision INTEGER NOT NULL)`, `CREATE TABLE summary_snapshots (owner TEXT NOT NULL,project TEXT NOT NULL,fetched_at TEXT NOT NULL,PRIMARY KEY(owner,project))`, `CREATE TABLE summary_members (owner TEXT NOT NULL,project TEXT NOT NULL,issue_key TEXT NOT NULL,kind TEXT NOT NULL,board TEXT NOT NULL DEFAULT '',board_type TEXT NOT NULL DEFAULT '',sprint TEXT NOT NULL DEFAULT '',PRIMARY KEY(owner,project,issue_key,kind,board,sprint))`} {
-			if _, err := tx.Exec(q); err != nil {
-				return err
-			}
-		}
-		return nil
-	default:
-		return fmt.Errorf("unknown migration %d", v)
-	}
-	if script != "" {
-		_, err := tx.Exec(script)
-		return err
-	}
-	return nil
+var currentSchemaStatements = []string{
+	`CREATE TABLE issues (key TEXT PRIMARY KEY, project TEXT NOT NULL, status TEXT NOT NULL, priority TEXT NOT NULL, summary TEXT NOT NULL, updated DATETIME NOT NULL, fetched_at DATETIME NOT NULL, assignee TEXT NOT NULL DEFAULT '', status_category TEXT NOT NULL DEFAULT '')`,
+	`CREATE TABLE issue_boards (issue_key TEXT NOT NULL, board TEXT NOT NULL, board_type TEXT NOT NULL, sprint TEXT NOT NULL DEFAULT '', PRIMARY KEY(issue_key,board))`,
+	`CREATE TABLE fetch_log (project TEXT NOT NULL, assignee TEXT NOT NULL, fetched_at DATETIME NOT NULL)`,
+	`CREATE INDEX idx_issues_project ON issues(project)`,
+	`CREATE INDEX idx_fetch_log_project ON fetch_log(project,assignee)`,
+	`CREATE TABLE comments (id TEXT PRIMARY KEY,issue_key TEXT NOT NULL,author TEXT NOT NULL,author_email TEXT NOT NULL DEFAULT '',body TEXT NOT NULL,created DATETIME NOT NULL,fetched_at DATETIME NOT NULL)`,
+	`CREATE TABLE issue_links (source_key TEXT NOT NULL,target_key TEXT NOT NULL,link_type TEXT NOT NULL,direction TEXT NOT NULL,target_summary TEXT NOT NULL DEFAULT '',target_status TEXT NOT NULL DEFAULT '',target_type TEXT NOT NULL DEFAULT '',fetched_at DATETIME NOT NULL,PRIMARY KEY(source_key,target_key,link_type))`,
+	`CREATE INDEX idx_comments_issue ON comments(issue_key)`,
+	`CREATE INDEX idx_links_source ON issue_links(source_key)`,
+	`CREATE TABLE digest_log (query_key TEXT PRIMARY KEY,last_run DATETIME NOT NULL)`,
+	`CREATE TABLE weekly_cache (cache_key TEXT PRIMARY KEY,result_json TEXT NOT NULL,cached_at DATETIME NOT NULL)`,
+	`CREATE TABLE issue_details (key TEXT PRIMARY KEY,summary TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',status TEXT NOT NULL,priority TEXT NOT NULL DEFAULT '',issue_type TEXT NOT NULL DEFAULT '',labels TEXT NOT NULL DEFAULT '[]',assignee_name TEXT NOT NULL DEFAULT '',assignee_id TEXT NOT NULL DEFAULT '',parent_key TEXT NOT NULL DEFAULT '',parent_summary TEXT NOT NULL DEFAULT '',updated DATETIME NOT NULL,fetched_at DATETIME NOT NULL,status_category TEXT NOT NULL DEFAULT '',project TEXT NOT NULL DEFAULT '',assignee_email TEXT NOT NULL DEFAULT '')`,
+	`CREATE TABLE projects (key TEXT PRIMARY KEY,name TEXT NOT NULL DEFAULT '',project_type TEXT NOT NULL DEFAULT '',fetched_at DATETIME NOT NULL)`,
+	`CREATE TABLE cache_epoch (id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL)`,
+	`INSERT INTO cache_epoch(id,revision) VALUES(1,0)`,
+	`CREATE TABLE issue_invalidations (key TEXT PRIMARY KEY,revision INTEGER NOT NULL)`,
+	`CREATE TABLE summary_snapshots (owner TEXT NOT NULL,project TEXT NOT NULL,fetched_at TEXT NOT NULL,PRIMARY KEY(owner,project))`,
+	`CREATE TABLE summary_members (owner TEXT NOT NULL,project TEXT NOT NULL,issue_key TEXT NOT NULL,kind TEXT NOT NULL,board TEXT NOT NULL DEFAULT '',board_type TEXT NOT NULL DEFAULT '',sprint TEXT NOT NULL DEFAULT '',PRIMARY KEY(owner,project,issue_key,kind,board,sprint))`,
 }
 
 // LastFetch returns the most recent fetch time for a project+assignee, or zero time if none.
@@ -982,9 +917,9 @@ func (c *Cache) Stats() CacheStats {
 // Path returns the database file path.
 func (c *Cache) Path() string {
 	if c.scopeID != "" {
-		return filepath.Join(os.Getenv("HOME"), ".jira-cli", "scopes", c.scopeID+".db")
+		return filepath.Join(os.Getenv("HOME"), ".jira-cli", "cache-v1", c.scopeID+".db")
 	}
-	return filepath.Join(os.Getenv("HOME"), ".jira-cli", "cache.db")
+	return ""
 }
 
 // Clear removes all cached data for a project.

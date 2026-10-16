@@ -3,6 +3,7 @@ package nl2jql
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,182 +11,103 @@ import (
 
 var closeMonthReferenceTime = time.Date(2026, time.September, 8, 12, 0, 0, 0, time.UTC)
 
-func TestTranslateClosedMonthExactIntent(t *testing.T) {
-	provider := &recordingProvider{
-		jql:  `status = Open`,
-		fail: errors.New("closed-month intent must not call the LLM"),
-	}
-	tr := newRoutingTranslator(t, provider)
-
-	const input = "  How many jiras did I close in June 2026?  "
-	result, err := tr.Translate(context.Background(), input)
-	if err != nil {
-		t.Fatalf("Translate: %v", err)
-	}
-	want := `status WAS Closed BY currentUser() DURING ("2026/06/01", "2026/07/01")`
-	if result.JQL != want {
-		t.Errorf("JQL = %q, want %q", result.JQL, want)
-	}
-	if result.Route != RouteFastPath {
-		t.Errorf("route = %q, want %q", result.Route, RouteFastPath)
-	}
-	if result.Input != input {
-		t.Errorf("input = %q, want exact original input %q", result.Input, input)
-	}
-	if result.NormalizedInput != "How many jiras did I close in June 2026?" {
-		t.Errorf("normalized input = %q, want trimmed input", result.NormalizedInput)
-	}
-	if got := atomic.LoadInt32(&provider.calls); got != 0 {
-		t.Errorf("fallback provider called %d times, want 0", got)
-	}
-}
-
-func TestTranslateClosedMonthAllEnglishMonths(t *testing.T) {
-	months := []struct {
-		name  string
-		start string
-		end   string
-	}{
-		{"JANUARY", "01", "02"}, {"February", "02", "03"}, {"March", "03", "04"},
-		{"April", "04", "05"}, {"May", "05", "06"}, {"June", "06", "07"},
-		{"July", "07", "08"}, {"August", "08", "09"}, {"September", "09", "10"},
-		{"October", "10", "11"}, {"November", "11", "12"}, {"December", "12", "2027/01"},
-	}
-	for _, tc := range months {
-		t.Run(tc.name, func(t *testing.T) {
-			got, ok := translateClosedMonthQuery("How many jiras did I close in "+tc.name+" 2026?", closeMonthReferenceTime)
-			if !ok {
-				t.Fatal("query was not recognized")
-			}
-			start := "2026/" + tc.start + "/01"
-			end := "2026/" + tc.end + "/01"
-			if tc.name == "December" {
-				end = tc.end + "/01"
-			}
-			want := `status WAS Closed BY currentUser() DURING ("` + start + `", "` + end + `")`
-			if got != want {
-				t.Errorf("JQL = %q, want %q", got, want)
-			}
-		})
-	}
-}
-
-func TestTranslateClosedMonthFebruaryAndDecemberRollover(t *testing.T) {
-	cases := []struct {
-		query string
-		want  string
-	}{
-		{
-			query: "How many issues did I close in February 2024?",
-			want:  `status WAS Closed BY currentUser() DURING ("2024/02/01", "2024/03/01")`,
-		},
-		{
-			query: "How many jira issues did I close in December 2026?",
-			want:  `status WAS Closed BY currentUser() DURING ("2026/12/01", "2027/01/01")`,
-		},
+func TestClosedMonthCalendarAndActor(t *testing.T) {
+	cases := []struct{ query, start, end string }{
+		{"How many jiras did I close in June 2026?", "2026-06-01 00:00", "2026-07-01 00:00"},
+		{"issues closed by me in February 2024", "2024-02-01 00:00", "2024-03-01 00:00"},
+		{"List bugs I closed in December 2026", "2026-12-01 00:00", "2027-01-01 00:00"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.query, func(t *testing.T) {
-			got, ok := translateClosedMonthQuery(tc.query, closeMonthReferenceTime)
-			if !ok {
-				t.Fatal("query was not recognized")
-			}
-			if got != tc.want {
-				t.Errorf("JQL = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestClosedMonthIntentRejectsMalformedAndAmbiguousQueries(t *testing.T) {
-	cases := []string{
-		"How many jiras did I close in Jun 2026?",
-		"How many jiras did I close in June 26?",
-		"How many jiras did I close in June 0000?",
-		"How many jiras did I close in June 2026 or July 2026?",
-		"How many jiras were closed in June 2026?",
-		"List jiras I closed in either July, April of this year?",
-		"List jiras I closed in July or April last year?",
-		"How many jiras did I close in June 2026? in the current project",
-	}
-	for _, query := range cases {
-		t.Run(query, func(t *testing.T) {
-			provider := &recordingProvider{jql: `status = Closed`}
-			tr := newRoutingTranslator(t, provider)
-			result, err := tr.Translate(context.Background(), query)
+			plan, err := ParsePlan(tc.query, `"other@example.com"`, closeMonthReferenceTime)
 			if err != nil {
-				t.Fatalf("Translate(%q): %v", query, err)
+				t.Fatal(err)
 			}
-			if result.Route != RouteFallback {
-				t.Errorf("route = %q, want %q", result.Route, RouteFallback)
+			tree, err := plan.Compile()
+			if err != nil {
+				t.Fatal(err)
 			}
-			if got := atomic.LoadInt32(&provider.calls); got != 1 {
-				t.Errorf("fallback provider called %d times, want 1", got)
+			want := `status CHANGED TO Closed BY "other@example.com" DURING ("` + tc.start + `", "` + tc.end + `") BEFORE "` + tc.end + `"`
+			if !strings.Contains(tree.Render(), want) {
+				t.Fatalf("got %s, want history %s", tree.Render(), want)
 			}
-		})
-	}
-}
-
-func TestTranslateClosedMonthsMultipleAndCurrentYear(t *testing.T) {
-	cases := []struct {
-		query string
-		want  string
-	}{
-		{
-			query: "List jiras I closed in either July or april of this year?",
-			want:  `(status WAS Closed BY currentUser() DURING ("2026/07/01", "2026/08/01") OR status WAS Closed BY currentUser() DURING ("2026/04/01", "2026/05/01"))`,
-		},
-		{
-			query: "How many issues did I close in December or FEBRUARY 2024?",
-			want:  `(status WAS Closed BY currentUser() DURING ("2024/12/01", "2025/01/01") OR status WAS Closed BY currentUser() DURING ("2024/02/01", "2024/03/01"))`,
-		},
-		{
-			query: "Count jiras I closed in July or april or JULY 2026?",
-			want:  `(status WAS Closed BY currentUser() DURING ("2026/07/01", "2026/08/01") OR status WAS Closed BY currentUser() DURING ("2026/04/01", "2026/05/01"))`,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.query, func(t *testing.T) {
-			got, ok := translateClosedMonthQuery(tc.query, closeMonthReferenceTime)
-			if !ok {
-				t.Fatal("query was not recognized")
-			}
-			if got != tc.want {
-				t.Errorf("JQL = %q, want %q", got, tc.want)
+			if strings.Contains(tc.query, "bugs") && !strings.Contains(tree.Render(), "issuetype = Bug") {
+				t.Fatal("lost issue type")
 			}
 		})
 	}
 }
-
-func TestTranslateClosedMonthQueryUsesInjectedClock(t *testing.T) {
-	got, ok := translateClosedMonthQuery("List jiras I closed in December or January of this year?", time.Date(2026, time.December, 31, 23, 0, 0, 0, time.FixedZone("test", -5*60*60)))
-	if !ok {
-		t.Fatal("query was not recognized")
-	}
-	want := `(status WAS Closed BY currentUser() DURING ("2026/12/01", "2027/01/01") OR status WAS Closed BY currentUser() DURING ("2026/01/01", "2026/02/01"))`
-	if got != want {
-		t.Errorf("JQL = %q, want %q", got, want)
+func TestClosedMonthAllEnglishMonths(t *testing.T) {
+	for _, tc := range []struct{ name, start, end string }{
+		{"January", "2026-01-01", "2026-01-31"}, {"February", "2026-02-01", "2026-02-28"},
+		{"March", "2026-03-01", "2026-03-31"}, {"April", "2026-04-01", "2026-04-30"},
+		{"May", "2026-05-01", "2026-05-31"}, {"June", "2026-06-01", "2026-06-30"},
+		{"July", "2026-07-01", "2026-07-31"}, {"August", "2026-08-01", "2026-08-31"},
+		{"September", "2026-09-01", "2026-09-30"}, {"October", "2026-10-01", "2026-10-31"},
+		{"November", "2026-11-01", "2026-11-30"}, {"December", "2026-12-01", "2026-12-31"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := ParsePlan("issues I closed in "+tc.name+" 2026", "", closeMonthReferenceTime)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := plan.Filter.History
+			if h == nil || h.Start != tc.start+" 00:00" || h.End != endExclusive(t, tc.end) {
+				t.Fatalf("wrong window: %+v", h)
+			}
+		})
 	}
 }
-
-func TestTranslateClosedMonthsFastPathSkipsProvider(t *testing.T) {
-	provider := &recordingProvider{fail: errors.New("multi-month intent must not call the LLM")}
-	tr := newRoutingTranslator(t, provider)
+func TestClosedMonthAlternativesComposeWithFilters(t *testing.T) {
+	p := &recordingProvider{fail: errors.New("history should not call provider")}
+	tr := newRoutingTranslator(t, p)
 	tr.normalizer.Now = func() time.Time { return closeMonthReferenceTime }
-
-	const input = "List jiras I closed in either July or april of this year?"
-	result, err := tr.Translate(context.Background(), input)
+	input := "Count bugs I closed in either July or April or JULY of this year in TEST"
+	res, err := tr.Translate(context.Background(), input)
 	if err != nil {
-		t.Fatalf("Translate: %v", err)
+		t.Fatal(err)
 	}
-	want := `(status WAS Closed BY currentUser() DURING ("2026/07/01", "2026/08/01") OR status WAS Closed BY currentUser() DURING ("2026/04/01", "2026/05/01"))`
-	if result.JQL != want {
-		t.Errorf("JQL = %q, want %q", result.JQL, want)
+	if res.Input != input || res.Mode != ModeCount || res.Route != RouteFastPath {
+		t.Fatalf("wrong diagnostics: %+v", res)
 	}
-	if result.Route != RouteFastPath {
-		t.Errorf("route = %q, want %q", result.Route, RouteFastPath)
+	for _, want := range []string{"project = TEST", "issuetype = Bug", "2026-08-01 00:00", "2026-05-01 00:00", " AND (status CHANGED"} {
+		if !strings.Contains(res.JQL, want) {
+			t.Errorf("lost %q: %s", want, res.JQL)
+		}
 	}
-	if got := atomic.LoadInt32(&provider.calls); got != 0 {
-		t.Errorf("fallback provider called %d times, want 0", got)
+	if strings.Count(res.JQL, "CHANGED TO") != 2 {
+		t.Fatal("duplicate history branch")
 	}
+	if atomic.LoadInt32(&p.calls) != 0 {
+		t.Fatal("called provider")
+	}
+}
+func TestClosedMonthAmbiguityDoesNotReachProvider(t *testing.T) {
+	for _, input := range []string{
+		"How many jiras did I close in Jun 2026?", "issues I closed in June 26",
+		"issues I closed in June 0000", "issues I closed in June 2026 or July 2026",
+		"issues were closed in June 2026", "issues I closed in either July, April of this year",
+		"issues I closed in July or April last year", "issues I closed in June 2026 in the current project",
+	} {
+		t.Run(input, func(t *testing.T) {
+			p := &recordingProvider{jql: "status = Closed"}
+			tr := newRoutingTranslator(t, p)
+			_, err := tr.Translate(context.Background(), input)
+			if !errors.Is(err, ErrAmbiguousIntent) {
+				t.Fatalf("want clarification, got %v", err)
+			}
+			if atomic.LoadInt32(&p.calls) != 0 {
+				t.Fatal("provider guessed ambiguous intent")
+			}
+		})
+	}
+}
+
+func endExclusive(t *testing.T, end string) string {
+	t.Helper()
+	d, err := time.Parse("2006-01-02", end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d.AddDate(0, 0, 1).Format("2006-01-02 15:04")
 }

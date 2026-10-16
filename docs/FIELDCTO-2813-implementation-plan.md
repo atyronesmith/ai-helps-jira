@@ -1,6 +1,8 @@
 # FIELDCTO-2813: JQL AST Implementation Plan
 
-Status: deferred
+Status: local implementation delivered with reliability Phase 3 on 2026-10-16;
+live Jira oracle and external completion requirements pending. No ticket status
+or merge/commit state was changed.
 
 This document is the implementation handoff for FIELDCTO-2813, the AST-based
 construction phase of the [JQL validation hardening plan](jql-validation-plan.md).
@@ -157,3 +159,28 @@ In addition:
 
 FIELDCTO-2809 should remain open until this checklist is complete, unless 2813
 is explicitly removed from that epic's scope and the decision is documented.
+
+## Phase 3 delivery evidence (2026-10-16)
+
+The shared AST, participle parser, renderer, and tree-based validator are now
+implemented in `internal/jql`. `internal/nl2jql` compiles a separate typed intent
+plan. The generator migration covers complete summaries, open/delta searches,
+sprint/Kanban queries, weekly history/worklogs, releases, child relationships,
+similarity searches, identity refetches, and both provider output boundaries.
+Provider JQL is parsed before structural project scoping; parse failures return
+errors naming the query. The superseded structural validation scanners have
+been removed. Display-only literal blanking remains separate.
+
+The local suite covers operator/history/function shapes, hostile literals,
+quoted/custom fields, branch-wise project scope, terminal multiple-key ordering,
+malformed input, normalized AST equality, and fuzz targets. Actual production
+emitters and the deterministic translation corpus are exercised with local mock
+servers. Build, vet, the full race suite, documentation lint and diff checks are
+recorded in the [Phase 3 results](project-reliability-implementation-plan.md).
+
+The strict Jira runner reported **SKIPPED** because explicit exported credentials
+and project/issue/sprint/release fixtures were unavailable. Tenant validation and
+history-boundary behavior are therefore not claimed as verified. The historical
+status table, merge-commit record, Jira work comment, and ticket transitions in
+the original definition of done remain pending; this local delivery does not
+perform those external actions or declare the ticket/epic closed.

@@ -22,7 +22,7 @@ func newTestClient(ts *httptest.Server) *Client {
 		email:    "test@example.com",
 		token:    "test-token",
 		project:  "TEST",
-		assignee: "test@example.com",
+		assignee: `"test@example.com"`,
 	}
 }
 
@@ -150,7 +150,7 @@ func TestGetOpenIssues(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		payload := readBody(t, r)
 		jql := payload["jql"].(string)
-		if !strings.Contains(jql, "assignee = test@example.com") {
+		if !strings.Contains(jql, `assignee = "test@example.com"`) {
 			t.Errorf("JQL should contain assignee filter, got %s", jql)
 		}
 		if !strings.Contains(jql, "project = TEST") {
@@ -248,7 +248,11 @@ func TestSearchByRelease_RejectsInjectionAttempt(t *testing.T) {
 		t.Errorf("expected quoted JQL to pass validation scoped to TEST, got: %v\njql: %s", err, recorded)
 	}
 	blanked := jql.BlankQuotedLiterals(recorded)
-	if jql.TopLevelKeywordIndex(blanked, "OR") >= 0 {
+	tree, err := jql.Parse(recorded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, escaped := tree.Where.(jql.Or); escaped {
 		t.Errorf("hostile OR escaped quoting into a top-level keyword: %s", recorded)
 	}
 	if !strings.Contains(recorded, "project = TEST") {

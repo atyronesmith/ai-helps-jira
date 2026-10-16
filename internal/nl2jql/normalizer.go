@@ -1,29 +1,6 @@
-// normalizer.go provides a lenient pre-processing layer that sits in front of
-// the strict JQL grammar. It rewrites the two classes of messiness that strict
-// grammars choke on:
-//
-//  1. Natural-language date phrases  -> strict JQL relative dates
-//     "created in the last 3 days"   -> "created >= -3d"
-//     "updated last Tuesday"         -> "updated >= -7d"   (clock-dependent)
-//     "created today"                -> "created >= startOfDay()"
-//     "resolved over the last 2 sprints" -> "resolved >= -28d"
-//
-//  2. Misspelled project names       -> canonical project keys
-//     "in Spport"                    -> "in SUP"
-//
-// Design rules:
-//   - Pass order matters: date phrases are rewritten FIRST, because both the
-//     date prepositions ("in the last 3 days") and project phrases ("in
-//     Support") start with "in".
-//   - Nothing returns an error: anything the Normalizer does not recognise is
-//     passed through untouched, so a later strict parser is free to reject it.
-//   - Output is deterministic: fuzzy ties are broken alphabetically over the
-//     project map keys.
-//
-// Standard integration with the grammar from the previous step:
-//
-//	n := nl2jql.NewNormalizer()
-//	jql, err := nl2jql.Parse(n.Normalize(rawQuery, projectMap))
+// The normalizer repairs project aliases and maps recognized calendar phrases
+// to grammar tokens. Date comparisons become typed intent nodes in ParsePlan;
+// unsupported/vague durations are never converted to approximate day counts.
 package nl2jql
 
 import (
@@ -40,16 +17,11 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	// defaultSprintLengthDays: the classic two-week agile sprint.
-	defaultSprintLengthDays = 14
 	// defaultMaxEditDistance: the base Levenshtein budget for fuzzy snapping.
 	defaultMaxEditDistance = 2
 	// minFuzzyRunes: candidates shorter than this are only exact-matched;
 	// fuzzy matching three characters or less produces nonsense snaps.
 	minFuzzyRunes = 3
-	// approxDaysPerMonth: JQL relative dates have no month unit, so months
-	// are reduced to days.
-	approxDaysPerMonth = 30
 	// daysPerWeek: Go's time package has no week duration constant.
 	daysPerWeek = 7
 )
@@ -57,9 +29,6 @@ const (
 // Normalizer rewrites messy human input into grammar-friendly text.
 // The zero value is valid: unset fields fall back to the defaults above.
 type Normalizer struct {
-	// SprintLengthDays is how many days one sprint spans (<= 0 -> 14).
-	SprintLengthDays int
-
 	// MaxEditDistance is the maximum Levenshtein distance, in runes, between
 	// a typed project name and a known key (<= 0 -> 2). The effective budget
 	// is additionally capped at half the candidate's length.
@@ -73,20 +42,12 @@ type Normalizer struct {
 // NewNormalizer returns a Normalizer configured with sensible defaults.
 func NewNormalizer() *Normalizer {
 	return &Normalizer{
-		SprintLengthDays: defaultSprintLengthDays,
-		MaxEditDistance:  defaultMaxEditDistance,
-		Now:              time.Now,
+		MaxEditDistance: defaultMaxEditDistance,
+		Now:             time.Now,
 	}
 }
 
 // Nil-safe accessors let callers use &Normalizer{} or even a nil detector.
-func (n *Normalizer) sprintLen() int {
-	if n != nil && n.SprintLengthDays > 0 {
-		return n.SprintLengthDays
-	}
-	return defaultSprintLengthDays
-}
-
 func (n *Normalizer) maxEdit() int {
 	if n != nil && n.MaxEditDistance > 0 {
 		return n.MaxEditDistance
@@ -112,7 +73,6 @@ func (n *Normalizer) Normalize(input string, projectMap map[string]string) strin
 	// Collapse whitespace runs: every downstream regex assumes single spaces.
 	s := strings.Join(strings.Fields(input), " ")
 	s = normalizeRecommendationQuestion(s)
-	s = normalizeDueThisWeekQuestion(s)
 
 	// Dates first: "in the last 3 days" must be consumed before the project
 	// pass starts matching "in <something>".
@@ -123,31 +83,25 @@ func (n *Normalizer) Normalize(input string, projectMap map[string]string) strin
 	return s
 }
 
-// normalizeDueThisWeekQuestion handles the narrowly defined first-person
-// request for Jira assigned to the caller and due in the current week.
-// Rewriting the whole anchored question preserves that intent without making
-// generic words such as "due" or "this week" semantically ambiguous.
-var dueThisWeekQuestion = regexp.MustCompile(`(?i)^list jiras? that are due this week[?!.]*$`)
+// Recommendation framing records a query mode, while retaining every filter
+// within the frame. The host assistant owns recommendations over retrieved data.
+var recommendationFrame = regexp.MustCompile(`(?i)^which of (.+) should i work on next[?!.]*$`)
 
-func normalizeDueThisWeekQuestion(s string) string {
-	if dueThisWeekQuestion.MatchString(s) {
-		return "my dueweek"
+func normalizeRecommendationQuestion(s string) string {
+	if m := recommendationFrame.FindStringSubmatch(s); m != nil {
+		return m[1]
 	}
 	return s
 }
-
-// recommendationQuestion removes one tightly-scoped recommendation frame
-// while keeping its explicit Jira filter. The recommendation itself belongs
-// to the caller after Jira data is retrieved; the query should retrieve only
-// the requested open work. Keep this anchored so other semantic wording is
-// never discarded as generic filler.
-var recommendationQuestion = regexp.MustCompile(`(?i)^which of (my) (open) ((?:jira )?issues|jiras?) should i work on next[?!.]*$`)
-
-func normalizeRecommendationQuestion(s string) string {
-	if m := recommendationQuestion.FindStringSubmatch(s); m != nil {
-		return strings.Join([]string{m[1], m[2], m[3]}, " ")
+func queryMode(s string) QueryMode {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	if strings.HasPrefix(lower, "how many ") || strings.HasPrefix(lower, "count ") {
+		return ModeCount
 	}
-	return s
+	if recommendationFrame.MatchString(s) {
+		return ModeRecommendation
+	}
+	return ModeList
 }
 
 // normalizeFirstPersonOwnership maps possessive questions about the caller's
@@ -167,7 +121,7 @@ var openStatusPhrases = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\banything\s+still\s+open\b`),
 	regexp.MustCompile(`(?i)\bunfinished\s+work\b`),
 	regexp.MustCompile(`(?i)\bactive\s+issues\b`),
-	regexp.MustCompile(`(?i)\bnot\s+(?:done|closed|resolved|cancell?ed)(?:\s+or\s+(?:done|closed|resolved|cancell?ed))*\b`),
+	regexp.MustCompile(`(?i)\bnot\s+(?:done|closed|resolved|cancell?ed)\b`),
 }
 
 func normalizeOpenStatusPhrases(s string) string {
@@ -186,15 +140,15 @@ func normalizeOpenStatusPhrases(s string) string {
 const dateFieldAlts = `created|updated|resolved|due\s*date|due`
 
 var (
-	// "created in the last 3 days", "resolved over the past 2 sprints",
-	// "updated within the last couple of weeks", ...
+	// Explicit rolling durations in days/weeks; vague counts, months and
+	// real sprint periods require clarification instead of approximation.
 	relRangeRe = regexp.MustCompile(
 		`(?i)\b(?P<field>` + dateFieldAlts + `)\b[,\s]+` +
 			`(?:was[,\s]+|is[,\s]+|has[,\s]+been[,\s]+)?` +
 			`(?:in[,\s]+|within[,\s]+|over[,\s]+|during[,\s]+|from[,\s]+|for[,\s]+)?` +
 			`(?:the[,\s]+)?(?:last|past)[,\s]+` +
-			`(?P<count>\d+|several|(?:(?:a|an)[,\s]+)?(?:couple|few)(?:[,\s]+of)?)[,\s]+` +
-			`(?P<unit>sprints?|days?|weeks?|months?)\b`)
+			`(?P<count>\d+)[,\s]+` +
+			`(?P<unit>days?|weeks?)\b`)
 
 	// "created last Tuesday", "updated on last friday", ...
 	relWeekdayRe = regexp.MustCompile(
@@ -206,7 +160,7 @@ var (
 	relSimpleRe = regexp.MustCompile(
 		`(?i)\b(?P<field>` + dateFieldAlts + `)\b[,\s]+` +
 			`(?:was[,\s]+|is[,\s]+)?(?:on[,\s]+)?` +
-			`(?P<when>today|yesterday|this\s+week|last\s+week)\b`)
+			`(?P<when>today|yesterday|this\s+week|last\s+week|this\s+month|last\s+month)\b`)
 )
 
 // weekdayByName validates weekday tokens against the stdlib calendar.
@@ -223,17 +177,22 @@ var weekdayByName = map[string]time.Weekday{
 // normalizeDates rewrites every recognised date phrase as
 // "<field> >= <relative-date>".
 func (n *Normalizer) normalizeDates(s string) string {
-	sprintLen := n.sprintLen()
 	now := n.clock()()
 
 	// 1. Counted ranges: collapse to flat day offsets.
 	s = rewriteMatches(relRangeRe, s, func(g map[string]string) (string, bool) {
-		count := parseCount(g["count"])
-		days := unitToDays(g["unit"], sprintLen)
+		count, err := strconv.Atoi(g["count"])
+		if err != nil || count > 100000 {
+			return "", false
+		}
+		days := 1
+		if strings.HasPrefix(strings.ToLower(g["unit"]), "week") {
+			days = 7
+		}
 		if count <= 0 || days <= 0 {
 			return "", false // unknown count/unit: leave the text alone
 		}
-		return fmt.Sprintf("%s >= -%dd", jqlField(g["field"]), count*days), true
+		return fmt.Sprintf("%s >= -%dd AND %s <= now()", jqlField(g["field"]), count*days, jqlField(g["field"])), true
 	})
 
 	// 2. "last <weekday>": count back to the most recent previous
@@ -244,7 +203,8 @@ func (n *Normalizer) normalizeDates(s string) string {
 		if !ok {
 			return "", false
 		}
-		return fmt.Sprintf("%s >= -%dd", jqlField(g["field"]), daysSinceWeekday(now, wd)), true
+		days := daysSinceWeekday(now, wd)
+		return fmt.Sprintf(`%s >= startOfDay("-%d") AND %s < startOfDay("-%d")`, jqlField(g["field"]), days, jqlField(g["field"]), days-1), true
 	})
 
 	// 3. Fixed phrases.
@@ -252,13 +212,17 @@ func (n *Normalizer) normalizeDates(s string) string {
 		field := jqlField(g["field"])
 		switch strings.ToLower(strings.Join(strings.Fields(g["when"]), " ")) {
 		case "today":
-			return fmt.Sprintf("%s >= startOfDay()", field), true
+			return fmt.Sprintf(`%s >= startOfDay() AND %s < startOfDay("+1")`, field, field), true
 		case "yesterday":
-			return fmt.Sprintf("%s >= -1d", field), true
+			return fmt.Sprintf(`%s >= startOfDay("-1") AND %s < startOfDay()`, field, field), true
 		case "this week":
-			return fmt.Sprintf("%s >= startOfWeek()", field), true
+			return fmt.Sprintf(`%s >= startOfWeek() AND %s < startOfWeek("+1")`, field, field), true
+		case "this month":
+			return fmt.Sprintf(`%s >= startOfMonth() AND %s < startOfMonth("+1")`, field, field), true
+		case "last month":
+			return fmt.Sprintf(`%s >= startOfMonth("-1") AND %s < startOfMonth()`, field, field), true
 		case "last week":
-			return fmt.Sprintf("%s >= -7d", field), true
+			return fmt.Sprintf(`%s >= startOfWeek("-1") AND %s < startOfWeek()`, field, field), true
 		}
 		return "", false
 	})
@@ -275,37 +239,6 @@ func daysSinceWeekday(now time.Time, wd time.Weekday) int {
 		d += 7
 	}
 	return d
-}
-
-// parseCount understands digits plus the common vague counters.
-func parseCount(s string) int {
-	t := strings.ToLower(strings.Join(strings.Fields(s), " "))
-	if i, err := strconv.Atoi(t); err == nil {
-		return i
-	}
-	if strings.Contains(t, "couple") {
-		return 2
-	}
-	if strings.Contains(t, "few") || strings.Contains(t, "several") {
-		return 3
-	}
-	return 0
-}
-
-// unitToDays reduces plural units to a per-unit day count. JQL relative dates
-// only know d/w, so everything is expressed in days for a uniform output.
-func unitToDays(unit string, sprintLen int) int {
-	switch strings.ToLower(strings.TrimSuffix(unit, "s")) {
-	case "day":
-		return 1
-	case "week":
-		return daysPerWeek
-	case "sprint":
-		return sprintLen
-	case "month":
-		return approxDaysPerMonth
-	}
-	return 0
 }
 
 // jqlField canonicalises the free-text field name. "due" / "due date" both

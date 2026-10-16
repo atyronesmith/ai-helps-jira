@@ -370,13 +370,13 @@ func TestFetchSummaryUsesValidatedOpenAndBoardScopedJQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantSearch := []string{
-		`project = TEST AND assignee = test@example.com AND statusCategory != Done ORDER BY priority ASC, status ASC`,
-		`project = TEST AND assignee = test@example.com AND sprint = 8 AND statusCategory != Done ORDER BY priority ASC`,
+		`project = TEST AND assignee = "test@example.com" AND statusCategory != Done ORDER BY priority ASC, status ASC`,
+		`project = TEST AND assignee = "test@example.com" AND sprint = 8 AND statusCategory != Done ORDER BY priority ASC`,
 	}
 	if fmt.Sprint(searchQueries) != fmt.Sprint(wantSearch) {
 		t.Fatalf("search JQL = %q, want %q", searchQueries, wantSearch)
 	}
-	wantKanban := `assignee = test@example.com AND statusCategory != Done ORDER BY priority ASC, status ASC`
+	wantKanban := `assignee = "test@example.com" AND statusCategory != Done ORDER BY priority ASC, status ASC`
 	if fmt.Sprint(kanbanQueries) != fmt.Sprint([]string{wantKanban}) {
 		t.Fatalf("kanban JQL = %q, want %q", kanbanQueries, wantKanban)
 	}
@@ -405,7 +405,7 @@ func TestSummaryKanbanGuardAllowsBoardScopedQueryWithoutDefaultProject(t *testin
 	if _, err := c.fetchSummaryBoards(t.Context(), ""); err != nil {
 		t.Fatal(err)
 	}
-	if gotJQL != `assignee = test@example.com AND statusCategory != Done ORDER BY priority ASC, status ASC` || strings.Contains(gotJQL, "project =") {
+	if gotJQL != `assignee = "test@example.com" AND statusCategory != Done ORDER BY priority ASC, status ASC` || strings.Contains(gotJQL, "project =") {
 		t.Fatalf("board-scoped query unexpectedly depended on default project: %q", gotJQL)
 	}
 }

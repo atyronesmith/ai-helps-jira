@@ -13,7 +13,7 @@ import (
 
 // TestHandleGetIssue_RefetchQuotesHostileKey is the FIELDCTO-2812 negative
 // test for the post-mutation refetch in HandleGetIssue
-// (client.SearchJQL(fmt.Sprintf("key = %s", ...), 1)): issue_key arrives as
+// (client.SearchJQL(keyQuery, 1)): issue_key arrives as
 // an MCP tool argument, so a caller can supply anything, including a value
 // shaped to break out of the `key = ...` clause and widen the query with a
 // top-level OR. The refetch must quote it so the clause still only ever
@@ -60,7 +60,11 @@ func TestHandleGetIssue_RefetchQuotesHostileKey(t *testing.T) {
 		t.Errorf("expected quoted refetch JQL to validate, got: %v\njql: %s", err, recordedJQL)
 	}
 	blanked := jql.BlankQuotedLiterals(recordedJQL)
-	if jql.TopLevelKeywordIndex(blanked, "OR") >= 0 {
+	tree, err := jql.Parse(recordedJQL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, escaped := tree.Where.(jql.Or); escaped {
 		t.Errorf("hostile OR escaped quoting into a top-level keyword: %s", recordedJQL)
 	}
 	if strings.Contains(blanked, "OTHER") {

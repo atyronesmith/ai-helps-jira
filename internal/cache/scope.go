@@ -17,15 +17,14 @@ import (
 
 var ErrCacheChanged = errors.New("cache changed during retrieval; retry the operation")
 
-// OpenManager owns request-scoped databases without reading or migrating the
-// unattributed legacy cache. Its own empty database is only a metrics root.
+// OpenManager owns request-scoped databases. Its in-memory database is only a metrics root.
 func OpenManager() (*Cache, error) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if err := migrate(db); err != nil {
+	if err := initializeSchema(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -52,7 +51,7 @@ func scopeName(cfg *config.Config) (string, error) {
 }
 
 func openScope(name string) (*Cache, error) {
-	dir := filepath.Join(os.Getenv("HOME"), ".jira-cli", "scopes")
+	dir := filepath.Join(os.Getenv("HOME"), ".jira-cli", "cache-v1")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create scoped cache directory: %w", err)
 	}
@@ -75,7 +74,7 @@ func openScope(name string) (*Cache, error) {
 		db.Close()
 		return nil, err
 	}
-	if err := migrate(db); err != nil {
+	if err := initializeSchema(db); err != nil {
 		db.Close()
 		return nil, err
 	}

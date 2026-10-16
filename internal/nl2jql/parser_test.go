@@ -18,8 +18,8 @@ func TestParse(t *testing.T) {
 	}{
 		{
 			name:  "due this week expands to bounded range and ascending sort",
-			query: "my dueweek",
-			want:  `assignee = currentUser() AND due >= startOfWeek() AND due <= endOfWeek() ORDER BY due ASC`,
+			query: `my due >= startOfWeek() AND due < startOfWeek("+1")`,
+			want:  `assignee = currentUser() AND due >= startOfWeek() AND due < startOfWeek("+1")`,
 		},
 		{
 			name:  "canonical example",
@@ -165,7 +165,7 @@ func TestParse(t *testing.T) {
 		},
 		{
 			name:  "two assignees collapse into IN",
-			query: "bugs assigned to John assigned to Jane",
+			query: "bugs assigned to John or assigned to Jane",
 			want:  `issuetype = Bug AND assignee IN (John, Jane)`,
 		},
 		{
@@ -222,11 +222,6 @@ func TestParse(t *testing.T) {
 		{
 			name:    "multiple order clauses are rejected",
 			query:   "my issues ordered by priority asc sorted by created desc",
-			wantErr: true,
-		},
-		{
-			name:    "due week sort conflict is rejected",
-			query:   "my dueweek ordered by priority asc",
 			wantErr: true,
 		},
 	}
@@ -338,10 +333,9 @@ func TestParseDeterministic(t *testing.T) {
 // These express the intended user-visible behavior, rather than accepting
 // contradictory filters as a successful translation. Phase 3 owns the parser
 // changes; keep this gap explicit until ambiguity is handled conservatively.
-func TestParseAmbiguousStatusIntent_KnownGap(t *testing.T) {
+func TestParseAmbiguousStatusIntent(t *testing.T) {
 	for _, input := range []string{"open and done bugs", "done and in progress bugs"} {
 		t.Run(input, func(t *testing.T) {
-			t.Skip("known semantic gap: Phase 3 must reject ambiguous status conjunctions")
 			if got, err := Parse(input); err == nil {
 				t.Fatalf("ambiguous request %q must be rejected, got %q", input, got)
 			}

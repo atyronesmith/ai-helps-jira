@@ -119,6 +119,17 @@ What this does:
 | `--cap-drop=ALL` | Drop all Linux capabilities (security) |
 | `--env-file` | Load JIRA/LLM credentials from your config |
 
+The named volume is reused across image rebuilds, `podman rm`, and both
+`make container-run` launch paths. Removing the container does not remove this
+volume; explicitly removing `jira-cli-cache` or its underlying storage does.
+Current scoped caches are stored inside it as `cache-v1/<scope-hash>.db` and
+are reopened without clearing their data. The first use of this preproduction
+cache format starts cold; no older schema/cache data is migrated.
+
+Dashboard results also write files in the volume, but their current PID-based
+filenames and stale-process cleanup do not guarantee history across restarts.
+See [Cache Design](../README.md#cache-design) for the lifecycle table.
+
 ## Step 4: Verify it's running
 
 ```sh

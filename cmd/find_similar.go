@@ -81,10 +81,10 @@ func runFindSimilar(cmd *cobra.Command, args []string) error {
 
 	// Fetch candidate issues
 	spinner := format.StatusPrinter("Fetching open issues...")
-	candidateJQL := fmt.Sprintf(
-		"project = %s AND statusCategory != Done ORDER BY updated DESC",
-		jql.QuoteIdent(cfg.JiraProject),
-	)
+	candidateJQL := (&jql.Query{Where: jql.All(
+		jql.Compare("project", "=", jql.QuoteIdent(cfg.JiraProject)),
+		jql.Compare("statusCategory", "!=", "Done"),
+	), OrderBy: []jql.Sort{{Field: "updated", Direction: "DESC"}}}).Render()
 	issues, err := client.SearchJQL(candidateJQL, flagSimilarMax)
 	spinner.Stop()
 	if err != nil {

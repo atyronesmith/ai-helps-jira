@@ -30,13 +30,22 @@ func WeeklyActivityJQL(project, user, start, end string) (string, error) {
 	}
 	endExclusive := endTime.AddDate(0, 0, 1).Format("2006-01-02")
 
-	// The OR group is parenthesised deliberately. JQL has no precedence climbing,
-	// so an unbracketed OR here would let the project scope apply to only one
-	// branch — the same defect as FIELDCTO-2807.
-	return fmt.Sprintf(
-		`project = %s AND (status CHANGED BY %s AFTER %q BEFORE %q`+
-			` OR (worklogAuthor = %s AND worklogDate >= %q AND worklogDate <= %q))`+
-			` ORDER BY updated DESC`,
-		jql.QuoteIdent(project), user, start, endExclusive, user, start, end,
-	), nil
+	// Keep the status history expression as one atom; the AST then keeps the
+	// project restriction outside the OR across the two activity sources.
+	changed, err := jql.Atom(fmt.Sprintf("status CHANGED BY %s AFTER %s BEFORE %s", user, jql.Quote(start), jql.Quote(endExclusive)))
+	if err != nil {
+		return "", fmt.Errorf("weekly activity jql: invalid user expression: %w", err)
+	}
+	worklog := jql.All(
+		jql.Compare("worklogAuthor", "=", user),
+		jql.Compare("worklogDate", ">=", jql.Quote(start)),
+		jql.Compare("worklogDate", "<=", jql.Quote(end)),
+	)
+	return (&jql.Query{
+		Where: jql.All(
+			jql.Compare("project", "=", jql.QuoteIdent(project)),
+			jql.Any(changed, worklog),
+		),
+		OrderBy: []jql.Sort{{Field: "updated", Direction: "DESC"}},
+	}).Render(), nil
 }

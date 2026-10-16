@@ -65,7 +65,7 @@ func TestRunQueryDryRunUsesTokenlessConfigAndCachedProjectsOnly(t *testing.T) {
 func TestCachedProjectListReadsCacheWithoutWarmup(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	db, err := cache.Open()
+	db, err := cache.OpenForConfig(&config.Config{JiraServer: "https://test.atlassian.net", JiraEmail: "test@test.com"})
 	if err != nil {
 		t.Fatal(err)
 	}

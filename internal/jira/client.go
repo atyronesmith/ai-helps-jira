@@ -244,24 +244,22 @@ func IsOpenIssue(issue Issue) bool {
 }
 
 func (c *Client) GetOpenIssues() ([]Issue, error) {
-	q := fmt.Sprintf(
-		"assignee = %s AND project = %s "+
-			"AND statusCategory != Done "+
-			"ORDER BY priority ASC, status ASC",
-		c.assignee, jql.QuoteIdent(c.project),
-	)
+	q := (&jql.Query{Where: jql.All(
+		jql.Compare("assignee", "=", c.assignee),
+		jql.Compare("project", "=", jql.QuoteIdent(c.project)),
+		jql.Compare("statusCategory", "!=", "Done"),
+	), OrderBy: []jql.Sort{{Field: "priority", Direction: "ASC"}, {Field: "status", Direction: "ASC"}}}).Render()
 	slog.Debug("get_open_issues", "jql", q)
 	return c.searchIssues(q, 100)
 }
 
 func (c *Client) GetOpenIssuesSince(since time.Time) ([]Issue, error) {
-	q := fmt.Sprintf(
-		"assignee = %s AND project = %s "+
-			"AND statusCategory != Done "+
-			"AND updated >= %s "+
-			"ORDER BY priority ASC, status ASC",
-		c.assignee, jql.QuoteIdent(c.project), jql.Quote(since.Format("2006-01-02 15:04")),
-	)
+	q := (&jql.Query{Where: jql.All(
+		jql.Compare("assignee", "=", c.assignee),
+		jql.Compare("project", "=", jql.QuoteIdent(c.project)),
+		jql.Compare("statusCategory", "!=", "Done"),
+		jql.Compare("updated", ">=", jql.Quote(since.Format("2006-01-02 15:04"))),
+	), OrderBy: []jql.Sort{{Field: "priority", Direction: "ASC"}, {Field: "status", Direction: "ASC"}}}).Render()
 	slog.Debug("get_open_issues_since", "jql", q, "since", since)
 	return c.searchIssues(q, 100)
 }
@@ -338,10 +336,12 @@ func (c *Client) getSprintIssues(board apiBoard) *BoardInfo {
 	sprint := sprints.Values[0]
 	slog.Info("active sprint", "name", sprint.Name, "id", sprint.ID, "board", board.Name)
 
-	q := fmt.Sprintf(
-		"assignee = %s AND sprint = %d AND project = %s AND statusCategory != Done ORDER BY priority ASC",
-		c.assignee, sprint.ID, jql.QuoteIdent(c.project),
-	)
+	q := (&jql.Query{Where: jql.All(
+		jql.Compare("assignee", "=", c.assignee),
+		jql.Compare("sprint", "=", fmt.Sprint(sprint.ID)),
+		jql.Compare("project", "=", jql.QuoteIdent(c.project)),
+		jql.Compare("statusCategory", "!=", "Done"),
+	), OrderBy: []jql.Sort{{Field: "priority", Direction: "ASC"}}}).Render()
 	issues, err := c.searchIssues(q, 50)
 	if err != nil {
 		slog.Warn("failed to fetch sprint issues", "sprint", sprint.Name, "error", err)
@@ -376,11 +376,10 @@ func (c *Client) getSprintIssues(board apiBoard) *BoardInfo {
 // with a project this query must not carry (FIELDCTO-2818).
 func (c *Client) getKanbanIssues(board apiBoard) *BoardInfo {
 	// Use board-specific agile endpoint so each board only shows its own issues
-	kanbanJQL := fmt.Sprintf(
-		"assignee = %s AND statusCategory != Done "+
-			"ORDER BY priority ASC, status ASC",
-		c.assignee,
-	)
+	kanbanJQL := (&jql.Query{Where: jql.All(
+		jql.Compare("assignee", "=", c.assignee),
+		jql.Compare("statusCategory", "!=", "Done"),
+	), OrderBy: []jql.Sort{{Field: "priority", Direction: "ASC"}, {Field: "status", Direction: "ASC"}}}).Render()
 	if err := jql.Validate(kanbanJQL, jql.Options{}); err != nil {
 		slog.Error("kanban JQL failed validation", "board", board.Name, "error", err)
 		return nil
@@ -797,11 +796,15 @@ func (c *Client) GetIssueWithLinks(key string) (*IssueDetail, []IssueLink, error
 // This catches parent-child relationships that aren't in issuelinks or subtasks
 // (e.g. Epics under a Feature in next-gen projects).
 func (c *Client) GetChildIssues(parentKey string) ([]IssueLink, error) {
-	jql := fmt.Sprintf("parent = %s ORDER BY issuetype ASC, priority ASC", parentKey)
-	slog.Info("fetching child issues", "parent", parentKey, "jql", jql)
+	query := &jql.Query{Where: jql.Compare("parent", "=", jql.QuoteIdent(parentKey)), OrderBy: []jql.Sort{{Field: "issuetype", Direction: "ASC"}, {Field: "priority", Direction: "ASC"}}}
+	childJQL := query.Render()
+	if err := jql.Validate(childJQL, jql.Options{}); err != nil {
+		return nil, fmt.Errorf("get children of %s: %w", parentKey, err)
+	}
+	slog.Info("fetching child issues", "parent", parentKey, "jql", childJQL)
 
 	req := searchRequest{
-		JQL:        jql,
+		JQL:        childJQL,
 		MaxResults: 100,
 		Fields:     []string{"summary", "status", "priority", "issuetype"},
 	}
@@ -834,10 +837,10 @@ func (c *Client) GetChildIssues(parentKey string) ([]IssueLink, error) {
 // two) -- so a value containing a quote, a parenthesis, or the word OR
 // cannot break out of the fixVersion clause.
 func (c *Client) SearchByRelease(releaseName string) ([]Issue, error) {
-	q := fmt.Sprintf(
-		"fixVersion = %s AND project = %s ORDER BY issuetype ASC, priority ASC",
-		jql.Quote(releaseName), jql.QuoteIdent(c.project),
-	)
+	q := (&jql.Query{Where: jql.All(
+		jql.Compare("fixVersion", "=", jql.Quote(releaseName)),
+		jql.Compare("project", "=", jql.QuoteIdent(c.project)),
+	), OrderBy: []jql.Sort{{Field: "issuetype", Direction: "ASC"}, {Field: "priority", Direction: "ASC"}}}).Render()
 	slog.Info("search_by_release", "release", releaseName, "jql", q)
 	return c.searchIssues(q, 100)
 }

@@ -171,7 +171,6 @@ func queryToolDef() mcp.Tool {
 	return mcp.NewTool("jira_query",
 		mcp.WithDescription("Search JIRA using natural language. Translates to JQL (deterministic parser first, LLM fallback for complex queries), executes, and returns candidate issues with a rich HTML view. For recommendation or prioritization requests, this tool retrieves candidates but does not recommend: inspect each issue with jira_get_issue when the candidate count is reasonably bounded, then reason over the issue content. If there are too many, shortlist by returned priority, status, and summary, disclose the shortlist, and inspect those issues with jira_get_issue."),
 		mcp.WithString("natural_query", mcp.Required(), mcp.Description("Pass the user's exact original wording verbatim (e.g. 'Which of my open jiras should I work on next?'). Keep phrases like 'my open Jiras' unchanged; do not look up or replace 'me'/'my' with a username or email. For recommendations, use these results as candidates and inspect them with jira_get_issue; the host assistant makes the recommendation. If translation errors, return the MCP error; do not bypass it with REST or shell.")),
-		mcp.WithString("query", mcp.Description("Deprecated compatibility alias for natural_query. Pass the original natural-language wording, never JQL.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
 		mcp.WithNumber("max_results", mcp.Description("Maximum issues to return in the displayed preview. Default 50; must be a positive integer.")),
@@ -512,11 +511,7 @@ func (h *Handlers) HandleSummary(ctx context.Context, req mcp.CallToolRequest) (
 
 func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	naturalQuery := getString(req, "natural_query")
-	if naturalQuery == "" {
-		// Keep accepting older clients that still send the original wording in
-		// `query`; new clients must use natural_query per the published schema.
-		naturalQuery = getString(req, "query")
-	}
+
 	if strings.TrimSpace(naturalQuery) == "" {
 		return errorResult("natural_query is required; pass the user's original wording"), nil
 	}
@@ -1571,10 +1566,10 @@ func (h *Handlers) HandleFindSimilar(ctx context.Context, req mcp.CallToolReques
 	}
 
 	// Fetch candidate issues
-	candidateJQL := fmt.Sprintf(
-		"project = %s AND statusCategory != Done ORDER BY updated DESC",
-		jql.QuoteIdent(cfg.JiraProject),
-	)
+	candidateJQL := (&jql.Query{Where: jql.All(
+		jql.Compare("project", "=", jql.QuoteIdent(cfg.JiraProject)),
+		jql.Compare("statusCategory", "!=", "Done"),
+	), OrderBy: []jql.Sort{{Field: "updated", Direction: "DESC"}}}).Render()
 	issues, err := client.SearchJQL(candidateJQL, maxCandidates)
 	if err != nil {
 		return errorResult(fmt.Sprintf("JIRA search failed: %v", err)), nil

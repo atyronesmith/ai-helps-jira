@@ -156,8 +156,8 @@ not an atomic snapshot of a changing Jira project.
 
 The MCP `jira_query` tool follows the same policy; `exact_count: true` requests
 count enumeration and `max_results` limits its displayed preview. The dashboard
-shows the same completeness and count evidence. Legacy saved query results have
-unknown completeness and totals.
+shows the same completeness and count evidence. Missing search metadata is
+reported as unknown; a preview row count is never treated as a matching total.
 
 ### Digest
 
@@ -569,10 +569,14 @@ internal/
 
 ### Cache Design
 
-SQLite databases at `~/.jira-cli/scopes/<hash>.db` isolate normalized Jira sites
+SQLite databases at `~/.jira-cli/cache-v1/<hash>.db` isolate normalized Jira sites
 and authenticated accounts. Summary membership and weekly reports also distinguish
-the effective user and project. Existing unattributed `~/.jira-cli/cache.db` data
-is preserved but never imported into a scope; the first scoped run starts cold.
+the effective user and project. The current schema is created directly and
+reopened without clearing its data. Historical schema upgrades and the unscoped
+cache API have been removed: this application has no production data to migrate.
+Earlier `cache.db` and `scopes/*.db` files are not read or converted. The first
+run with this cache format starts cold; offline summaries require a new successful
+online refresh.
 
 - **Summaries**: Every online run retrieves the complete open-work set and board memberships. A transaction replaces that user's memberships and advances the checkpoint together. Failed refreshes preserve the prior snapshot; `--cache-only` uses a verified snapshot without API calls.
 - **Open work**: Uses Jira status category rather than workflow status names. Issues that close, move, leave the user's assignments, or become inaccessible disappear on the next successful reconciliation. Canonical issue data remains separate from result membership.
@@ -580,6 +584,25 @@ is preserved but never imported into a scope; the first scoped run starts cold.
 - **Weekly status**: A complete current search precedes report reuse. A fingerprint includes site/account, effective user, project, dates, sorted issue keys, and report-relevant fields, so removals and same-timestamp replacements invalidate reports. Regeneration fetches comments; detail or comment failures prevent caching a partial report.
 - **Mutation invalidation**: Clears affected canonical/detail/comment/link data, invalidates summary snapshots, and clears weekly reports. Summary refreshes directly recheck locally invalidated issues while Jira's search index catches up. A cache failure is logged without turning a completed remote mutation into an apparent failure.
 - **Board mappings**: Membership belongs to the requested user's snapshot and preserves separate boards and active sprints, including empty groups.
+
+The container launchers mount the named volume `jira-cli-cache` at
+`/home/jira-cli/.jira-cli`. With those launchers:
+
+| Operation | Cache data retained? |
+| --- | --- |
+| Stop/start or restart the container | Yes |
+| Build/rebuild an image | Yes |
+| Remove the container with `podman rm` | Yes |
+| Run `make container-stop` / `make container-run` | Yes; the same named volume is reused |
+| Remove `jira-cli-cache` or delete its underlying storage | No |
+
+Named volumes are independent of containers; even `podman rm --volumes` removes
+anonymous volumes, not this named volume. See the
+[Podman removal documentation](https://docs.podman.io/en/latest/markdown/podman-rm.1.html#volumes-v).
+Cache persistence does not guarantee dashboard history persistence: dashboard
+results currently use `results-<pid>.db` and stale-process cleanup. Their files
+are in the volume, but cross-restart history is unreliable because of process ID
+reuse and cleanup. Stable result-history ownership remains separate planned work.
 
 ### JIRA API
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -289,6 +290,10 @@ func TestGenerateJQLOrderByFastPathAndScope(t *testing.T) {
 			query: "open tasks order by creation date ascending",
 			want:  `issuetype = Task AND statusCategory != Done AND project = PROJ ORDER BY created ASC`,
 		},
+		{
+			query: "my open bugs ordered by priority descending, created ascending",
+			want:  `issuetype = Bug AND statusCategory != Done AND assignee = currentUser() AND project = PROJ ORDER BY priority DESC, created ASC`,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.query, func(t *testing.T) {
@@ -306,6 +311,116 @@ func TestGenerateJQLOrderByFastPathAndScope(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&calls); n != 0 {
 		t.Errorf("LLM reached %d times on the ORDER BY fast path, want 0", n)
+	}
+}
+
+func TestGenerateJQLPhase3DateAndBooleanSemantics(t *testing.T) {
+	t.Setenv("JIRA_PROJECT_KEYS", "")
+	t.Setenv("JIRA_PROJECT_ALIASES", "")
+	cases := []struct {
+		name  string
+		query string
+		want  string
+		mode  nl2jql.QueryMode
+	}{
+		{"due this week has bounded dates without implicit owner or sort", "List jiras that are due this week?", `due >= startOfWeek() AND due < startOfWeek("+1") AND project = PROJ`, nl2jql.ModeList},
+		{"closed history uses CHANGED with exclusive month boundary", "How many jiras did I close in June 2026?", `status CHANGED TO Closed BY currentUser() DURING ("2026-06-01 00:00", "2026-07-01 00:00") BEFORE "2026-07-01 00:00" AND project = PROJ`, nl2jql.ModeCount},
+		{"grouped mixed-field alternatives preserve Boolean grouping", "my (open bugs or done tasks)", `assignee = currentUser() AND (issuetype = Bug AND statusCategory != Done OR issuetype = Task AND status = Done) AND project = PROJ`, nl2jql.ModeList},
+		{"same-field status alternatives remain OR", "my open or done bugs", `issuetype = Bug AND (statusCategory != Done OR status = Done) AND assignee = currentUser() AND project = PROJ`, nl2jql.ModeList},
+		{"multiple sort keys survive rendering", "my bugs ordered by priority descending, created ascending", `issuetype = Bug AND assignee = currentUser() AND project = PROJ ORDER BY priority DESC, created ASC`, nl2jql.ModeList},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := GenerateJQL(context.Background(), &config.Config{JiraProject: "PROJ"}, tc.query)
+			if err != nil {
+				t.Fatalf("GenerateJQL: %v", err)
+			}
+			if res.Route != RouteFastPath {
+				t.Errorf("route = %q, want %q", res.Route, RouteFastPath)
+			}
+			if res.JQL != tc.want {
+				t.Errorf("JQL = %q, want %q", res.JQL, tc.want)
+			}
+			if res.Mode != tc.mode {
+				t.Errorf("mode = %q, want %q", res.Mode, tc.mode)
+			}
+		})
+	}
+}
+
+func TestGenerateJQLRejectsMixedUngroupedORWithoutProvider(t *testing.T) {
+	t.Setenv("JIRA_PROJECT_KEYS", "")
+	t.Setenv("JIRA_PROJECT_ALIASES", "")
+	_, err := GenerateJQL(context.Background(), &config.Config{JiraProject: "PROJ"}, "my open bugs or done tasks")
+	if !errors.Is(err, nl2jql.ErrAmbiguousIntent) {
+		t.Fatalf("error = %v, want ErrAmbiguousIntent", err)
+	}
+}
+
+func TestProductionTranslatorsResolveConfiguredSelf(t *testing.T) {
+	t.Setenv("JIRA_PROJECT_KEYS", "")
+	t.Setenv("JIRA_PROJECT_ALIASES", "")
+	for _, cached := range []bool{false, true} {
+		name := "GenerateJQL"
+		if cached {
+			name = "TranslatorCache.GenerateJQL"
+		}
+		t.Run(name, func(t *testing.T) {
+			var providerCalls int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				atomic.AddInt32(&providerCalls, 1)
+				_, _ = io.WriteString(w, openAIJSON(`status = Open`))
+			}))
+			defer srv.Close()
+			withOpenAIEnv(t, srv.URL)
+
+			var cache *TranslatorCache
+			if cached {
+				cache = NewTranslatorCache()
+			}
+			translate := func(cfg *config.Config, query string) (*QueryResult, error) {
+				if cache != nil {
+					return cache.GenerateJQL(context.Background(), cfg, query, nil)
+				}
+				return GenerateJQL(context.Background(), cfg, query)
+			}
+
+			cases := []struct {
+				name, query, user string
+				want              []string
+				absent            []string
+			}{
+				{"my resolves to configured user", "my issues", "configured@example.com", []string{`assignee = "configured@example.com"`}, []string{"currentUser()"}},
+				{"assigned to me resolves to configured user", "issues assigned to me", "configured@example.com", []string{`assignee = "configured@example.com"`}, []string{"currentUser()"}},
+				{"history actor resolves to configured user", "issues closed by me in June 2026", "configured@example.com", []string{`CHANGED TO Closed BY "configured@example.com"`, `DURING ("2026-06-01 00:00", "2026-07-01 00:00") BEFORE "2026-07-01 00:00"`}, []string{"currentUser()"}},
+				{"explicit assignee is preserved", "all issues assigned to jsmith@example.com that are not closed", "configured@example.com", []string{`assignee = "jsmith@example.com"`}, []string{`assignee = "configured@example.com"`}},
+				{"default self remains currentUser", "my issues", "", []string{"assignee = currentUser()"}, []string{`assignee = "configured@example.com"`}},
+			}
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					res, err := translate(&config.Config{JiraProject: "PROJ", JiraUser: tc.user}, tc.query)
+					if err != nil {
+						t.Fatalf("translate: %v", err)
+					}
+					if res.Route != RouteFastPath {
+						t.Fatalf("route = %q, want %q", res.Route, RouteFastPath)
+					}
+					for _, want := range tc.want {
+						if !strings.Contains(res.JQL, want) {
+							t.Errorf("JQL %q does not contain %q", res.JQL, want)
+						}
+					}
+					for _, absent := range tc.absent {
+						if strings.Contains(res.JQL, absent) {
+							t.Errorf("JQL %q unexpectedly contains %q", res.JQL, absent)
+						}
+					}
+				})
+			}
+			if got := atomic.LoadInt32(&providerCalls); got != 0 {
+				t.Errorf("provider called %d times for deterministic self/assignee queries, want 0", got)
+			}
+		})
 	}
 }
 
@@ -420,9 +535,10 @@ func TestEnsureProjectScope(t *testing.T) {
 	}{
 		{"no predicate appends default", "status = Open", "SUP", "status = Open AND project = SUP"},
 		{"existing predicate is untouched", "project = ENG AND status = Open", "SUP", "project = ENG AND status = Open"},
-		{"membership predicate is untouched", "project in (SUP, ENG)", "SUP", "project in (SUP, ENG)"},
-		{"not-in predicate is untouched", "project not in (SUP)", "SUP", "project not in (SUP)"},
-		{"empty jql is returned unchanged", "", "SUP", ""},
+		{"membership predicate is untouched", "project in (SUP, ENG)", "SUP", "project IN (SUP, ENG)"},
+		{"negative project requires clarification", "project not in (SUP)", "SUP", ""},
+		{"partially scoped OR requires clarification", "project = OTHER OR status = Open", "SUP", ""},
+		{"blank jql is invalid", "", "SUP", ""},
 		{"no default project is a no-op", "status = Open", "", "status = Open"},
 		{"subproject look-alike is not a project predicate", "subproject = X", "SUP", "subproject = X AND project = SUP"},
 
@@ -434,9 +550,9 @@ func TestEnsureProjectScope(t *testing.T) {
 			"(issuetype = Bug OR issuetype = Story) AND project = SUP",
 		},
 		{
-			"closed-month alternatives remain grouped before scoping",
-			`(status WAS Closed BY currentUser() DURING ("2026/07/01", "2026/08/01") OR status WAS Closed BY currentUser() DURING ("2026/04/01", "2026/05/01"))`, "FIELDCTO",
-			`(status WAS Closed BY currentUser() DURING ("2026/07/01", "2026/08/01") OR status WAS Closed BY currentUser() DURING ("2026/04/01", "2026/05/01")) AND project = FIELDCTO`,
+			"closed-month history stays a single CHANGED clause before scoping",
+			`status CHANGED TO Closed BY currentUser() DURING ("2026-06-01 00:00", "2026-07-01 00:00") BEFORE "2026-07-01 00:00"`, "FIELDCTO",
+			`status CHANGED TO Closed BY currentUser() DURING ("2026-06-01 00:00", "2026-07-01 00:00") BEFORE "2026-07-01 00:00" AND project = FIELDCTO`,
 		},
 		{
 			"OR already inside parentheses is not double-wrapped",
@@ -457,9 +573,9 @@ func TestEnsureProjectScope(t *testing.T) {
 		// FIELDCTO-2807: ORDER BY must stay the final clause; appending after it is
 		// a syntax error Jira rejects with HTTP 400.
 		{
-			"due-this-week sort keeps default scope before ORDER BY",
-			`assignee = currentUser() AND due >= startOfWeek() AND due <= endOfWeek() ORDER BY due ASC`, "FIELDCTO",
-			`assignee = currentUser() AND due >= startOfWeek() AND due <= endOfWeek() AND project = FIELDCTO ORDER BY due ASC`,
+			"due-this-week range keeps default scope without an implicit owner or sort",
+			`due >= startOfWeek() AND due < startOfWeek("+1")`, "FIELDCTO",
+			`due >= startOfWeek() AND due < startOfWeek("+1") AND project = FIELDCTO`,
 		},
 		{
 			"predicate is inserted before ORDER BY",
@@ -479,7 +595,7 @@ func TestEnsureProjectScope(t *testing.T) {
 		{
 			"irregular whitespace between ORDER and BY is still recognised",
 			"status = Open ORDER   BY created DESC", "SUP",
-			"status = Open AND project = SUP ORDER   BY created DESC",
+			"status = Open AND project = SUP ORDER BY created DESC",
 		},
 		{
 			"sort-only query with no where-clause",
@@ -496,11 +612,54 @@ func TestEnsureProjectScope(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ensureProjectScope(tc.jql, &config.Config{JiraProject: tc.project})
+			got, err := ensureProjectScope(tc.jql, &config.Config{JiraProject: tc.project})
+			if tc.want == "" {
+				if !errors.Is(err, ErrInvalidGeneratedJQL) {
+					t.Fatalf("expected terminal JQL scope/parse error, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ensureProjectScope: %v", err)
+			}
 			if got != tc.want {
 				t.Errorf("ensureProjectScope(%q, project=%q) = %q, want %q", tc.jql, tc.project, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestTranslateCascadeDoesNotRetryAmbiguousIntent(t *testing.T) {
+	p := &fakeJQLProvider{jql: `project = SUP`}
+	_, err := translateCascade(context.Background(), &config.Config{JiraProject: "SUP"}, "issues from the last few months", nil,
+		func(*config.Config, []jira.Project) (*nl2jql.Translator, error) { return newTestTranslator(t, p), nil })
+	if !errors.Is(err, nl2jql.ErrAmbiguousIntent) {
+		t.Fatalf("error = %v, want ErrAmbiguousIntent", err)
+	}
+	if got := atomic.LoadInt32(&p.calls); got != 0 {
+		t.Errorf("fallback provider called %d times for ambiguous input, want 0", got)
+	}
+}
+
+func TestEnsureProjectScopeReportsMalformedJQL(t *testing.T) {
+	const malformed = `status = Open AND (`
+	_, err := ensureProjectScope(malformed, &config.Config{JiraProject: "SUP"})
+	if err == nil || !strings.Contains(err.Error(), malformed) {
+		t.Fatalf("error = %v, want parse error containing offending JQL %q", err, malformed)
+	}
+}
+
+func TestEnsureProjectScopeQuotesConfiguredProjectAndValidatesSortOnly(t *testing.T) {
+	got, err := ensureProjectScope("status = Open", &config.Config{JiraProject: "PROJ OR project = OTHER"})
+	if err != nil {
+		t.Fatalf("ensureProjectScope hostile project: %v", err)
+	}
+	want := `status = Open AND project = "PROJ OR project = OTHER"`
+	if got != want {
+		t.Fatalf("JQL = %q, want safely quoted project value %q", got, want)
+	}
+	if _, err := ensureProjectScope("ORDER BY created DESC", &config.Config{}); err == nil {
+		t.Fatal("sort-only JQL without a default project passed validation")
 	}
 }
 
@@ -920,7 +1079,7 @@ func openLLMTestCache(t *testing.T) *cache.Cache {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
-	c, err := cache.Open()
+	c, err := cache.OpenForConfig(&config.Config{JiraServer: "https://test.atlassian.net", JiraEmail: "test@test.com"})
 	if err != nil {
 		t.Fatalf("open cache: %v", err)
 	}
@@ -1007,5 +1166,22 @@ func TestGenerateJQLForDigestWithProjectsResolvesHumanName(t *testing.T) {
 	}
 	if res.Days != 0 {
 		t.Errorf("Days = %d, want 0 (window-less query bakes no separate window)", res.Days)
+	}
+}
+
+func TestMalformedGeneratedJQLDoesNotRetryDigest(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(w, openAIJSON(`status = Open ORDER BY updated DESC AND project = OTHER`))
+	}))
+	defer srv.Close()
+	withOpenAIEnv(t, srv.URL)
+	_, err := GenerateJQLForDigest(context.Background(), &config.Config{JiraProject: "PROJ"}, "external bugs")
+	if !errors.Is(err, ErrInvalidGeneratedJQL) {
+		t.Fatalf("want generated-query error, got %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("provider calls=%d, want one terminal parse failure", calls.Load())
 	}
 }

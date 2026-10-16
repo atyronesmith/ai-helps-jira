@@ -3,8 +3,9 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,10 @@ import (
 	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 	"github.com/atyronesmith/ai-helps-jira/internal/nl2jql"
 )
+
+// ErrInvalidGeneratedJQL is terminal: a generated query could not be parsed or
+// validated locally. Digest callers must not ask another prompt to reinterpret it.
+var ErrInvalidGeneratedJQL = errors.New("invalid generated JQL")
 
 // jqlFallbackMaxTokens bounds the LLM completion used by the nl2jql
 // FallbackEngine. The fallback returns a single-line JSON object wrapping the JQL, so a modest
@@ -264,7 +269,7 @@ func buildSchema(cfg *config.Config) map[string]string {
 		"current user": cfg.Assignee(),
 	}
 	if key := cfg.JiraProject; key != "" {
-		schema["default project"] = "project = " + key
+		schema["default project"] = (&jql.Query{Where: jql.Compare("project", "=", jql.QuoteIdent(key))}).Render()
 	}
 	return schema
 }
@@ -304,6 +309,7 @@ func newTranslatorWithProjects(cfg *config.Config, projects []jira.Project) (*nl
 	return nl2jql.NewTranslator(nl2jql.NewNormalizer(), fallback, nl2jql.Options{
 		ProjectMap: buildProjectMapWithProjects(cfg, projects),
 		Schema:     buildSchema(cfg),
+		Self:       cfg.Assignee(),
 		Logger:     slog.Default(),
 	})
 }
@@ -351,9 +357,15 @@ func translateCascade(ctx context.Context, cfg *config.Config, naturalQuery stri
 		slog.Warn("nl2jql translator unavailable; falling back to LLM JSON path", "error", err)
 	} else if res, err := translator.Translate(ctx, naturalQuery); err != nil {
 		parseError = res.ParseError
+		if errors.Is(err, nl2jql.ErrAmbiguousIntent) || errors.Is(err, ErrInvalidGeneratedJQL) {
+			return nil, err
+		}
 		slog.Warn("nl2jql translation failed; falling back to LLM JSON path", "error", err)
 	} else {
-		res.JQL = ensureProjectScope(res.JQL, cfg)
+		res.JQL, err = ensureProjectScope(res.JQL, cfg)
+		if err != nil {
+			return nil, err
+		}
 		slog.Info("generated JQL via nl2jql", "jql", res.JQL, "route", res.Route)
 		return &QueryResult{
 			Input:           res.Input,
@@ -361,6 +373,7 @@ func translateCascade(ctx context.Context, cfg *config.Config, naturalQuery stri
 			ParseError:      res.ParseError,
 			JQL:             res.JQL,
 			Route:           res.Route,
+			Mode:            res.Mode,
 		}, nil
 	}
 
@@ -372,63 +385,37 @@ func translateCascade(ctx context.Context, cfg *config.Config, naturalQuery stri
 	return result, nil
 }
 
-// projectPredicateRe matches any JQL predicate on the project field so
-// ensureProjectScope can tell "the user already named a project" apart from a
-// bare query. It covers the equality and membership operators; the leading word
-// boundary keeps look-alikes such as "subproject" or "projectname" from matching.
-var projectPredicateRe = regexp.MustCompile(`(?i)\bproject\s*(?:!=|=|\bin\b|not\s+in\b)`)
-
-// ensureProjectScope preserves the behaviour the old LLM path guaranteed
-// (QuerySystemPrompt rule #1): every query is scoped to the tenant's project
-// unless the user names a different one. The deterministic nl2jql pipeline only
-// emits a `project =` predicate when the user writes "in <project>", so we append
-// the configured default when none is present. It is idempotent -- a no-op when a
-// project predicate already exists or when no default project is configured -- so it
-// never double-scopes. A bare quantifier such as "all" (as in "all bugs") is not a
-// project name, so such a query is still scoped to the default; that is the intended
-// behaviour, not a clobber. It runs on both translation paths -- the nl2jql pipeline
-// above and, inside generateJQLLLM, the JSON-prompt LLM tier -- so project scoping is
-// a hard guarantee rather than a matter of the model obeying QuerySystemPrompt rule #1.
-//
-// Appending the predicate is not a string concatenation, because JQL has no
-// SQL-style precedence climbing (FIELDCTO-2807). Two structural rules apply:
-//
-//   - AND binds tighter than OR, so a where-clause containing a top-level OR must
-//     be parenthesised first. Without it, `a OR b` + ` AND project = X` parses as
-//     `a OR (b AND project = X)` and the first branch escapes the scope entirely,
-//     silently matching every project in the tenant.
-//   - ORDER BY must remain the final clause. Appending after it is a syntax error
-//     that Jira rejects outright with HTTP 400, so the sort is split off, the
-//     predicate inserted, and the sort re-attached.
-func ensureProjectScope(rawJQL string, cfg *config.Config) string {
-	if cfg == nil || cfg.JiraProject == "" || rawJQL == "" {
-		return rawJQL
+// ensureProjectScope parses provider output before composition. Fully scoped
+// explicit projects and direct identities remain unchanged. A missing project
+// is added around the complete expression; partial or negative explicit scopes
+// are rejected rather than narrowed to a contradictory default. Sorting remains
+// terminal and the execution-boundary validation contract also applies here.
+func ensureProjectScope(rawJQL string, cfg *config.Config) (string, error) {
+	if strings.TrimSpace(rawJQL) == "" {
+		return "", fmt.Errorf("%w %q: JQL is blank", ErrInvalidGeneratedJQL, rawJQL)
 	}
-	// Match against the blanked copy so a literal such as summary ~ "project = X"
-	// is not mistaken for real scoping and does not suppress the predicate.
-	blanked := jql.BlankQuotedLiterals(rawJQL)
-	if projectPredicateRe.MatchString(blanked) {
-		return rawJQL
+	q, err := jql.Parse(rawJQL)
+	if err != nil {
+		return "", fmt.Errorf("%w %q: %w", ErrInvalidGeneratedJQL, rawJQL, err)
 	}
-
-	where, orderBy := rawJQL, ""
-	if idx := jql.OrderByIndex(blanked); idx >= 0 {
-		where, orderBy = rawJQL[:idx], strings.TrimSpace(rawJQL[idx:])
-	}
-	where = strings.TrimSpace(where)
-
-	scoped := "project = " + cfg.JiraProject
-	if where != "" {
-		// Re-blank: offsets shift once the ORDER BY clause is trimmed away.
-		if jql.TopLevelKeywordIndex(jql.BlankQuotedLiterals(where), "OR") >= 0 {
-			where = "(" + where + ")"
+	if cfg != nil && cfg.JiraProject != "" && !q.HasProjectScope() && !q.DirectIdentityOnly() {
+		if q.HasField("project") {
+			return "", fmt.Errorf("%w %q: explicit project predicates do not positively scope every branch; clarify the project choices", ErrInvalidGeneratedJQL, rawJQL)
 		}
-		scoped = where + " AND " + scoped
+		q.AndClause(jql.Compare("project", "=", jql.QuoteIdent(cfg.JiraProject)))
 	}
-	if orderBy != "" {
-		scoped += " " + orderBy
+	rendered := q.Render()
+	if err := jql.Validate(rendered, jql.Options{DefaultProject: projectForValidation(cfg)}); err != nil {
+		return "", fmt.Errorf("%w %q: %w", ErrInvalidGeneratedJQL, rendered, err)
 	}
-	return scoped
+	return rendered, nil
+}
+
+func projectForValidation(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.JiraProject
 }
 
 // GenerateJQLForDigest is the digest-flavoured JQL translation. The digest handler
@@ -489,6 +476,9 @@ func digestCascade(ctx context.Context, cfg *config.Config, naturalQuery string,
 	// When the regex found no window the JSON path supplies it; when the regex
 	// did find one we keep that window and borrow only the JQL, so a
 	// detected-but-untranslatable window no longer hard-fails the digest.
+	if errors.Is(err, nl2jql.ErrAmbiguousIntent) || errors.Is(err, ErrInvalidGeneratedJQL) {
+		return nil, err
+	}
 	res, err = generateJQLLLM(ctx, cfg, naturalQuery)
 	if err != nil {
 		return nil, err
@@ -568,6 +558,7 @@ func (c *TranslatorCache) translatorFor(cfg *config.Config, projects []jira.Proj
 	return nl2jql.NewTranslator(nl2jql.NewNormalizer(), fallback, nl2jql.Options{
 		ProjectMap: buildProjectMapWithProjects(cfg, projects),
 		Schema:     buildSchema(cfg),
+		Self:       cfg.Assignee(),
 		Logger:     slog.Default(),
 	})
 }

@@ -13,6 +13,7 @@ package llm
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
@@ -124,7 +125,10 @@ func TestOracle_EnsureProjectScope_FIELDCTO2807(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			scoped := ensureProjectScope(tc.raw, cfg)
+			scoped, err := ensureProjectScope(tc.raw, cfg)
+			if err != nil {
+				t.Fatalf("ensureProjectScope: %v", err)
+			}
 			assertScopedCorrectly(t, c, scoped)
 		})
 	}
@@ -235,6 +239,11 @@ func TestOracle_FastPathShapes(t *testing.T) {
 		{"assignee self", "my issues"},
 		{"assignee assigned to me", "assigned to me"},
 		{"combined", "my open bugs in " + oracleProject(t)},
+		{"due week", "List jiras that are due this week?"},
+		{"closed month history", "How many jiras did I close in June 2026?"},
+		{"grouped Boolean alternatives", "my (open bugs or done tasks)"},
+		{"same-field status alternatives", "my open or done bugs"},
+		{"multiple sort keys", "my bugs ordered by priority descending, created ascending"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -242,8 +251,46 @@ func TestOracle_FastPathShapes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("nl2jql.Parse(%q): %v", tc.query, err)
 			}
-			scoped := ensureProjectScope(jql, cfg)
+			scoped, err := ensureProjectScope(jql, cfg)
+			if err != nil {
+				t.Fatalf("ensureProjectScope: %v", err)
+			}
 			assertValid(t, c, scoped)
+		})
+	}
+}
+
+// TestOracle_Phase3Shapes posts the real fast-path output after structural
+// project scoping. It covers strict Jira parsing and parsed-tree shape for the
+// new date, history, Boolean, and multiple-sort forms.
+func TestOracle_Phase3Shapes(t *testing.T) {
+	c := oracleClient(t)
+	cfg := &config.Config{JiraProject: oracleProject(t)}
+	for _, query := range []string{
+		"List jiras that are due this week?",
+		"How many jiras did I close in June 2026?",
+		"my (open bugs or done tasks)",
+		"my open or done bugs",
+		"my bugs ordered by priority descending, created ascending",
+	} {
+		t.Run(query, func(t *testing.T) {
+			result, err := GenerateJQLWithProjects(t.Context(), cfg, query, nil)
+			if err != nil {
+				t.Fatalf("GenerateJQLWithProjects: %v", err)
+			}
+			if result.Route != RouteFastPath {
+				t.Fatalf("route = %q, want %q", result.Route, RouteFastPath)
+			}
+			r := assertValid(t, c, result.JQL)
+			if r.Structure == nil || r.Structure.Where == nil {
+				t.Fatalf("expected parsed structure for %q", result.JQL)
+			}
+			if query == "List jiras that are due this week?" && (strings.Contains(result.JQL, "assignee") || strings.Contains(result.JQL, "ORDER BY")) {
+				t.Errorf("due-week output added unrequested owner/order: %s", result.JQL)
+			}
+			if query == "How many jiras did I close in June 2026?" && (!strings.Contains(result.JQL, "CHANGED TO Closed") || !strings.Contains(result.JQL, `DURING ("2026-06-01 00:00", "2026-07-01 00:00") BEFORE "2026-07-01 00:00"`)) {
+				t.Errorf("history output lost CHANGED or exclusive month boundary: %s", result.JQL)
+			}
 		})
 	}
 }

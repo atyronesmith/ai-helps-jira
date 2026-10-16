@@ -72,9 +72,9 @@ OUTPUT CONTRACT (non-negotiable):
 5. If the input cannot be expressed as JQL using the SCHEMA vocabulary or core Jira fields, reply with exactly: {"jql": "EMPTY"}
 
 COMPILATION RULES:
-- Join every predicate with " AND ".
+- Preserve explicit AND, OR, NOT and parentheses. AND binds more tightly than OR. Never replace alternatives with conjunctions or drop constraints. Reply EMPTY for ambiguous requests.
 - Emit fields in this fixed order: project, issuetype, status/statusCategory, assignee, priority, resolution, labels, created, updated, due, then any SCHEMA fields.
-- "me", "my", "mine", "myself" compile to currentUser(). Never invent usernames.
+- "me", "my", "mine", "myself" refer to the SCHEMA "current user" operand, including any configured override. Use currentUser() only when SCHEMA supplies no current user. Apply this operand to history actors too; never invent usernames.
 - Requests for open, unresolved, active, unfinished, or not-done work compile to statusCategory != Done. Never substitute an issuetype != ... predicate for a requested status filter.
 - Relative dates use JQL relative values: -3d, -2w, startOfDay(), startOfWeek().
 - Quote string values with double quotes whenever they contain whitespace or JQL-reserved punctuation (including @ and . in email addresses); escape embedded quotes as \".

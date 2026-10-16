@@ -16,6 +16,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -43,12 +45,15 @@ type Translator struct {
 	// field/tenant vocabulary for the LLM.
 	schema map[string]string
 
-	log *slog.Logger
+	self string
+	log  *slog.Logger
 }
 
 // Options carries deployment configuration for NewTranslator. Zero value is
 // valid for a pure fast/fallback setup without tenant vocabulary.
 type Options struct {
+	// Self is the configured effective-user JQL operand; empty means currentUser().
+	Self string
 	// ProjectMap is handed to Normalizer.Normalize on every call.
 	ProjectMap map[string]string
 
@@ -76,6 +81,7 @@ func NewTranslator(normalizer *Normalizer, fallback *FallbackEngine, opts Option
 	}
 	return &Translator{
 		normalizer: normalizer,
+		self:       opts.Self,
 		fallback:   fallback,
 		// Defensive copies: the pipeline must not observe external mutation.
 		projectMap: copyStringMap(opts.ProjectMap),
@@ -110,6 +116,7 @@ type Result struct {
 	ParseError      string
 	JQL             string
 	Route           string
+	Mode            QueryMode
 }
 
 // Translate converts a natural-language Jira question into JQL.
@@ -136,25 +143,32 @@ func (t *Translator) Translate(ctx context.Context, query string) (Result, error
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
-	if jql, ok := translateClosedMonthQuery(q, t.normalizer.clock()()); ok {
-		log.Info("jql translation: fast path used (closed-month history intent)",
-			slog.String("route", RouteFastPath),
-			slog.String("query", q),
-			slog.String("jql", jql),
-		)
-		return Result{Input: query, NormalizedInput: q, JQL: jql, Route: RouteFastPath}, nil
-	}
 
 	// ------------------------------------------------------------------
 	// 1) Normalization. Normalize never errors; unknown fragments pass
 	//    through untouched and are somebody else's problem.
 	// ------------------------------------------------------------------
+	if err := checkAmbiguity(q); err != nil {
+		return Result{Input: query, NormalizedInput: q}, err
+	}
 	normalized := t.normalizer.Normalize(q, t.projectMap)
 
 	// ------------------------------------------------------------------
 	// 2) Fast path: the strict deterministic parser.
 	// ------------------------------------------------------------------
-	jql, parseErr := Parse(normalized)
+	plan, parseErr := ParsePlan(normalized, t.self, t.normalizer.clock()())
+	var jql string
+	if parseErr == nil {
+		plan.Mode = queryMode(q)
+		tree, err := plan.Compile()
+		parseErr = err
+		if err == nil {
+			jql = tree.Render()
+		}
+	}
+	if errors.Is(parseErr, ErrAmbiguousIntent) {
+		return Result{Input: query, NormalizedInput: normalized, ParseError: parseErr.Error()}, parseErr
+	}
 	if parseErr == nil {
 		log.Info("jql translation: fast path used (deterministic parser)",
 			slog.String("route", RouteFastPath),
@@ -162,7 +176,7 @@ func (t *Translator) Translate(ctx context.Context, query string) (Result, error
 			slog.String("normalized", normalized),
 			slog.String("jql", jql),
 		)
-		return Result{Input: query, NormalizedInput: normalized, JQL: jql, Route: RouteFastPath}, nil
+		return Result{Input: query, NormalizedInput: normalized, JQL: jql, Route: RouteFastPath, Mode: queryMode(q)}, nil
 	}
 
 	// ------------------------------------------------------------------
@@ -212,3 +226,33 @@ func copyStringMap(m map[string]string) map[string]string {
 	}
 	return out
 }
+
+var ambiguousPeriod = regexp.MustCompile(`(?i)\b(?:last|past)\s+(?:[0-9]+\s+(?:months?|sprints?)|(?:a |an )?(?:few|several|couple)(?: of)?\s+(?:days?|weeks?|months?|sprints?))\b`)
+
+var ambiguousNegation = regexp.MustCompile(`(?i)\bnot\s+(?:done|closed|resolved|cancell?ed)\s+or\s+(?:done|closed|resolved|cancell?ed)\b`)
+var ambiguousTense = regexp.MustCompile(`(?i)\b(?:was|were|previously|had)\b`)
+
+func checkAmbiguity(q string) error {
+	for _, match := range relRangeRe.FindAllStringSubmatch(q, -1) {
+		count, err := strconv.Atoi(match[relRangeRe.SubexpIndex("count")])
+		if err != nil || count <= 0 || count > 100000 {
+			return fmt.Errorf("%w: use a positive bounded day/week duration", ErrAmbiguousIntent)
+		}
+	}
+	if allProjects.MatchString(q) {
+		return fmt.Errorf("%w: name the projects to include explicitly", ErrAmbiguousIntent)
+	}
+
+	if ambiguousPeriod.MatchString(q) {
+		return fmt.Errorf("%w: use an exact day/week duration or a named calendar period", ErrAmbiguousIntent)
+	}
+	if ambiguousNegation.MatchString(q) {
+		return fmt.Errorf("%w: group negative status alternatives explicitly", ErrAmbiguousIntent)
+	}
+	if ambiguousTense.MatchString(q) {
+		return fmt.Errorf("%w: specify current status, resolution date, or a status transition", ErrAmbiguousIntent)
+	}
+	return nil
+}
+
+var allProjects = regexp.MustCompile(`(?i)\b(?:all|across)\s+projects\b`)

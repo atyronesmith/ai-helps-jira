@@ -368,26 +368,3 @@ func TestBlankQuotedLiterals(t *testing.T) {
 		t.Fatalf("quote characters were not blanked: %q", got)
 	}
 }
-
-func TestTopLevelKeywordIndex(t *testing.T) {
-	blanked := BlankQuotedLiterals("status = Open OR (priority = High AND resolution = Fixed)")
-	idx := TopLevelKeywordIndex(blanked, "OR")
-	if idx < 0 {
-		t.Fatalf("expected to find top-level OR")
-	}
-	blanked2 := BlankQuotedLiterals("status = Open AND (priority = High OR resolution = Fixed)")
-	if TopLevelKeywordIndex(blanked2, "OR") >= 0 {
-		t.Fatalf("OR nested inside parens should not be reported as top level")
-	}
-}
-
-func TestOrderByIndex(t *testing.T) {
-	blanked := BlankQuotedLiterals("status = Open ORDER BY   priority ASC")
-	idx := OrderByIndex(blanked)
-	if idx < 0 {
-		t.Fatalf("expected to find ORDER BY despite irregular whitespace")
-	}
-	if blanked[idx:idx+5] != "ORDER" && blanked[idx:idx+5] != "order" {
-		t.Fatalf("index %d does not point at ORDER", idx)
-	}
-}

@@ -58,7 +58,8 @@ func runGetIssue(cmd *cobra.Command, args []string) error {
 	var detail *jira.IssueDetail
 	var ok bool
 	if !flagGetIssueRefresh {
-		fresh, searchErr := client.SearchJQL(fmt.Sprintf("key = %s", jql.QuoteIdent(issueKey)), 1)
+		keyQuery := (&jql.Query{Where: jql.Compare("key", "=", jql.QuoteIdent(issueKey))}).Render()
+		fresh, searchErr := client.SearchJQL(keyQuery, 1)
 		if searchErr == nil && len(fresh) == 1 && !fresh[0].Updated.IsZero() {
 			detail, ok = db.GetIssueDetail(issueKey, fresh[0].Updated)
 		}

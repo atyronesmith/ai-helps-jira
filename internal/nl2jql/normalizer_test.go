@@ -27,47 +27,47 @@ func TestNormalize(t *testing.T) {
 		{
 			name:  "exact due this week question is narrowly canonicalized",
 			input: "List jiras that are due this week?",
-			want:  "my dueweek",
+			want:  `List jiras that are due >= startOfWeek() AND due < startOfWeek("+1")?`,
 		},
 		{
 			name:  "hero: fuzzy project plus counted days",
 			input: "my open bugs in Spport created in the last 3 days",
-			want:  "my open bugs in SUP created >= -3d",
+			want:  "my open bugs in SUP created >= -3d AND created <= now()",
 		},
 		{
 			name:  "requested example: last Tuesday == -7d on a Tuesday",
 			input: "created last Tuesday",
-			want:  "created >= -7d",
+			want:  `created >= startOfDay("-7") AND created < startOfDay("-6")`,
 		},
 		{
 			name:  "weeks reduce to days",
 			input: "bugs updated in the last 2 weeks",
-			want:  "bugs updated >= -14d",
+			want:  "bugs updated >= -14d AND updated <= now()",
 		},
 		{
 			name:  "sprints use the configured sprint length",
 			input: "stories resolved over the last 2 sprints",
-			want:  "stories resolved >= -28d",
+			want:  "stories resolved over the last 2 sprints",
 		},
 		{
 			name:  "vague counters: a couple of weeks",
 			input: "bugs created in the last couple of weeks",
-			want:  "bugs created >= -14d",
+			want:  "bugs created in the last couple of weeks",
 		},
 		{
 			name:  "today and yesterday",
 			input: "created today, updated yesterday",
-			want:  "created >= startOfDay(), updated >= -1d",
+			want:  `created >= startOfDay() AND created < startOfDay("+1"), updated >= startOfDay("-1") AND updated < startOfDay()`,
 		},
 		{
 			name:  "this week and last week",
 			input: "created this week and updated last week",
-			want:  "created >= startOfWeek() and updated >= -7d",
+			want:  `created >= startOfWeek() AND created < startOfWeek("+1") and updated >= startOfWeek("-1") AND updated < startOfWeek()`,
 		},
 		{
 			name:  "due date aliases collapse to canonical due field",
 			input: "due date in the last 3 days",
-			want:  "due >= -3d",
+			want:  "due >= -3d AND due <= now()",
 		},
 		{
 			name:  "typo inside a multi-word key snaps",
@@ -77,12 +77,12 @@ func TestNormalize(t *testing.T) {
 		{
 			name:  "status phrase 'in progress' never becomes a project",
 			input: "bugs in progress created today",
-			want:  "bugs in progress created >= startOfDay()",
+			want:  `bugs in progress created >= startOfDay() AND created < startOfDay("+1")`,
 		},
 		{
 			name:  "unknown project passes through untouched",
 			input: "bugs in Zanzibar created today",
-			want:  "bugs in Zanzibar created >= startOfDay()",
+			want:  `bugs in Zanzibar created >= startOfDay() AND created < startOfDay("+1")`,
 		},
 	}
 

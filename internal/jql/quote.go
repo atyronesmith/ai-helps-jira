@@ -53,7 +53,7 @@ func safeBareIdent(s string) bool {
 		return false
 	}
 	switch strings.ToUpper(s) {
-	case "AND", "OR", "NOT", "IN", "IS", "EMPTY", "NULL", "ORDER", "BY", "WAS", "CHANGED":
+	case "AND", "OR", "NOT", "IN", "IS", "EMPTY", "NULL", "ORDER", "BY", "WAS", "CHANGED", "FROM", "TO", "BEFORE", "AFTER", "ON", "DURING", "ASC", "DESC":
 		return false
 	}
 	for i, r := range s {
