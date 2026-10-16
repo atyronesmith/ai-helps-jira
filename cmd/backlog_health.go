@@ -61,7 +61,7 @@ func runBacklogHealth(cmd *cobra.Command, args []string) error {
 	}
 	setupLogging()
 
-	db, err := cache.Open()
+	db, err := cache.OpenForConfig(cfg)
 	if err != nil {
 		return err
 	}

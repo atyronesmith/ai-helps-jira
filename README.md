@@ -2,7 +2,7 @@
 
 A Go CLI tool and MCP server for JIRA Cloud. Provides daily summaries, natural language search, AI-powered digest reports, ticket enrichment, weekly status generation, and full CRUD operations — all with SQLite caching and a rich web dashboard.
 
-Inspired by the [official Atlassian MCP server](https://github.com/atlassian/mcp-server-atlassian), but built from scratch in Go with SQLite caching to avoid JIRA Cloud API throttling on repeated queries. The caching layer enables delta fetches, smart cache invalidation, and near-instant repeat runs without hitting the API.
+Inspired by the [official Atlassian MCP server](https://github.com/atlassian/mcp-server-atlassian), but built from scratch in Go with SQLite caching to avoid JIRA Cloud API throttling on repeated queries. The cache isolates Jira sites and accounts, reconciles summary membership, and reuses unchanged issue details and weekly reports. Online summaries and weekly reports still search Jira to verify the current issue set.
 
 ## Features
 
@@ -106,10 +106,10 @@ Then add to your project's `.mcp.json`:
 # First run: full fetch from JIRA, populates cache
 jira-cli summary
 
-# Subsequent runs: delta fetch (only changed issues)
+# Subsequent runs: reconcile the complete current summary
 jira-cli summary
 
-# Force full refresh
+# Explicit full reconciliation (the same policy as an ordinary online run)
 jira-cli summary --refresh
 
 # Use cached data only (no API calls)
@@ -569,14 +569,17 @@ internal/
 
 ### Cache Design
 
-The SQLite cache (`~/.jira-cli/cache.db`) stores issues, comments, links, and run history:
+SQLite databases at `~/.jira-cli/scopes/<hash>.db` isolate normalized Jira sites
+and authenticated accounts. Summary membership and weekly reports also distinguish
+the effective user and project. Existing unattributed `~/.jira-cli/cache.db` data
+is preserved but never imported into a scope; the first scoped run starts cold.
 
-- **First run**: Full fetch from JIRA, stores everything
-- **Subsequent runs**: Queries `updated >= "last_fetch"` for changes only, upserts into cache
-- **Per-issue details**: Individual issue details (description, labels, parent, assignee, etc.) are cached. On repeat runs, only issues whose JIRA `updated` timestamp changed are re-fetched. This dramatically reduces API calls — e.g., `weekly-status` with 25 issues goes from 50+ API calls to near-zero on cache hit. The `get-issue` command also checks cache first.
-- **Weekly status**: Caches full LLM results; compares JIRA `updated` timestamps to skip re-generation when nothing changed
-- **Done issues**: Automatically pruned from cache after each fetch
-- **Board mappings**: Junction table supports issues appearing on multiple boards
+- **Summaries**: Every online run retrieves the complete open-work set and board memberships. A transaction replaces that user's memberships and advances the checkpoint together. Failed refreshes preserve the prior snapshot; `--cache-only` uses a verified snapshot without API calls.
+- **Open work**: Uses Jira status category rather than workflow status names. Issues that close, move, leave the user's assignments, or become inaccessible disappear on the next successful reconciliation. Canonical issue data remains separate from result membership.
+- **Issue details**: Cached details are checked against Jira `updated` timestamps where available. Newer canonical observations cannot be overwritten by older search-index rows. Mutation revisions reject cache fills started before a local mutation.
+- **Weekly status**: A complete current search precedes report reuse. A fingerprint includes site/account, effective user, project, dates, sorted issue keys, and report-relevant fields, so removals and same-timestamp replacements invalidate reports. Regeneration fetches comments; detail or comment failures prevent caching a partial report.
+- **Mutation invalidation**: Clears affected canonical/detail/comment/link data, invalidates summary snapshots, and clears weekly reports. Summary refreshes directly recheck locally invalidated issues while Jira's search index catches up. A cache failure is logged without turning a completed remote mutation into an apparent failure.
+- **Board mappings**: Membership belongs to the requested user's snapshot and preserves separate boards and active sprints, including empty groups.
 
 ### JIRA API
 

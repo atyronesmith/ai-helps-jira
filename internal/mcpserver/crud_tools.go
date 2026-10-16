@@ -220,6 +220,11 @@ func (h *Handlers) HandleGetIssue(ctx context.Context, req mcp.CallToolRequest) 
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	db, err := h.cacheForConfig(cfg)
+	if err != nil {
+		slog.Warn("cache unavailable for issue lookup", "error", err)
+		db = nil
+	}
 
 	client, err := jira.NewClient(cfg)
 	if err != nil {
@@ -245,22 +250,42 @@ func (h *Handlers) HandleGetIssue(ctx context.Context, req mcp.CallToolRequest) 
 	}
 
 	// Check detail cache first
-	detail, cached := h.cache.GetIssueDetail(key, knownUpdated)
+	var detail *jira.IssueDetail
+	cached := false
+	if db != nil {
+		detail, cached = db.GetIssueDetail(key, knownUpdated)
+	}
 	var links []jira.IssueLink
 
 	if cached {
 		slog.Info("cache hit for issue detail", "key", key)
-		links, _ = h.cache.GetIssueLinks(key)
+		links, _ = db.GetIssueLinks(key)
 	}
 
 	if !cached {
+		if db != nil {
+			// A miss can mean Jira has newer detail or a previous mutation left
+			// related rows behind. Clear derived rows before reading the new
+			// authoritative version, then fence this retrieval with a fresh view.
+			if invalidateErr := db.InvalidateIssue(key); invalidateErr != nil {
+				slog.Warn("could not clear stale issue cache before refresh", "key", key, "error", invalidateErr)
+			}
+			if freshDB, snapshotErr := db.Snapshot(); snapshotErr == nil {
+				db = freshDB
+			} else {
+				slog.Warn("could not refresh issue cache snapshot", "key", key, "error", snapshotErr)
+				db = nil
+			}
+		}
 		detail, links, err = client.GetIssueWithLinks(key)
 		if err != nil {
 			return errorResult(err.Error()), nil
 		}
-		h.cache.UpsertIssueDetail(detail)
-		if len(links) > 0 {
-			h.cache.UpsertIssueLinks(links)
+		if db != nil {
+			db.UpsertIssueDetail(detail)
+			if len(links) > 0 {
+				db.UpsertIssueLinks(links)
+			}
 		}
 	}
 
@@ -302,14 +327,14 @@ func (h *Handlers) HandleGetIssue(ctx context.Context, req mcp.CallToolRequest) 
 	if includeComments {
 		var comments []jira.Comment
 		if cached {
-			comments, _ = h.cache.GetCommentsByKeys([]string{key}, time.Time{})
+			comments, _ = db.GetCommentsByKeys([]string{key}, time.Time{})
 		}
 		if !cached || len(comments) == 0 {
 			comments, commentsErr = client.GetComments(key)
 			if commentsErr != nil {
 				slog.Warn("failed to fetch comments", "key", key, "error", commentsErr)
-			} else if len(comments) > 0 {
-				h.cache.UpsertComments(comments)
+			} else if len(comments) > 0 && db != nil {
+				db.UpsertComments(comments)
 			}
 		}
 		if len(comments) > 0 {
@@ -336,6 +361,7 @@ func (h *Handlers) HandleCreateIssue(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.prepareMutationCache(cfg)
 
 	client, err := jira.NewClient(cfg)
 	if err != nil {
@@ -357,6 +383,7 @@ func (h *Handlers) HandleCreateIssue(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.invalidateIssueCache(cfg, issue.Key)
 
 	return textResult(fmt.Sprintf("Issue created: %s - %s\nView: %s/browse/%s", issue.Key, issue.Summary, cfg.JiraServer, issue.Key)), nil
 }
@@ -371,6 +398,7 @@ func (h *Handlers) HandleEditIssue(ctx context.Context, req mcp.CallToolRequest)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.prepareMutationCache(cfg)
 
 	client, err := jira.NewClient(cfg)
 	if err != nil {
@@ -417,7 +445,7 @@ func (h *Handlers) HandleEditIssue(ctx context.Context, req mcp.CallToolRequest)
 	if err := client.EditIssue(key, fields); err != nil {
 		return errorResult(err.Error()), nil
 	}
-	h.invalidateIssueCache(key)
+	h.invalidateIssueCache(cfg, key)
 
 	return textResult(fmt.Sprintf("Issue %s updated. Fields changed: %s", key, strings.Join(changed, ", "))), nil
 }
@@ -466,6 +494,7 @@ func (h *Handlers) HandleTransition(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.prepareMutationCache(cfg)
 
 	client, err := jira.NewClient(cfg)
 	if err != nil {
@@ -475,7 +504,7 @@ func (h *Handlers) HandleTransition(ctx context.Context, req mcp.CallToolRequest
 	if err := client.TransitionIssue(key, transitionID); err != nil {
 		return errorResult(err.Error()), nil
 	}
-	h.invalidateIssueCache(key)
+	h.invalidateIssueCache(cfg, key)
 
 	return textResult(fmt.Sprintf("Issue %s transitioned successfully.", key)), nil
 }
@@ -491,6 +520,7 @@ func (h *Handlers) HandleAddComment(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.prepareMutationCache(cfg)
 
 	client, err := jira.NewClient(cfg)
 	if err != nil {
@@ -501,7 +531,7 @@ func (h *Handlers) HandleAddComment(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
-	h.invalidateIssueCache(key)
+	h.invalidateIssueCache(cfg, key)
 
 	return textResult(fmt.Sprintf("Comment added to %s (ID: %s).", key, comment.ID)), nil
 }
@@ -554,6 +584,7 @@ func (h *Handlers) HandleAddWorklog(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.prepareMutationCache(cfg)
 
 	client, err := jira.NewClient(cfg)
 	if err != nil {
@@ -564,7 +595,7 @@ func (h *Handlers) HandleAddWorklog(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
-	h.invalidateIssueCache(key)
+	h.invalidateIssueCache(cfg, key)
 
 	return textResult(fmt.Sprintf("Worklog added to %s: %s (ID: %s, started: %s).",
 		key, wl.TimeSpent, wl.ID, wl.Started.Format("2006-01-02 15:04"))), nil
@@ -582,6 +613,7 @@ func (h *Handlers) HandleLinkIssues(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.prepareMutationCache(cfg)
 
 	client, err := jira.NewClient(cfg)
 	if err != nil {
@@ -591,7 +623,7 @@ func (h *Handlers) HandleLinkIssues(ctx context.Context, req mcp.CallToolRequest
 	if err := client.LinkIssues(inward, outward, linkType); err != nil {
 		return errorResult(err.Error()), nil
 	}
-	h.invalidateIssueCache(inward, outward)
+	h.invalidateIssueCache(cfg, inward, outward)
 
 	return textResult(fmt.Sprintf("Linked %s → %s (type: %s).", inward, outward, linkType)), nil
 }
@@ -607,6 +639,7 @@ func (h *Handlers) HandleAttachFile(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.prepareMutationCache(cfg)
 
 	client, err := jira.NewClient(cfg)
 	if err != nil {
@@ -617,7 +650,7 @@ func (h *Handlers) HandleAttachFile(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
-	h.invalidateIssueCache(key)
+	h.invalidateIssueCache(cfg, key)
 
 	return textResult(fmt.Sprintf("File %q attached to %s.", filename, key)), nil
 }
@@ -632,6 +665,7 @@ func (h *Handlers) HandleWatchIssue(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.prepareMutationCache(cfg)
 
 	client, err := jira.NewClient(cfg)
 	if err != nil {
@@ -641,7 +675,7 @@ func (h *Handlers) HandleWatchIssue(ctx context.Context, req mcp.CallToolRequest
 	if err := client.WatchIssue(key); err != nil {
 		return errorResult(err.Error()), nil
 	}
-	h.invalidateIssueCache(key)
+	h.invalidateIssueCache(cfg, key)
 
 	return textResult(fmt.Sprintf("Now watching %s.", key)), nil
 }
@@ -656,6 +690,7 @@ func (h *Handlers) HandleUnwatchIssue(ctx context.Context, req mcp.CallToolReque
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.prepareMutationCache(cfg)
 
 	client, err := jira.NewClient(cfg)
 	if err != nil {
@@ -665,7 +700,7 @@ func (h *Handlers) HandleUnwatchIssue(ctx context.Context, req mcp.CallToolReque
 	if err := client.UnwatchIssue(key); err != nil {
 		return errorResult(err.Error()), nil
 	}
-	h.invalidateIssueCache(key)
+	h.invalidateIssueCache(cfg, key)
 
 	return textResult(fmt.Sprintf("Stopped watching %s.", key)), nil
 }
@@ -686,6 +721,7 @@ func (h *Handlers) HandleAddLabels(ctx context.Context, req mcp.CallToolRequest)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.prepareMutationCache(cfg)
 
 	client, err := jira.NewClient(cfg)
 	if err != nil {
@@ -695,7 +731,7 @@ func (h *Handlers) HandleAddLabels(ctx context.Context, req mcp.CallToolRequest)
 	if err := client.AddLabels(key, labels); err != nil {
 		return errorResult(err.Error()), nil
 	}
-	h.invalidateIssueCache(key)
+	h.invalidateIssueCache(cfg, key)
 
 	return textResult(fmt.Sprintf("Labels added to %s: %s", key, strings.Join(labels, ", "))), nil
 }
@@ -716,6 +752,7 @@ func (h *Handlers) HandleRemoveLabels(ctx context.Context, req mcp.CallToolReque
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.prepareMutationCache(cfg)
 
 	client, err := jira.NewClient(cfg)
 	if err != nil {
@@ -725,7 +762,7 @@ func (h *Handlers) HandleRemoveLabels(ctx context.Context, req mcp.CallToolReque
 	if err := client.RemoveLabels(key, labels); err != nil {
 		return errorResult(err.Error()), nil
 	}
-	h.invalidateIssueCache(key)
+	h.invalidateIssueCache(cfg, key)
 
 	return textResult(fmt.Sprintf("Labels removed from %s: %s", key, strings.Join(labels, ", "))), nil
 }
@@ -800,6 +837,7 @@ func (h *Handlers) HandleVoteIssue(ctx context.Context, req mcp.CallToolRequest)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.prepareMutationCache(cfg)
 
 	client, err := jira.NewClient(cfg)
 	if err != nil {
@@ -809,7 +847,7 @@ func (h *Handlers) HandleVoteIssue(ctx context.Context, req mcp.CallToolRequest)
 	if err := client.VoteIssue(key); err != nil {
 		return errorResult(err.Error()), nil
 	}
-	h.invalidateIssueCache(key)
+	h.invalidateIssueCache(cfg, key)
 
 	return textResult(fmt.Sprintf("Voted for %s.", key)), nil
 }
@@ -824,6 +862,7 @@ func (h *Handlers) HandleUnvoteIssue(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.prepareMutationCache(cfg)
 
 	client, err := jira.NewClient(cfg)
 	if err != nil {
@@ -833,7 +872,7 @@ func (h *Handlers) HandleUnvoteIssue(ctx context.Context, req mcp.CallToolReques
 	if err := client.UnvoteIssue(key); err != nil {
 		return errorResult(err.Error()), nil
 	}
-	h.invalidateIssueCache(key)
+	h.invalidateIssueCache(cfg, key)
 
 	return textResult(fmt.Sprintf("Vote removed from %s.", key)), nil
 }

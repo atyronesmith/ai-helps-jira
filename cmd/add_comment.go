@@ -45,7 +45,7 @@ func runAddComment(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	invalidateIssueCache(args[0])
+	invalidateIssueCache(cfg, args[0])
 
 	pterm.FgGreen.Printfln("Comment added to %s", args[0])
 	fmt.Printf("  ID: %s, Author: %s\n", comment.ID, comment.AuthorName)

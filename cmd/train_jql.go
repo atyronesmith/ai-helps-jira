@@ -55,7 +55,7 @@ func runTrainJQL(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	var db *cache.Cache
-	if c, openErr := cache.Open(); openErr == nil {
+	if c, openErr := cache.OpenForConfig(cfg); openErr == nil {
 		db = c
 		defer c.Close()
 	}

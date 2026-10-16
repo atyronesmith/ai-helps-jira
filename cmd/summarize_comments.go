@@ -40,7 +40,7 @@ func runSummarizeComments(cmd *cobra.Command, args []string) error {
 
 	issueKey := args[0]
 
-	db, err := cache.Open()
+	db, err := cache.OpenForConfig(cfg)
 	if err != nil {
 		return err
 	}

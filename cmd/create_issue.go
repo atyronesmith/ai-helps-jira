@@ -77,6 +77,8 @@ func runCreateIssue(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	invalidateIssueCache(cfg, issue.Key)
+
 	pterm.FgGreen.Printfln("Created %s: %s", issue.Key, flagIssueSummary)
 	fmt.Printf("  %s/browse/%s\n", cfg.JiraServer, issue.Key)
 	return nil

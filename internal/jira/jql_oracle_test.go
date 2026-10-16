@@ -125,7 +125,7 @@ func TestOracle_HandBuiltTemplates(t *testing.T) {
 			"internal/jira/client.go Client.GetOpenIssues",
 			fmt.Sprintf(
 				"assignee = %s AND project = %s "+
-					"AND status NOT IN (Done, Closed, Resolved) "+
+					"AND statusCategory != Done "+
 					"ORDER BY priority ASC, status ASC",
 				assignee, project,
 			),
@@ -135,7 +135,7 @@ func TestOracle_HandBuiltTemplates(t *testing.T) {
 			"internal/jira/client.go Client.GetOpenIssuesSince",
 			fmt.Sprintf(
 				"assignee = %s AND project = %s "+
-					"AND status NOT IN (Done, Closed, Resolved) "+
+					"AND statusCategory != Done "+
 					"AND updated >= \"%s\" "+
 					"ORDER BY priority ASC, status ASC",
 				assignee, project, "2026-07-01 00:00",
@@ -145,7 +145,7 @@ func TestOracle_HandBuiltTemplates(t *testing.T) {
 			"GetSprintIssues (getSprintIssues)",
 			"internal/jira/client.go Client.getSprintIssues",
 			fmt.Sprintf(
-				"assignee = %s AND sprint = %d AND project = %s ORDER BY priority ASC",
+				"assignee = %s AND sprint = %d AND project = %s AND statusCategory != Done ORDER BY priority ASC",
 				assignee, sprintID, project,
 			),
 		},
@@ -153,16 +153,26 @@ func TestOracle_HandBuiltTemplates(t *testing.T) {
 			"getKanbanIssues",
 			"internal/jira/client.go Client.getKanbanIssues (note: no project predicate at all -- see report)",
 			fmt.Sprintf(
-				"assignee = %s AND status NOT IN (Done, Closed, Resolved) "+
+				"assignee = %s AND statusCategory != Done "+
 					"ORDER BY priority ASC, status ASC",
 				assignee,
 			),
 		},
 		{
+			"summary open-work snapshot",
+			"internal/jira/summary.go Client.FetchSummary",
+			fmt.Sprintf("project = %s AND assignee = %s AND statusCategory != Done ORDER BY priority ASC, status ASC", project, assignee),
+		},
+		{
+			"summary sprint membership",
+			"internal/jira/summary.go Client.fetchSummaryBoards",
+			fmt.Sprintf("project = %s AND assignee = %s AND sprint = %d AND statusCategory != Done ORDER BY priority ASC", project, assignee, sprintID),
+		},
+		{
 			"find-similar candidate fetch",
 			"cmd/find_similar.go runFindSimilar and internal/mcpserver/tools.go find-similar handler (identical template)",
 			fmt.Sprintf(
-				"project = %s AND status NOT IN (Done, Closed, Resolved) ORDER BY updated DESC",
+				"project = %s AND statusCategory != Done ORDER BY updated DESC",
 				project,
 			),
 		},

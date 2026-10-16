@@ -30,6 +30,12 @@ type CachedIssueResult struct {
 // knownUpdated is the issue's current updated time from a search result;
 // pass zero time to accept any cached value.
 func (c *Cache) FetchIssue(f Fetcher, key string, knownUpdated time.Time) (*jira.IssueDetail, bool, error) {
+	op, err := c.operation()
+	if err != nil {
+		return nil, false, err
+	}
+	c = op
+
 	if detail, ok := c.GetIssueDetail(key, knownUpdated); ok {
 		slog.Debug("cache hit for issue detail", "key", key)
 		return detail, true, nil
@@ -46,6 +52,12 @@ func (c *Cache) FetchIssue(f Fetcher, key string, knownUpdated time.Time) (*jira
 // FetchComments retrieves comments for an issue, preferring cache.
 // since filters comments to those created after this time.
 func (c *Cache) FetchComments(f Fetcher, key string, since time.Time, preferCache bool) ([]jira.Comment, bool, error) {
+	op, err := c.operation()
+	if err != nil {
+		return nil, false, err
+	}
+	c = op
+
 	if preferCache {
 		comments, _ := c.GetCommentsByKeys([]string{key}, since)
 		if len(comments) > 0 {
@@ -65,6 +77,12 @@ func (c *Cache) FetchComments(f Fetcher, key string, since time.Time, preferCach
 
 // FetchIssueWithLinks retrieves an issue with its links, preferring cache.
 func (c *Cache) FetchIssueWithLinks(f Fetcher, key string) (*jira.IssueDetail, []jira.IssueLink, bool, error) {
+	op, err := c.operation()
+	if err != nil {
+		return nil, nil, false, err
+	}
+	c = op
+
 	detail, detailCached := c.GetIssueDetail(key, time.Time{})
 	links, _ := c.GetIssueLinks(key)
 
@@ -110,6 +128,12 @@ const DefaultProjectTTL = 24 * time.Hour
 // fall back to the env-only vocabulary if it is empty" so a warm-up never fails
 // a query.
 func (c *Cache) FetchProjects(build func() (ProjectFetcher, error), ttl time.Duration) ([]jira.Project, bool, error) {
+	op, err := c.operation()
+	if err != nil {
+		return nil, false, err
+	}
+	c = op
+
 	projects, fetchedAt, ok := c.GetProjects()
 	if ok && (ttl <= 0 || time.Since(fetchedAt) < ttl) {
 		slog.Debug("cache hit for projects", "count", len(projects))

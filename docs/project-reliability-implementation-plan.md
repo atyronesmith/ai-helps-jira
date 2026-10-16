@@ -1,8 +1,8 @@
 # Project Reliability Implementation Plan
 
-Status: Phase 0—Regression gates and Phase 1—Complete searches and honest counts
-implemented and locally verified on 2026-10-16.
-Phases 2–7 remain proposed. Hosted CI/oracle setup and execution remain pending.
+Status: Phases 0–2 implemented and locally verified on 2026-10-16.
+Phases 3–7 remain proposed. Hosted CI execution remains pending; the Phase 2 live
+Jira oracle is unavailable without explicitly exported credentials and fixtures.
 Review date: 2026-10-16.
 
 ## Intent
@@ -14,7 +14,7 @@ consistent behavior before expanding the feature roadmap.
 
 This plan captures the project review of the current working tree, including
 uncommitted work. Phase 0 implementation was explicitly requested on 2026-10-16.
-Phase 1 was subsequently authorized. Later phases still require authorization.
+Phases 1 and 2 were subsequently authorized. Later phases still require authorization.
 Jira mutations and deployments are outside this delivery.
 
 ## Keep
@@ -234,7 +234,7 @@ implemented bounded CLI/formatting, MCP/dashboard, and search-regression work.
 
 Phase 1 implementation and local acceptance checks are complete. Existing local
 harness artifacts were preserved. This phase has not been deployed. Phase 2 cache
-synchronization/isolation and later phases remain planned.
+synchronization/isolation is delivered below; later phases remain planned.
 
 ## Phase 2: Cache synchronization and isolation
 
@@ -265,6 +265,115 @@ next summary; two user overrides do not share membership or weekly reports; two
 sites with the same issue key remain isolated; explicit other-project results
 retain their project; failed refresh does not advance its checkpoint; cache
 errors do not turn an already successful remote mutation into an apparent failure.
+
+### Phase 2 delivered contracts (2026-10-16)
+
+The root reviewed the partial working tree and `/tmp/jira-phase2-contract.txt`,
+kept the scope/transaction/concurrency decisions, and delegated bounded Jira
+retrieval, adapter, fingerprint, and regression work to Luna 6. Existing work,
+including `test.sh` and `docs/HARNESS-QWEN-REVERT.md`, was preserved. Nothing was
+committed or deployed.
+
+- `OpenForConfig` and request-local `ForConfig` snapshots use hashed normalized
+  Jira site/authenticated-account namespaces. Effective-user/project membership
+  lives separately within that namespace. Tokenless translation gets an isolated
+  namespace and never discovers credentials or adopts legacy `cache.db` data.
+  MCP's manager does not open the legacy database; dashboard statistics aggregate
+  its open namespaces. CLI configuration reports the selected scoped path.
+- Schema v8 adds status categories, actual project/detail identity metadata,
+  owner/project summary memberships and checkpoints, mutation revisions, and an
+  invalidation ledger. Upgrades acquire a SQLite write lock before inspecting the
+  schema and commit all steps/version together. Unexpected errors and future
+  schema versions fail; the known legacy duplicate-assignee-column case is
+  inspected explicitly. Every v1–v7 upgrade, failure rollback, and concurrent
+  first-open behavior has regression coverage.
+- `cache.LoadSummary` is shared by CLI and MCP. Online runs enumerate all current
+  open work and boards; `refresh` follows the same full-reconciliation policy and
+  never deletes a useful snapshot in advance. Canonical upserts, membership
+  replacement, and the synchronization checkpoint share one transaction. Failed
+  upstream pages, storage errors, cancellation, stale revisions, and newer
+  canonical observations cannot advance it. Cache-only reads use a consistent
+  database snapshot for the requested owner/project, including verified empty
+  sets and empty board/sprint groups.
+- Open work uses nonempty Jira status categories other than `done`, including
+  nested REST status-category metadata. Search and detail rows retain the issue's
+  actual project (key prefix only when the API omits it), never the default
+  project. Freshness comparisons parse instants with subsecond precision. Newer
+  ownership/project/category observations invalidate disproved summary snapshots;
+  general queries warm canonical data without creating summary memberships.
+- `FetchSummary` requires complete token searches, bounded at 100 pages and 10,000
+  retained rows. Board/Agile pagination follows actual page sizes and rejects
+  missing full-page metadata, changing totals, duplicate resources, and lack of
+  progress. Board/sprint failures abort the refresh. The full retrieval shares a
+  60-second deadline and preserves earlier caller cancellation. Kanban keeps its
+  separate board-scoped validator without requiring a default project.
+- Mutation invalidation unconditionally advances a database revision, removes
+  affected issue/detail/comment/link rows, invalidates summary snapshots, and
+  clears weekly reports. All ordinary cache writes check the operation's captured
+  revision under the SQLite writer lock. Both in-flight old operations and new
+  general-query fills of known invalidated keys are prevented from repopulating
+  stale canonical data. Fresh authoritative detail reads and directly rechecked
+  summary results can refill it. CLI/MCP mutations retain remote success when
+  cache opening or invalidation fails.
+- Invalidated keys remain in a per-scope ledger across refreshes. Summary retrieval
+  checks their direct current category, project, and effective owner, including
+  hidden-email account resolution; explicit ambiguous overrides fail. Typed
+  HTTP status errors distinguish 403/404 visibility losses from other failures.
+  The ledger deliberately has no age-based expiration: it retains index-lag
+  protection, at the cost of additional direct reads as mutated/refreshed keys
+  accumulate. A refresh exceeding the deadline fails without publishing a partial
+  snapshot. Retention optimization remains future work.
+- Weekly-report keys hash site/account/effective user/project/range and sorted
+  keys, timestamps, categories, actual projects, assignees/account IDs, and
+  summaries. CLI and MCP both require a complete current search before reuse;
+  removals, replacements, identity changes, and empty results cannot inherit an
+  old report. Regeneration fetches comments and aborts on required detail/comment
+  failure before generating or caching a report. Detail/comment/project caches
+  use the same scoped operation views throughout the adapters.
+
+### Phase 2 verification results
+
+- **Passed:** focused behavioral tests for cache scoping, every legacy schema
+  upgrade, concurrent first opens, atomic summary membership/checkpoint storage,
+  storage rollback, failed/canceled retrieval, newer canonical rows, mutation
+  fencing across separate database handles, and persistent index-lag protection.
+- **Passed:** CLI and MCP summary integration for removals, identity/site isolation,
+  verified empty snapshots, network-free cache-only reads, and failed refreshes
+  preserving prior data/checkpoints. A new MCP regression exposed an error-shadowing
+  bug that discarded refresh failures; the shared loader adapter now propagates
+  the error. CLI and MCP both retain a successful remote transition when local
+  cache setup fails.
+- **Passed:** weekly fingerprints for ordering, removals, same-timestamp
+  replacements, report-relevant fields, account/site/user/project/range changes;
+  CLI regeneration and MCP selection of the correct owner's cached report;
+  complete-search requirements and detail/comment failure rejection before any
+  partial report is cached. Empty current searches cannot return stale reports.
+- **Passed:** hermetic generated-query contracts exercising the actual summary
+  provider's project/user/category/sprint/order shapes and the separate Kanban
+  guard; malformed/short/duplicate Agile page cases, strict completeness, hidden
+  assignees, and 403/404/direct current-state rechecks. Updated the tagged strict
+  oracle corpus for category predicates and new summary shapes.
+- **Passed:** `go build ./...`, `go vet ./...`, and final integrated
+  `go test -race -count=1 -timeout=120s ./...`. The existing two Phase 3 ambiguous
+  status-intent cases remain explicitly skipped and are not claimed as fixes.
+  Initial sandbox runs could not bind mock HTTP listeners; the completed test
+  runs used approved execution outside that restriction. The final build also
+  completed with access to Go's module metadata cache.
+- **Passed:** `go test -race -tags=oracle -count=1 ./internal/jqloracle` (local
+  protocol fixtures only), `make doc-lint`, formatting checks on all changed Go
+  files, `git diff --check`, and a redacted Gitleaks scan of changed source/docs
+  and new implementation/test files. Preserved harness artifacts were excluded
+  from that delivery scan and left untouched.
+- **Live Jira strict oracle: SKIPPED, not passed.**
+  `python3 scripts/run-jql-oracle.py` exited 2 because all required exported
+  Jira credentials and explicit project/issue/sprint/release fixtures were
+  unavailable. No credentials were discovered or loaded to enable it. Local
+  tests use mock Jira/provider servers; tenant validation and hosted CI execution
+  remain unavailable in this delivery.
+
+Phase 2 implementation and local acceptance checks are complete. The legacy
+cache and harness artifacts are preserved. No commits, deployment, live Jira
+business operations, or later-phase status changes were performed.
 
 ## Phase 3: Preserve intent and construct JQL structurally
 

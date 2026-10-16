@@ -55,7 +55,7 @@ func (c *Client) SearchJQLResult(ctx context.Context, rawJQL string, opts Search
 		}
 		request := searchRequest{
 			JQL: rawJQL, MaxResults: pageSize, NextPageToken: token,
-			Fields: []string{"summary", "status", "priority", "updated", "assignee"},
+			Fields: []string{"summary", "status", "statusCategory", "project", "priority", "updated", "assignee"},
 		}
 		var response searchResponse
 		if err := c.doRequestContext(ctx, http.MethodPost, "/rest/api/3/search/jql", request, &response); err != nil {

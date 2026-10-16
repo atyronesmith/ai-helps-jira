@@ -74,7 +74,11 @@ func runConfig(cmd *cobra.Command, args []string) error {
 	}
 
 	pterm.DefaultSection.Println("Cache")
-	db, err := cache.Open()
+	if cfg == nil {
+		pterm.FgYellow.Println("  Cache scope unavailable without Jira site and account configuration.")
+		return nil
+	}
+	db, err := cache.OpenForConfig(cfg)
 	if err != nil {
 		pterm.FgYellow.Printfln("  Could not open cache: %v", err)
 	} else {

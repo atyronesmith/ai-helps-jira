@@ -40,7 +40,7 @@ func runGetIssue(cmd *cobra.Command, args []string) error {
 	}
 	setupLogging()
 
-	db, err := cache.Open()
+	db, err := cache.OpenForConfig(cfg)
 	if err != nil {
 		return err
 	}
@@ -74,6 +74,10 @@ func runGetIssue(cmd *cobra.Command, args []string) error {
 		// Related data is only trusted when its issue detail was fresh too.
 		// This also makes --refresh reload links and comments below.
 		if err := db.InvalidateIssue(issueKey); err != nil {
+			return err
+		}
+		db, err = db.Snapshot()
+		if err != nil {
 			return err
 		}
 		detail, err = client.GetIssue(issueKey)

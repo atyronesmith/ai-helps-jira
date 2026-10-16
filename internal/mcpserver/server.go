@@ -132,7 +132,7 @@ func newMCPServer(version string, h *Handlers) *server.MCPServer {
 func Run(cfg Config) error {
 	store := NewResultStore()
 
-	db, err := cache.Open()
+	db, err := cache.OpenManager()
 	if err != nil {
 		return fmt.Errorf("open cache: %w", err)
 	}

@@ -63,7 +63,7 @@ func runFindSimilar(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("provide an issue key or --text")
 	}
 
-	db, err := cache.Open()
+	db, err := cache.OpenForConfig(cfg)
 	if err != nil {
 		return err
 	}
@@ -82,7 +82,7 @@ func runFindSimilar(cmd *cobra.Command, args []string) error {
 	// Fetch candidate issues
 	spinner := format.StatusPrinter("Fetching open issues...")
 	candidateJQL := fmt.Sprintf(
-		"project = %s AND status NOT IN (Done, Closed, Resolved) ORDER BY updated DESC",
+		"project = %s AND statusCategory != Done ORDER BY updated DESC",
 		jql.QuoteIdent(cfg.JiraProject),
 	)
 	issues, err := client.SearchJQL(candidateJQL, flagSimilarMax)

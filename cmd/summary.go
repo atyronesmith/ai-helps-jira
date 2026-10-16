@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"time"
@@ -17,6 +18,7 @@ import (
 var (
 	flagRefresh   bool
 	flagCacheOnly bool
+	summaryLoader = cache.LoadSummary
 )
 
 var summaryCmd = &cobra.Command{
@@ -42,18 +44,11 @@ func runSummary(cmd *cobra.Command, args []string) error {
 
 	slog.Info("starting summary", "project", cfg.JiraProject, "user", cfg.JiraUser)
 
-	db, err := cache.Open()
+	db, err := cache.OpenForConfig(cfg)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-
-	if flagRefresh {
-		slog.Info("refresh requested, clearing cache")
-		if err := db.Clear(cfg.JiraProject); err != nil {
-			return err
-		}
-	}
 
 	lastFetch := db.LastFetch(cfg.JiraProject, cfg.Assignee())
 
@@ -68,109 +63,29 @@ func runSummary(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if flagCacheOnly {
-		// Cache only: no API calls at all
-		if lastFetch.IsZero() {
-			return fmt.Errorf("no cached data for project %s — run without --cache-only first", cfg.JiraProject)
-		}
-		if flagVerbose >= 2 {
-			pterm.FgLightGreen.Println("cache: HIT (cache-only mode)")
-		}
-		pterm.FgLightWhite.Printf("Using cached data from %s\n",
-			lastFetch.Format("2006-01-02 15:04"))
-		slog.Info("cache-only mode", "last_fetch", lastFetch)
-
-		boards, err = db.GetBoards(cfg.JiraProject)
-		if err != nil {
-			return err
-		}
-		openIssues, err = db.GetIssues(cfg.JiraProject)
-		if err != nil {
-			return err
-		}
-	} else if !lastFetch.IsZero() && !flagRefresh {
-		// Delta fetch: only get updated issues from API
-		// Subtract 5 min buffer to account for clock skew
-		since := lastFetch.Add(-5 * time.Minute)
-		if flagVerbose >= 2 {
-			pterm.FgLightYellow.Printfln("cache: partial HIT, delta fetch since %s", since.Format(time.RFC3339))
-		}
-		pterm.FgLightWhite.Printf("Using cache, fetching changes since %s\n",
-			since.Format("2006-01-02 15:04"))
-		slog.Info("delta fetch", "since", since, "last_fetch", lastFetch)
-
-		client, err := jira.NewClient(cfg)
-		if err != nil {
-			return err
-		}
-
-		spinner := format.StatusPrinter("Fetching recent changes...")
-		delta, err := client.GetOpenIssuesSince(since)
-		spinner.Stop()
-		if err != nil {
-			return err
-		}
-
-		slog.Info("delta returned", "count", len(delta))
-		if len(delta) > 0 {
-			if err := db.UpsertIssues(cfg.JiraProject, delta); err != nil {
-				return err
-			}
-		}
-		db.RemoveDone(cfg.JiraProject)
-		db.LogFetch(cfg.JiraProject, cfg.Assignee())
-
-		// Reconstruct from cache
-		boards, err = db.GetBoards(cfg.JiraProject)
-		if err != nil {
-			return err
-		}
-		openIssues, err = db.GetIssues(cfg.JiraProject)
-		if err != nil {
-			return err
-		}
-	} else {
-		// Full fetch: get everything from API
-		if flagVerbose >= 2 {
-			if flagRefresh {
-				pterm.FgLightYellow.Println("cache: MISS (refresh requested)")
-			} else {
-				pterm.FgLightYellow.Println("cache: MISS (no previous fetch)")
-			}
-		}
+	if flagRefresh {
+		slog.Info("refresh requested; forcing summary reconciliation")
+	}
+	if flagCacheOnly && !lastFetch.IsZero() {
+		pterm.FgLightWhite.Printf("Using cached data from %s\n", lastFetch.Format("2006-01-02 15:04"))
+	}
+	if !flagCacheOnly {
 		pterm.FgLightWhite.Println("Connecting to JIRA...")
+	}
+	spinner := format.StatusPrinter("Loading summary...")
+	boards, openIssues, fetchedAt, err := summaryLoader(cmd.Context(), db, cfg, flagCacheOnly, func(ctx context.Context, invalidated []string) ([]jira.BoardInfo, []jira.Issue, error) {
 		client, err := jira.NewClient(cfg)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
-
-		spinner := format.StatusPrinter("Fetching board issues...")
-		boards, err = client.GetBoardIssues()
-		spinner.Stop()
-		if err != nil {
-			return err
-		}
-
-		spinner = format.StatusPrinter("Fetching open issues...")
-		openIssues, err = client.GetOpenIssues()
-		spinner.Stop()
-		if err != nil {
-			return err
-		}
-
-		// Cache everything
-		var allIssues []jira.Issue
-		for _, b := range boards {
-			allIssues = append(allIssues, b.Issues...)
-		}
-		allIssues = append(allIssues, openIssues...)
-		if len(allIssues) > 0 {
-			if err := db.UpsertIssues(cfg.JiraProject, allIssues); err != nil {
-				return err
-			}
-		}
-		db.RemoveDone(cfg.JiraProject)
-		db.LogFetch(cfg.JiraProject, cfg.Assignee())
+		return client.FetchSummary(ctx, invalidated)
+	})
+	spinner.Stop()
+	if err != nil {
+		return err
+	}
+	if flagVerbose >= 2 && !fetchedAt.IsZero() {
+		pterm.FgLightCyan.Printfln("cache: fetched=%s", fetchedAt.Format("2006-01-02 15:04"))
 	}
 
 	slog.Info("summary complete", "boards", len(boards), "open_issues", len(openIssues))

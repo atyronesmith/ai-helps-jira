@@ -129,6 +129,23 @@ func TestSearchJQL(t *testing.T) {
 	}
 }
 
+func TestParseAPIIssueReadsNestedStatusCategoryAndRFC3339(t *testing.T) {
+	var raw []apiIssue
+	if err := json.Unmarshal([]byte(`[{"key":"OTHER-7","fields":{"status":{"name":"Open","statusCategory":{"key":"new"}},"updated":"2026-10-16T12:30:00Z","project":{"key":"OTHER"},"assignee":{"accountId":"acct"}}}]`), &raw); err != nil {
+		t.Fatal(err)
+	}
+	issues := parseAPIIssues(raw)
+	if len(issues) != 1 {
+		t.Fatalf("got %d issues", len(issues))
+	}
+	if issues[0].StatusCategory != "new" || issues[0].Project != "OTHER" || issues[0].AssigneeID != "acct" {
+		t.Fatalf("fields not parsed: %#v", issues[0])
+	}
+	if want := time.Date(2026, 10, 16, 12, 30, 0, 0, time.UTC); !issues[0].Updated.Equal(want) {
+		t.Fatalf("updated %s, want %s", issues[0].Updated, want)
+	}
+}
+
 func TestGetOpenIssues(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		payload := readBody(t, r)
@@ -139,8 +156,8 @@ func TestGetOpenIssues(t *testing.T) {
 		if !strings.Contains(jql, "project = TEST") {
 			t.Errorf("JQL should contain project filter, got %s", jql)
 		}
-		if !strings.Contains(jql, "status NOT IN") {
-			t.Errorf("JQL should filter closed statuses, got %s", jql)
+		if !strings.Contains(jql, "statusCategory != Done") {
+			t.Errorf("JQL should filter done status category, got %s", jql)
 		}
 
 		jsonResponse(t, w, 200, map[string]any{

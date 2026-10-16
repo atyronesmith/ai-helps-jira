@@ -87,6 +87,8 @@ func runCreateEpic(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	invalidateIssueCache(cfg, issue.Key)
+
 	pterm.FgGreen.Printfln("\nEPIC created: %s - %s/browse/%s",
 		issue.Key, cfg.JiraServer, issue.Key)
 	return nil

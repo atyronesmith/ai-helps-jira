@@ -17,7 +17,14 @@ import (
 )
 
 type Cache struct {
-	db *sql.DB
+	db               *sql.DB
+	base             *Cache
+	expectedRevision *int64
+	ownedBase        bool
+	scopeID          string
+	scopeMu          sync.Mutex
+	children         map[string]*Cache
+	metricsParent    *Cache
 
 	lookupMu      sync.Mutex
 	detailLookups []bool
@@ -45,160 +52,109 @@ func Open() (*Cache, error) {
 }
 
 func (c *Cache) Close() error {
-	return c.db.Close()
+	_, err := c.closeScoped()
+	return err
 }
 
 func migrate(db *sql.DB) error {
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS issues (
-			key        TEXT PRIMARY KEY,
-			project    TEXT NOT NULL,
-			status     TEXT NOT NULL,
-			priority   TEXT NOT NULL,
-			summary    TEXT NOT NULL,
-			updated    DATETIME NOT NULL,
-			fetched_at DATETIME NOT NULL
-		);
-		CREATE TABLE IF NOT EXISTS issue_boards (
-			issue_key  TEXT NOT NULL,
-			board      TEXT NOT NULL,
-			board_type TEXT NOT NULL,
-			sprint     TEXT NOT NULL DEFAULT '',
-			PRIMARY KEY (issue_key, board)
-		);
-		CREATE TABLE IF NOT EXISTS fetch_log (
-			project    TEXT NOT NULL,
-			assignee   TEXT NOT NULL,
-			fetched_at DATETIME NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_issues_project ON issues(project);
-		CREATE INDEX IF NOT EXISTS idx_fetch_log_project ON fetch_log(project, assignee);
-	`)
+	// Acquire the SQLite writer lock before inspecting the version, so two
+	// first-open operations cannot race to apply the same schema migration.
+	tx, err := db.Begin()
 	if err != nil {
-		return fmt.Errorf("migrate cache: %w", err)
+		return err
 	}
-
-	// v2: add assignee column to issues
+	defer tx.Rollback()
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS cache_schema_lock (id INTEGER PRIMARY KEY);
+ INSERT OR IGNORE INTO cache_schema_lock(id) VALUES(1)`); err != nil {
+		return fmt.Errorf("lock cache migrations: %w", err)
+	}
 	var version int
-	_ = db.QueryRow("PRAGMA user_version").Scan(&version)
-	if version < 2 {
-		_, err := db.Exec(`ALTER TABLE issues ADD COLUMN assignee TEXT NOT NULL DEFAULT ''`)
-		if err != nil {
-			slog.Warn("migrate v2: assignee column may already exist", "error", err)
-		}
-		_, _ = db.Exec("PRAGMA user_version = 2")
-		slog.Info("cache migrated to v2", "added", "assignee column")
+	if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("read cache schema version: %w", err)
 	}
-
-	// v3: add comments and issue_links tables
-	if version < 3 {
-		_, err := db.Exec(`
-			CREATE TABLE IF NOT EXISTS comments (
-				id          TEXT PRIMARY KEY,
-				issue_key   TEXT NOT NULL,
-				author      TEXT NOT NULL,
-				author_email TEXT NOT NULL DEFAULT '',
-				body        TEXT NOT NULL,
-				created     DATETIME NOT NULL,
-				fetched_at  DATETIME NOT NULL
-			);
-			CREATE TABLE IF NOT EXISTS issue_links (
-				source_key     TEXT NOT NULL,
-				target_key     TEXT NOT NULL,
-				link_type      TEXT NOT NULL,
-				direction      TEXT NOT NULL,
-				target_summary TEXT NOT NULL DEFAULT '',
-				target_status  TEXT NOT NULL DEFAULT '',
-				target_type    TEXT NOT NULL DEFAULT '',
-				fetched_at     DATETIME NOT NULL,
-				PRIMARY KEY (source_key, target_key, link_type)
-			);
-			CREATE INDEX IF NOT EXISTS idx_comments_issue ON comments(issue_key);
-			CREATE INDEX IF NOT EXISTS idx_links_source ON issue_links(source_key);
-		`)
-		if err != nil {
-			slog.Warn("migrate v3: tables may already exist", "error", err)
-		}
-		_, _ = db.Exec("PRAGMA user_version = 3")
-		slog.Info("cache migrated to v3", "added", "comments + issue_links tables")
+	if version > 8 {
+		return fmt.Errorf("cache schema version %d is newer than supported version 8", version)
 	}
-
-	// v4: add digest_log table for tracking last digest run
-	if version < 4 {
-		_, err := db.Exec(`
-			CREATE TABLE IF NOT EXISTS digest_log (
-				query_key  TEXT PRIMARY KEY,
-				last_run   DATETIME NOT NULL
-			);
-		`)
+	if version == 0 {
+		_, err := tx.Exec(`CREATE TABLE issues (key TEXT PRIMARY KEY, project TEXT NOT NULL, status TEXT NOT NULL, priority TEXT NOT NULL, summary TEXT NOT NULL, updated DATETIME NOT NULL, fetched_at DATETIME NOT NULL);
+ CREATE TABLE issue_boards (issue_key TEXT NOT NULL, board TEXT NOT NULL, board_type TEXT NOT NULL, sprint TEXT NOT NULL DEFAULT '', PRIMARY KEY(issue_key,board));
+ CREATE TABLE fetch_log (project TEXT NOT NULL, assignee TEXT NOT NULL, fetched_at DATETIME NOT NULL);
+ CREATE INDEX idx_issues_project ON issues(project); CREATE INDEX idx_fetch_log_project ON fetch_log(project,assignee);`)
 		if err != nil {
-			slog.Warn("migrate v4: table may already exist", "error", err)
+			return fmt.Errorf("migrate cache v1: %w", err)
 		}
-		_, _ = db.Exec("PRAGMA user_version = 4")
-		slog.Info("cache migrated to v4", "added", "digest_log table")
+		version = 1
 	}
+	for next := version + 1; next <= 8; next++ {
+		if err := migrateVersion(tx, next); err != nil {
+			return fmt.Errorf("migrate v%d: %w", next, err)
+		}
+	}
+	if _, err := tx.Exec("PRAGMA user_version = 8"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit cache migrations: %w", err)
+	}
+	return nil
+}
 
-	// v5: add weekly_cache table for caching full weekly status results
-	if version < 5 {
-		_, err := db.Exec(`
-			CREATE TABLE IF NOT EXISTS weekly_cache (
-				cache_key   TEXT PRIMARY KEY,
-				result_json TEXT NOT NULL,
-				cached_at   DATETIME NOT NULL
-			);
-		`)
+func migrateVersion(tx *sql.Tx, v int) error {
+	var script string
+	switch v {
+	case 2:
+		rows, err := tx.Query("PRAGMA table_info(issues)")
 		if err != nil {
-			slog.Warn("migrate v5: table may already exist", "error", err)
+			return err
 		}
-		_, _ = db.Exec("PRAGMA user_version = 5")
-		slog.Info("cache migrated to v5", "added", "weekly_cache table")
-	}
-
-	// v6: add issue_details table for caching full IssueDetail
-	if version < 6 {
-		_, err := db.Exec(`
-			CREATE TABLE IF NOT EXISTS issue_details (
-				key            TEXT PRIMARY KEY,
-				summary        TEXT NOT NULL,
-				description    TEXT NOT NULL DEFAULT '',
-				status         TEXT NOT NULL,
-				priority       TEXT NOT NULL DEFAULT '',
-				issue_type     TEXT NOT NULL DEFAULT '',
-				labels         TEXT NOT NULL DEFAULT '[]',
-				assignee_name  TEXT NOT NULL DEFAULT '',
-				assignee_id    TEXT NOT NULL DEFAULT '',
-				parent_key     TEXT NOT NULL DEFAULT '',
-				parent_summary TEXT NOT NULL DEFAULT '',
-				updated        DATETIME NOT NULL,
-				fetched_at     DATETIME NOT NULL
-			);
-		`)
-		if err != nil {
-			slog.Warn("migrate v6: table may already exist", "error", err)
+		has := false
+		for rows.Next() {
+			var cid, nn, pk int
+			var name, typ string
+			var def any
+			if err := rows.Scan(&cid, &name, &typ, &nn, &def, &pk); err != nil {
+				rows.Close()
+				return err
+			}
+			if name == "assignee" {
+				has = true
+			}
 		}
-		_, _ = db.Exec("PRAGMA user_version = 6")
-		slog.Info("cache migrated to v6", "added", "issue_details table")
-	}
-
-	// v7: add projects table for caching the tenant's project list (key + display
-	// name) so the natural-language normalizer can resolve human names like
-	// "Support" -> "SUP" without a JIRA round-trip on the hot path.
-	if version < 7 {
-		_, err := db.Exec(`
-			CREATE TABLE IF NOT EXISTS projects (
-				key          TEXT PRIMARY KEY,
-				name         TEXT NOT NULL DEFAULT '',
-				project_type TEXT NOT NULL DEFAULT '',
-				fetched_at   DATETIME NOT NULL
-			);
-		`)
-		if err != nil {
-			slog.Warn("migrate v7: table may already exist", "error", err)
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
 		}
-		_, _ = db.Exec("PRAGMA user_version = 7")
-		slog.Info("cache migrated to v7", "added", "projects table")
+		rows.Close()
+		if !has {
+			_, err = tx.Exec(`ALTER TABLE issues ADD COLUMN assignee TEXT NOT NULL DEFAULT ''`)
+			return err
+		}
+		return nil
+	case 3:
+		script = `CREATE TABLE comments (id TEXT PRIMARY KEY,issue_key TEXT NOT NULL,author TEXT NOT NULL,author_email TEXT NOT NULL DEFAULT '',body TEXT NOT NULL,created DATETIME NOT NULL,fetched_at DATETIME NOT NULL);
+ CREATE TABLE issue_links (source_key TEXT NOT NULL,target_key TEXT NOT NULL,link_type TEXT NOT NULL,direction TEXT NOT NULL,target_summary TEXT NOT NULL DEFAULT '',target_status TEXT NOT NULL DEFAULT '',target_type TEXT NOT NULL DEFAULT '',fetched_at DATETIME NOT NULL,PRIMARY KEY(source_key,target_key,link_type)); CREATE INDEX idx_comments_issue ON comments(issue_key); CREATE INDEX idx_links_source ON issue_links(source_key);`
+	case 4:
+		script = `CREATE TABLE digest_log (query_key TEXT PRIMARY KEY,last_run DATETIME NOT NULL);`
+	case 5:
+		script = `CREATE TABLE weekly_cache (cache_key TEXT PRIMARY KEY,result_json TEXT NOT NULL,cached_at DATETIME NOT NULL);`
+	case 6:
+		script = `CREATE TABLE issue_details (key TEXT PRIMARY KEY,summary TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',status TEXT NOT NULL,priority TEXT NOT NULL DEFAULT '',issue_type TEXT NOT NULL DEFAULT '',labels TEXT NOT NULL DEFAULT '[]',assignee_name TEXT NOT NULL DEFAULT '',assignee_id TEXT NOT NULL DEFAULT '',parent_key TEXT NOT NULL DEFAULT '',parent_summary TEXT NOT NULL DEFAULT '',updated DATETIME NOT NULL,fetched_at DATETIME NOT NULL);`
+	case 7:
+		script = `CREATE TABLE projects (key TEXT PRIMARY KEY,name TEXT NOT NULL DEFAULT '',project_type TEXT NOT NULL DEFAULT '',fetched_at DATETIME NOT NULL);`
+	case 8:
+		for _, q := range []string{`ALTER TABLE issues ADD COLUMN status_category TEXT NOT NULL DEFAULT ''`, `ALTER TABLE issue_details ADD COLUMN status_category TEXT NOT NULL DEFAULT ''`, `ALTER TABLE issue_details ADD COLUMN project TEXT NOT NULL DEFAULT ''`, `ALTER TABLE issue_details ADD COLUMN assignee_email TEXT NOT NULL DEFAULT ''`, `CREATE TABLE cache_epoch (id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL)`, `INSERT INTO cache_epoch(id,revision) VALUES(1,0)`, `CREATE TABLE issue_invalidations (key TEXT PRIMARY KEY,revision INTEGER NOT NULL)`, `CREATE TABLE summary_snapshots (owner TEXT NOT NULL,project TEXT NOT NULL,fetched_at TEXT NOT NULL,PRIMARY KEY(owner,project))`, `CREATE TABLE summary_members (owner TEXT NOT NULL,project TEXT NOT NULL,issue_key TEXT NOT NULL,kind TEXT NOT NULL,board TEXT NOT NULL DEFAULT '',board_type TEXT NOT NULL DEFAULT '',sprint TEXT NOT NULL DEFAULT '',PRIMARY KEY(owner,project,issue_key,kind,board,sprint))`} {
+			if _, err := tx.Exec(q); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown migration %d", v)
 	}
-
+	if script != "" {
+		_, err := tx.Exec(script)
+		return err
+	}
 	return nil
 }
 
@@ -218,102 +174,151 @@ func (c *Cache) LastFetch(project, assignee string) time.Time {
 
 // UpsertIssues inserts or updates issues and their board memberships.
 func (c *Cache) UpsertIssues(project string, issues []jira.Issue) error {
-	tx, err := c.db.Begin()
+	tx, err := c.beginWrite()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-
-	issueStmt, err := tx.Prepare(`
-		INSERT INTO issues (key, project, status, priority, summary, updated, fetched_at, assignee)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(key) DO UPDATE SET
-			status = excluded.status,
-			priority = excluded.priority,
-			summary = excluded.summary,
-			updated = excluded.updated,
-			fetched_at = excluded.fetched_at,
-			assignee = excluded.assignee
-	`)
-	if err != nil {
+	// Search-index rows are not authoritative after a known mutation. Even a
+	// new operation can see the old index version; only a direct detail read or
+	// the summary provider's direct rechecks may refill these canonical rows.
+	var eligible []jira.Issue
+	for _, issue := range issues {
+		var invalidated int
+		if err := tx.QueryRow("SELECT count(*) FROM issue_invalidations WHERE key=?", issue.Key).Scan(&invalidated); err != nil {
+			return err
+		}
+		if invalidated == 0 {
+			eligible = append(eligible, issue)
+		}
+	}
+	if err := upsertIssuesTx(tx, eligible); err != nil {
 		return err
 	}
-	defer issueStmt.Close()
-
-	boardStmt, err := tx.Prepare(`
-		INSERT INTO issue_boards (issue_key, board, board_type, sprint)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(issue_key, board) DO UPDATE SET
-			board_type = excluded.board_type,
-			sprint = excluded.sprint
-	`)
+	boardStmt, err := tx.Prepare(`INSERT INTO issue_boards(issue_key,board,board_type,sprint) VALUES(?,?,?,?) ON CONFLICT(issue_key,board) DO UPDATE SET board_type=excluded.board_type,sprint=excluded.sprint`)
 	if err != nil {
 		return err
 	}
 	defer boardStmt.Close()
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	for _, issue := range issues {
-		_, err := issueStmt.Exec(
-			issue.Key, project, issue.Status, issue.Priority,
-			issue.Summary, issue.Updated.Format(time.RFC3339), now, issue.Assignee,
-		)
-		if err != nil {
-			return fmt.Errorf("upsert issue %s: %w", issue.Key, err)
-		}
-
-		if issue.Board != "" {
-			boardType := "kanban"
-			if issue.Sprint != "" {
-				boardType = "scrum"
+	for _, i := range eligible {
+		if i.Board != "" {
+			bt := "kanban"
+			if i.Sprint != "" {
+				bt = "scrum"
 			}
-			_, err := boardStmt.Exec(issue.Key, issue.Board, boardType, issue.Sprint)
-			if err != nil {
-				return fmt.Errorf("upsert board %s/%s: %w", issue.Key, issue.Board, err)
+			if _, err = boardStmt.Exec(i.Key, i.Board, bt, i.Sprint); err != nil {
+				return fmt.Errorf("upsert board %s/%s: %w", i.Key, i.Board, err)
 			}
 		}
 	}
-
-	slog.Info("cache upserted", "count", len(issues), "project", project)
 	return tx.Commit()
+}
+
+// Compare parsed instants rather than RFC3339 text: offsets and optional
+// fractional seconds do not have chronological lexical order.
+func newerIssueRow(tx *sql.Tx, key string, incoming time.Time) (bool, error) {
+	var stamp string
+	err := tx.QueryRow("SELECT updated FROM issues WHERE key=?", key).Scan(&stamp)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	stored, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil {
+		return false, fmt.Errorf("invalid cached issue timestamp: %w", err)
+	}
+	return stored.After(incoming), nil
+}
+
+func upsertIssuesTx(tx *sql.Tx, issues []jira.Issue) error {
+	stmt, err := tx.Prepare(`INSERT INTO issues(key,project,status,status_category,priority,summary,updated,fetched_at,assignee) VALUES(?,?,?,?,?,?,?,?,?)
+ ON CONFLICT(key) DO UPDATE SET project=excluded.project,status=excluded.status,status_category=excluded.status_category,priority=excluded.priority,summary=excluded.summary,updated=excluded.updated,fetched_at=excluded.fetched_at,assignee=excluded.assignee`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, i := range issues {
+		newer, err := newerIssueRow(tx, i.Key, i.Updated)
+		if err != nil {
+			return err
+		}
+		if newer {
+			continue
+		}
+		p := firstNonEmpty(i.Project, projectPrefix(i.Key))
+		// A newer canonical observation can disprove another owner's cached
+		// membership even before that owner refreshes. Require reconciliation
+		// rather than serving the row under its previous identity/project.
+		if _, err := tx.Exec(`DELETE FROM summary_snapshots WHERE (owner,project) IN
+ (SELECT owner,project FROM summary_members WHERE issue_key=?) AND EXISTS
+ (SELECT 1 FROM issues WHERE key=? AND (project!=? OR status_category!=? OR assignee!=?))`, i.Key, i.Key, p, i.StatusCategory, i.Assignee); err != nil {
+			return err
+		}
+		if _, err := stmt.Exec(i.Key, p, i.Status, i.StatusCategory, i.Priority, i.Summary, i.Updated.UTC().Format(time.RFC3339Nano), now, i.Assignee); err != nil {
+			return fmt.Errorf("upsert issue %s: %w", i.Key, err)
+		}
+	}
+	return nil
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+func projectPrefix(key string) string {
+	if i := strings.IndexByte(key, '-'); i > 0 {
+		return key[:i]
+	}
+	return ""
 }
 
 // RemoveDone removes done issues and their board mappings from cache.
 func (c *Cache) RemoveDone(project string) (int64, error) {
-	// Remove board mappings for done issues
-	_, _ = c.db.Exec(
-		"DELETE FROM issue_boards WHERE issue_key IN "+
-			"(SELECT key FROM issues WHERE project = ? AND status IN ('Done', 'Closed', 'Resolved'))",
-		project,
-	)
-	result, err := c.db.Exec(
-		"DELETE FROM issues WHERE project = ? AND status IN ('Done', 'Closed', 'Resolved')",
-		project,
-	)
+	tx, err := c.beginWrite()
 	if err != nil {
 		return 0, err
 	}
-	n, _ := result.RowsAffected()
-	if n > 0 {
-		slog.Info("cache removed done issues", "count", n, "project", project)
+	defer tx.Rollback()
+	if _, err = tx.Exec(`DELETE FROM issue_boards WHERE issue_key IN (SELECT key FROM issues WHERE project=? AND lower(status_category)='done')`, project); err != nil {
+		return 0, err
+	}
+	var n int64
+	if err = tx.QueryRow(`SELECT COUNT(*) FROM issues WHERE project=? AND lower(status_category)='done'`, project).Scan(&n); err != nil {
+		return 0, err
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
 	}
 	return n, nil
 }
 
 // LogFetch records a fetch timestamp in local time (JIRA interprets JQL dates in user's timezone).
 func (c *Cache) LogFetch(project, assignee string) error {
-	_, err := c.db.Exec(
+	tx, err := c.beginWrite()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(
 		"INSERT INTO fetch_log (project, assignee, fetched_at) VALUES (?, ?, ?)",
 		project, assignee, time.Now().Format(time.RFC3339),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // GetIssues returns all cached open issues for a project.
 func (c *Cache) GetIssues(project string) ([]jira.Issue, error) {
 	rows, err := c.db.Query(
-		"SELECT key, status, priority, summary, updated, assignee FROM issues WHERE project = ? "+
-			"AND status NOT IN ('Done', 'Closed', 'Resolved') "+
+		"SELECT key, project, status, status_category, priority, summary, updated, assignee FROM issues WHERE project = ? "+
+			"AND lower(status_category) != 'done' AND status_category != '' "+
 			"ORDER BY priority ASC, status ASC",
 		project,
 	)
@@ -326,7 +331,7 @@ func (c *Cache) GetIssues(project string) ([]jira.Issue, error) {
 	for rows.Next() {
 		var i jira.Issue
 		var updated string
-		if err := rows.Scan(&i.Key, &i.Status, &i.Priority, &i.Summary, &updated, &i.Assignee); err != nil {
+		if err := rows.Scan(&i.Key, &i.Project, &i.Status, &i.StatusCategory, &i.Priority, &i.Summary, &updated, &i.Assignee); err != nil {
 			return nil, err
 		}
 		i.Updated, _ = time.Parse(time.RFC3339, updated)
@@ -340,10 +345,10 @@ func (c *Cache) GetIssues(project string) ([]jira.Issue, error) {
 func (c *Cache) GetBoards(project string) ([]jira.BoardInfo, error) {
 	rows, err := c.db.Query(`
 		SELECT ib.board, ib.board_type, ib.sprint,
-		       i.key, i.status, i.priority, i.summary, i.updated, i.assignee
+		       i.key, i.project, i.status, i.status_category, i.priority, i.summary, i.updated, i.assignee
 		FROM issue_boards ib
 		JOIN issues i ON i.key = ib.issue_key
-		WHERE i.project = ? AND i.status NOT IN ('Done', 'Closed', 'Resolved')
+		WHERE i.project = ? AND lower(i.status_category) != 'done' AND status_category != ''
 		ORDER BY ib.board, i.priority ASC, i.status ASC
 	`, project)
 	if err != nil {
@@ -358,7 +363,7 @@ func (c *Cache) GetBoards(project string) ([]jira.BoardInfo, error) {
 		var i jira.Issue
 		var updated string
 		if err := rows.Scan(&boardName, &boardType, &sprint,
-			&i.Key, &i.Status, &i.Priority, &i.Summary, &updated, &i.Assignee); err != nil {
+			&i.Key, &i.Project, &i.Status, &i.StatusCategory, &i.Priority, &i.Summary, &updated, &i.Assignee); err != nil {
 			return nil, err
 		}
 		i.Updated, _ = time.Parse(time.RFC3339, updated)
@@ -391,7 +396,7 @@ func (c *Cache) UpsertComments(comments []jira.Comment) error {
 	if len(comments) == 0 {
 		return nil
 	}
-	tx, err := c.db.Begin()
+	tx, err := c.beginWrite()
 	if err != nil {
 		return err
 	}
@@ -468,7 +473,7 @@ func (c *Cache) UpsertIssueLinks(links []jira.IssueLink) error {
 	if len(links) == 0 {
 		return nil
 	}
-	tx, err := c.db.Begin()
+	tx, err := c.beginWrite()
 	if err != nil {
 		return err
 	}
@@ -539,6 +544,25 @@ func (c *Cache) InvalidateIssue(key string) error {
 	}
 	defer tx.Rollback()
 
+	var revision int64
+	if _, err := tx.Exec("UPDATE cache_epoch SET revision=revision+1 WHERE id=1"); err != nil {
+		return fmt.Errorf("advance cache revision: %w", err)
+	}
+	if err := tx.QueryRow("SELECT revision FROM cache_epoch WHERE id=1").Scan(&revision); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("INSERT INTO issue_invalidations(key,revision) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET revision=excluded.revision", key, revision); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM summary_snapshots"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM summary_members WHERE issue_key=?", key); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM weekly_cache"); err != nil {
+		return err
+	}
 	deletes := []struct {
 		query string
 		args  []any
@@ -581,12 +605,20 @@ func (c *Cache) LastDigestRun(queryKey string) time.Time {
 
 // LogDigestRun records the current time as the last digest run for the given query key.
 func (c *Cache) LogDigestRun(queryKey string) error {
-	_, err := c.db.Exec(
+	tx, err := c.beginWrite()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(
 		"INSERT INTO digest_log (query_key, last_run) VALUES (?, ?) "+
 			"ON CONFLICT(query_key) DO UPDATE SET last_run = excluded.last_run",
 		queryKey, time.Now().UTC().Format(time.RFC3339),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // GetWeeklyCache returns cached weekly status JSON and its cached_at time, if it exists.
@@ -604,44 +636,25 @@ func (c *Cache) GetWeeklyCache(cacheKey string) (string, time.Time, bool) {
 
 // SetWeeklyCache stores the weekly status JSON result.
 func (c *Cache) SetWeeklyCache(cacheKey, resultJSON string) error {
-	_, err := c.db.Exec(
+	tx, err := c.beginWrite()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(
 		"INSERT INTO weekly_cache (cache_key, result_json, cached_at) VALUES (?, ?, ?) "+
 			"ON CONFLICT(cache_key) DO UPDATE SET result_json = excluded.result_json, cached_at = excluded.cached_at",
 		cacheKey, resultJSON, time.Now().UTC().Format(time.RFC3339),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpsertIssueDetail caches a full IssueDetail.
 func (c *Cache) UpsertIssueDetail(detail *jira.IssueDetail) error {
-	labelsJSON, _ := json.Marshal(detail.Labels)
-	_, err := c.db.Exec(`
-		INSERT INTO issue_details (key, summary, description, status, priority, issue_type,
-			labels, assignee_name, assignee_id, parent_key, parent_summary, updated, fetched_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(key) DO UPDATE SET
-			summary = excluded.summary,
-			description = excluded.description,
-			status = excluded.status,
-			priority = excluded.priority,
-			issue_type = excluded.issue_type,
-			labels = excluded.labels,
-			assignee_name = excluded.assignee_name,
-			assignee_id = excluded.assignee_id,
-			parent_key = excluded.parent_key,
-			parent_summary = excluded.parent_summary,
-			updated = excluded.updated,
-			fetched_at = excluded.fetched_at`,
-		detail.Key, detail.Summary, detail.Description, detail.Status, detail.Priority,
-		detail.IssueType, string(labelsJSON), detail.Assignee, detail.AssigneeID,
-		detail.ParentKey, detail.ParentSummary,
-		detail.Updated.Format(time.RFC3339Nano),
-		time.Now().UTC().Format(time.RFC3339),
-	)
-	if err != nil {
-		return fmt.Errorf("upsert issue detail %s: %w", detail.Key, err)
-	}
-	return nil
+	return c.UpsertIssueDetails([]*jira.IssueDetail{detail})
 }
 
 // GetIssueDetail returns a cached IssueDetail if it exists and is fresh
@@ -649,15 +662,15 @@ func (c *Cache) UpsertIssueDetail(detail *jira.IssueDetail) error {
 // knownUpdated is the issue's current updated timestamp from a search result.
 // If knownUpdated is zero, the cached detail is returned regardless of age.
 func (c *Cache) GetIssueDetail(key string, knownUpdated time.Time) (*jira.IssueDetail, bool) {
-	var summary, description, status, priority, issueType string
+	var summary, description, status, statusCategory, project, assigneeEmail, priority, issueType string
 	var labelsJSON, assigneeName, assigneeID, parentKey, parentSummary string
 	var updatedStr string
 
 	err := c.db.QueryRow(`
-		SELECT summary, description, status, priority, issue_type, labels,
+		SELECT summary, description, status, status_category, project, assignee_email, priority, issue_type, labels,
 			assignee_name, assignee_id, parent_key, parent_summary, updated
 		FROM issue_details WHERE key = ?`, key,
-	).Scan(&summary, &description, &status, &priority, &issueType, &labelsJSON,
+	).Scan(&summary, &description, &status, &statusCategory, &project, &assigneeEmail, &priority, &issueType, &labelsJSON,
 		&assigneeName, &assigneeID, &parentKey, &parentSummary, &updatedStr)
 	if err != nil {
 		c.RecordIssueDetailLookup(false)
@@ -665,6 +678,12 @@ func (c *Cache) GetIssueDetail(key string, knownUpdated time.Time) (*jira.IssueD
 	}
 
 	cachedUpdated, _ := time.Parse(time.RFC3339, updatedStr)
+	var canonicalStamp string
+	if err := c.db.QueryRow("SELECT updated FROM issues WHERE key=?", key).Scan(&canonicalStamp); err == nil {
+		if canonicalUpdated, err := time.Parse(time.RFC3339Nano, canonicalStamp); err == nil && canonicalUpdated.After(knownUpdated) {
+			knownUpdated = canonicalUpdated
+		}
+	}
 
 	// If we know the current updated time, check freshness
 	if !knownUpdated.IsZero() && knownUpdated.After(cachedUpdated) {
@@ -677,18 +696,21 @@ func (c *Cache) GetIssueDetail(key string, knownUpdated time.Time) (*jira.IssueD
 	_ = json.Unmarshal([]byte(labelsJSON), &labels)
 
 	return &jira.IssueDetail{
-		Key:           key,
-		Summary:       summary,
-		Description:   description,
-		Status:        status,
-		Priority:      priority,
-		Labels:        labels,
-		IssueType:     issueType,
-		Assignee:      assigneeName,
-		AssigneeID:    assigneeID,
-		ParentKey:     parentKey,
-		ParentSummary: parentSummary,
-		Updated:       cachedUpdated,
+		Key:            key,
+		Summary:        summary,
+		Description:    description,
+		Status:         status,
+		StatusCategory: statusCategory,
+		Project:        project,
+		AssigneeEmail:  assigneeEmail,
+		Priority:       priority,
+		Labels:         labels,
+		IssueType:      issueType,
+		Assignee:       assigneeName,
+		AssigneeID:     assigneeID,
+		ParentKey:      parentKey,
+		ParentSummary:  parentSummary,
+		Updated:        cachedUpdated,
 	}, true
 }
 
@@ -697,20 +719,20 @@ func (c *Cache) UpsertIssueDetails(details []*jira.IssueDetail) error {
 	if len(details) == 0 {
 		return nil
 	}
-	tx, err := c.db.Begin()
+	tx, err := c.beginWrite()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO issue_details (key, summary, description, status, priority, issue_type,
-			labels, assignee_name, assignee_id, parent_key, parent_summary, updated, fetched_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO issue_details (key, summary, description, status, status_category, project, assignee_email, priority, issue_type, labels, assignee_name, assignee_id, parent_key, parent_summary, updated, fetched_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(key) DO UPDATE SET
 			summary = excluded.summary,
 			description = excluded.description,
 			status = excluded.status,
+			status_category = excluded.status_category, project = excluded.project, assignee_email = excluded.assignee_email,
 			priority = excluded.priority,
 			issue_type = excluded.issue_type,
 			labels = excluded.labels,
@@ -727,12 +749,33 @@ func (c *Cache) UpsertIssueDetails(details []*jira.IssueDetail) error {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, d := range details {
+		if d == nil {
+			return fmt.Errorf("cannot cache a nil issue detail")
+		}
+		var prior string
+		err := tx.QueryRow("SELECT updated FROM issue_details WHERE key=?", d.Key).Scan(&prior)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		if err == nil {
+			stored, err := time.Parse(time.RFC3339Nano, prior)
+			if err != nil {
+				return err
+			}
+			if stored.After(d.Updated) {
+				continue
+			}
+		}
 		labelsJSON, _ := json.Marshal(d.Labels)
-		_, err := stmt.Exec(d.Key, d.Summary, d.Description, d.Status, d.Priority,
-			d.IssueType, string(labelsJSON), d.Assignee, d.AssigneeID,
-			d.ParentKey, d.ParentSummary, d.Updated.Format(time.RFC3339Nano), now)
+		_, err = stmt.Exec(d.Key, d.Summary, d.Description, d.Status, d.StatusCategory, firstNonEmpty(d.Project, projectPrefix(d.Key)), d.AssigneeEmail, d.Priority,
+			d.IssueType, string(labelsJSON), d.Assignee, d.AssigneeID, d.ParentKey, d.ParentSummary, d.Updated.UTC().Format(time.RFC3339Nano), now)
 		if err != nil {
 			return fmt.Errorf("upsert issue detail %s: %w", d.Key, err)
+		}
+		if d.StatusCategory != "" {
+			if err := upsertIssuesTx(tx, []jira.Issue{{Key: d.Key, Project: firstNonEmpty(d.Project, projectPrefix(d.Key)), Status: d.Status, StatusCategory: d.StatusCategory, Priority: d.Priority, Summary: d.Summary, Updated: d.Updated, Assignee: d.AssigneeEmail, AssigneeID: d.AssigneeID}}); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -800,18 +843,29 @@ func (c *Cache) GetFreshDetailKeys(updatedByKey map[string]time.Time) map[string
 // dashboard cache statistics. The window is process-local and holds the most
 // recent ten cache-eligible issue-detail lookups.
 func (c *Cache) RecordIssueDetailLookup(hit bool) {
-	c.lookupMu.Lock()
-	defer c.lookupMu.Unlock()
-	if len(c.detailLookups) < 10 {
-		c.detailLookups = append(c.detailLookups, hit)
+	if base := c.canonical(); base != c {
+		base.RecordIssueDetailLookup(hit)
 		return
 	}
-	c.detailLookups[c.lookupNext] = hit
-	c.lookupNext = (c.lookupNext + 1) % 10
+	c.lookupMu.Lock()
+	if len(c.detailLookups) < 10 {
+		c.detailLookups = append(c.detailLookups, hit)
+	} else {
+		c.detailLookups[c.lookupNext] = hit
+		c.lookupNext = (c.lookupNext + 1) % 10
+	}
+	parent := c.metricsParent
+	c.lookupMu.Unlock()
+	if parent != nil {
+		parent.RecordIssueDetailLookup(hit)
+	}
 }
 
 // IssueDetailLookupStats returns hit and sample counts for the rolling window.
 func (c *Cache) IssueDetailLookupStats() (hits, lookups int) {
+	if base := c.canonical(); base != c {
+		return base.IssueDetailLookupStats()
+	}
 	c.lookupMu.Lock()
 	defer c.lookupMu.Unlock()
 	for _, hit := range c.detailLookups {
@@ -830,7 +884,7 @@ func (c *Cache) UpsertProjects(projects []jira.Project) error {
 	if len(projects) == 0 {
 		return nil
 	}
-	tx, err := c.db.Begin()
+	tx, err := c.beginWrite()
 	if err != nil {
 		return err
 	}
@@ -906,6 +960,9 @@ type CacheStats struct {
 
 // Stats returns row counts for all cache tables.
 func (c *Cache) Stats() CacheStats {
+	if base := c.canonical(); base != c {
+		return base.Stats()
+	}
 	var s CacheStats
 	_ = c.db.QueryRow(`SELECT COUNT(*) FROM (
 		SELECT key FROM issues UNION SELECT key FROM issue_details
@@ -924,20 +981,26 @@ func (c *Cache) Stats() CacheStats {
 
 // Path returns the database file path.
 func (c *Cache) Path() string {
+	if c.scopeID != "" {
+		return filepath.Join(os.Getenv("HOME"), ".jira-cli", "scopes", c.scopeID+".db")
+	}
 	return filepath.Join(os.Getenv("HOME"), ".jira-cli", "cache.db")
 }
 
 // Clear removes all cached data for a project.
 func (c *Cache) Clear(project string) error {
-	_, _ = c.db.Exec(
-		"DELETE FROM issue_boards WHERE issue_key IN (SELECT key FROM issues WHERE project = ?)",
-		project,
-	)
-	_, err := c.db.Exec("DELETE FROM issues WHERE project = ?", project)
+	tx, err := c.beginWrite()
 	if err != nil {
 		return err
 	}
-	_, err = c.db.Exec("DELETE FROM fetch_log WHERE project = ?", project)
-	slog.Info("cache cleared", "project", project)
-	return err
+	defer tx.Rollback()
+	for _, q := range []string{`DELETE FROM issue_boards WHERE issue_key IN (SELECT key FROM issues WHERE project=?)`, `DELETE FROM issue_details WHERE project=?`, `DELETE FROM issues WHERE project=?`, `DELETE FROM fetch_log WHERE project=?`, `DELETE FROM summary_members WHERE project=?`, `DELETE FROM summary_snapshots WHERE project=?`} {
+		if _, err = tx.Exec(q, project); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec(`DELETE FROM weekly_cache`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

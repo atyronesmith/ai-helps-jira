@@ -29,8 +29,8 @@ func TestUpsertAndGetIssues(t *testing.T) {
 	c := openTestCache(t)
 
 	issues := []jira.Issue{
-		{Key: "PROJ-1", Status: "In Progress", Priority: "High", Summary: "task one", Updated: time.Now(), Assignee: "alice"},
-		{Key: "PROJ-2", Status: "To Do", Priority: "Medium", Summary: "task two", Updated: time.Now(), Assignee: "bob"},
+		{Key: "PROJ-1", Status: "In Progress", StatusCategory: "indeterminate", Priority: "High", Summary: "task one", Updated: time.Now(), Assignee: "alice"},
+		{Key: "PROJ-2", Status: "To Do", StatusCategory: "new", Priority: "Medium", Summary: "task two", Updated: time.Now(), Assignee: "bob"},
 	}
 
 	if err := c.UpsertIssues("PROJ", issues); err != nil {
@@ -50,7 +50,7 @@ func TestUpsertIssues_Update(t *testing.T) {
 	c := openTestCache(t)
 
 	issues := []jira.Issue{
-		{Key: "PROJ-1", Status: "To Do", Priority: "Low", Summary: "original", Updated: time.Now(), Assignee: "alice"},
+		{Key: "PROJ-1", Status: "To Do", StatusCategory: "new", Priority: "Low", Summary: "original", Updated: time.Now(), Assignee: "alice"},
 	}
 	c.UpsertIssues("PROJ", issues)
 
@@ -75,8 +75,8 @@ func TestRemoveDone(t *testing.T) {
 	c := openTestCache(t)
 
 	issues := []jira.Issue{
-		{Key: "PROJ-1", Status: "Done", Priority: "Low", Summary: "done task", Updated: time.Now()},
-		{Key: "PROJ-2", Status: "In Progress", Priority: "High", Summary: "active task", Updated: time.Now()},
+		{Key: "PROJ-1", Status: "Done", StatusCategory: "done", Priority: "Low", Summary: "done task", Updated: time.Now()},
+		{Key: "PROJ-2", Status: "In Progress", StatusCategory: "indeterminate", Priority: "High", Summary: "active task", Updated: time.Now()},
 	}
 	c.UpsertIssues("PROJ", issues)
 
@@ -185,7 +185,7 @@ func TestGetIssueDetail_FreshnessPreservesSubsecondTimestamp(t *testing.T) {
 	c := openTestCache(t)
 	cachedTime := time.Date(2026, 4, 1, 12, 0, 0, 123000000, time.UTC)
 	if err := c.UpsertIssueDetail(&jira.IssueDetail{
-		Key: "PROJ-1", Summary: "test", Status: "To Do", IssueType: "Task", Updated: cachedTime,
+		Key: "PROJ-1", Summary: "test", Status: "To Do", StatusCategory: "new", IssueType: "Task", Updated: cachedTime,
 	}); err != nil {
 		t.Fatalf("UpsertIssueDetail: %v", err)
 	}
@@ -261,9 +261,9 @@ func TestUpsertIssueDetails_Batch(t *testing.T) {
 	c := openTestCache(t)
 
 	details := []*jira.IssueDetail{
-		{Key: "PROJ-1", Summary: "one", Status: "To Do", IssueType: "Task", Updated: time.Now()},
-		{Key: "PROJ-2", Summary: "two", Status: "To Do", IssueType: "Bug", Updated: time.Now()},
-		{Key: "PROJ-3", Summary: "three", Status: "To Do", IssueType: "Story", Updated: time.Now()},
+		{Key: "PROJ-1", Summary: "one", Status: "To Do", StatusCategory: "new", IssueType: "Task", Updated: time.Now()},
+		{Key: "PROJ-2", Summary: "two", Status: "To Do", StatusCategory: "new", IssueType: "Bug", Updated: time.Now()},
+		{Key: "PROJ-3", Summary: "three", Status: "To Do", StatusCategory: "new", IssueType: "Story", Updated: time.Now()},
 	}
 
 	if err := c.UpsertIssueDetails(details); err != nil {
@@ -289,8 +289,8 @@ func TestGetFreshDetailKeys(t *testing.T) {
 	t2 := time.Date(2026, 4, 2, 12, 0, 0, 0, time.UTC)
 
 	c.UpsertIssueDetails([]*jira.IssueDetail{
-		{Key: "PROJ-1", Summary: "one", Status: "To Do", IssueType: "Task", Updated: t2},
-		{Key: "PROJ-2", Summary: "two", Status: "To Do", IssueType: "Task", Updated: t1},
+		{Key: "PROJ-1", Summary: "one", Status: "To Do", StatusCategory: "new", IssueType: "Task", Updated: t2},
+		{Key: "PROJ-2", Summary: "two", Status: "To Do", StatusCategory: "new", IssueType: "Task", Updated: t1},
 	})
 
 	updatedByKey := map[string]time.Time{
@@ -411,14 +411,14 @@ func TestInvalidateIssue(t *testing.T) {
 	c := openTestCache(t)
 	updated := time.Now().UTC().Truncate(time.Second)
 	if err := c.UpsertIssues("PROJ", []jira.Issue{
-		{Key: "PROJ-1", Summary: "target issue", Status: "In Progress", Priority: "High", Updated: updated, Board: "Delivery", Sprint: "Sprint 1"},
-		{Key: "PROJ-2", Summary: "unrelated issue", Status: "To Do", Priority: "Low", Updated: updated, Board: "Delivery", Sprint: "Sprint 1"},
+		{Key: "PROJ-1", Summary: "target issue", Status: "In Progress", StatusCategory: "indeterminate", Priority: "High", Updated: updated, Board: "Delivery", Sprint: "Sprint 1"},
+		{Key: "PROJ-2", Summary: "unrelated issue", Status: "To Do", StatusCategory: "new", Priority: "Low", Updated: updated, Board: "Delivery", Sprint: "Sprint 1"},
 	}); err != nil {
 		t.Fatalf("UpsertIssues: %v", err)
 	}
 	if err := c.UpsertIssueDetails([]*jira.IssueDetail{
-		{Key: "PROJ-1", Summary: "target issue", Status: "To Do", IssueType: "Task", Updated: updated},
-		{Key: "PROJ-2", Summary: "unrelated issue", Status: "To Do", IssueType: "Task", Updated: updated},
+		{Key: "PROJ-1", Summary: "target issue", Status: "To Do", StatusCategory: "new", IssueType: "Task", Updated: updated},
+		{Key: "PROJ-2", Summary: "unrelated issue", Status: "To Do", StatusCategory: "new", IssueType: "Task", Updated: updated},
 	}); err != nil {
 		t.Fatalf("UpsertIssueDetails: %v", err)
 	}
@@ -582,10 +582,10 @@ func TestStats(t *testing.T) {
 
 	// Add some data
 	c.UpsertIssues("PROJ", []jira.Issue{
-		{Key: "PROJ-1", Status: "To Do", Priority: "Low", Summary: "one", Updated: time.Now()},
-		{Key: "PROJ-2", Status: "To Do", Priority: "Low", Summary: "two", Updated: time.Now()},
+		{Key: "PROJ-1", Status: "To Do", StatusCategory: "new", Priority: "Low", Summary: "one", Updated: time.Now()},
+		{Key: "PROJ-2", Status: "To Do", StatusCategory: "new", Priority: "Low", Summary: "two", Updated: time.Now()},
 	})
-	c.UpsertIssueDetail(&jira.IssueDetail{Key: "PROJ-1", Summary: "one", Status: "To Do", IssueType: "Task", Updated: time.Now()})
+	c.UpsertIssueDetail(&jira.IssueDetail{Key: "PROJ-1", Summary: "one", Status: "To Do", StatusCategory: "new", IssueType: "Task", Updated: time.Now()})
 	c.UpsertComments([]jira.Comment{
 		{ID: "c1", IssueKey: "PROJ-1", AuthorName: "alice", Body: "hi", Created: time.Now()},
 	})
@@ -608,7 +608,7 @@ func TestClear(t *testing.T) {
 	c := openTestCache(t)
 
 	c.UpsertIssues("PROJ", []jira.Issue{
-		{Key: "PROJ-1", Status: "To Do", Priority: "Low", Summary: "one", Updated: time.Now()},
+		{Key: "PROJ-1", Status: "To Do", StatusCategory: "new", Priority: "Low", Summary: "one", Updated: time.Now()},
 	})
 	c.LogFetch("PROJ", "currentUser()")
 
@@ -619,5 +619,34 @@ func TestClear(t *testing.T) {
 	issues, _ := c.GetIssues("PROJ")
 	if len(issues) != 0 {
 		t.Errorf("expected 0 issues after clear, got %d", len(issues))
+	}
+}
+
+func TestCacheUsesStatusCategoryAndActualProject(t *testing.T) {
+	c := openTestCache(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := c.UpsertIssues("DEFAULT", []jira.Issue{
+		{Key: "MOVED-1", Project: "ACTUAL", Status: "Done?", StatusCategory: "indeterminate", Updated: now},
+		{Key: "DEFAULT-2", Status: "To Do", StatusCategory: "", Updated: now},
+		{Key: "DEFAULT-3", Status: "Done", StatusCategory: "done", Updated: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.GetIssues("ACTUAL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Key != "MOVED-1" {
+		t.Fatalf("actual project/category selection: %#v", got)
+	}
+	if err := c.UpsertIssues("DEFAULT", []jira.Issue{{Key: "MOVED-1", Status: "old", StatusCategory: "done", Summary: "stale", Updated: now.Add(-time.Hour)}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = c.GetIssues("ACTUAL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Status != "Done?" {
+		t.Fatalf("stale result overwrote canonical row: %#v", got)
 	}
 }

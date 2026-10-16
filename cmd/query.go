@@ -86,7 +86,7 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	// result cache below. A warm-up never fails a query, so a cache-open error
 	// is logged and the query proceeds with the env-only project vocabulary.
 	var db *cache.Cache
-	if c, err := cache.Open(); err != nil {
+	if c, err := cache.OpenForConfig(cfg); err != nil {
 		slog.Warn("failed to open cache", "error", err)
 	} else {
 		db = c

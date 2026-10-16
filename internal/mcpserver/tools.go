@@ -72,10 +72,26 @@ func NewHandlers(store *ResultStore, db *cache.Cache, webPort int, bindHost stri
 	// The seams fold the tenant's fetched+cached project list into translation
 	// while the shared cache memoizes the engine. Tests override these.
 	h.translate = func(ctx context.Context, cfg *config.Config, query string) (*llm.QueryResult, error) {
-		return h.jqlCache.GenerateJQL(ctx, cfg, query, projectList(db, cfg))
+		if db == nil {
+			return h.jqlCache.GenerateJQL(ctx, cfg, query, nil)
+		}
+		scoped, err := db.ForConfig(cfg)
+		if err != nil {
+			slog.Warn("project cache unavailable for translation", "error", err)
+			return h.jqlCache.GenerateJQL(ctx, cfg, query, nil)
+		}
+		return h.jqlCache.GenerateJQL(ctx, cfg, query, projectList(scoped, cfg))
 	}
 	h.digestTranslate = func(ctx context.Context, cfg *config.Config, query string) (*llm.QueryResult, error) {
-		return h.jqlCache.GenerateJQLForDigest(ctx, cfg, query, projectList(db, cfg))
+		if db == nil {
+			return h.jqlCache.GenerateJQLForDigest(ctx, cfg, query, nil)
+		}
+		scoped, err := db.ForConfig(cfg)
+		if err != nil {
+			slog.Warn("project cache unavailable for digest translation", "error", err)
+			return h.jqlCache.GenerateJQLForDigest(ctx, cfg, query, nil)
+		}
+		return h.jqlCache.GenerateJQLForDigest(ctx, cfg, query, projectList(scoped, cfg))
 	}
 	return h
 }
@@ -96,6 +112,16 @@ func projectList(c *cache.Cache, cfg *config.Config) []jira.Project {
 		}
 		return client, nil
 	}, cache.DefaultProjectTTL)
+}
+
+// cacheForConfig returns the request-local view for the Jira account in cfg.
+// Callers keep this view for the whole operation so reads and writes cannot
+// cross tenant/account boundaries when handlers serve concurrent requests.
+func (h *Handlers) cacheForConfig(cfg *config.Config) (*cache.Cache, error) {
+	if h.cache == nil {
+		return nil, fmt.Errorf("cache unavailable")
+	}
+	return h.cache.ForConfig(cfg)
 }
 
 func (h *Handlers) viewURL(id string) string {
@@ -426,82 +452,23 @@ func (h *Handlers) HandleSummary(ctx context.Context, req mcp.CallToolRequest) (
 		return errorResult(err.Error()), nil
 	}
 
-	db := h.cache
-
-	refresh := getBool(req, "refresh")
-	cacheOnly := getBool(req, "cache_only")
-
-	if refresh {
-		if err := db.Clear(cfg.JiraProject); err != nil {
-			return errorResult(err.Error()), nil
-		}
+	db, err := h.cacheForConfig(cfg)
+	if err != nil {
+		return errorResult(err.Error()), nil
 	}
 
-	lastFetch := db.LastFetch(cfg.JiraProject, cfg.Assignee())
+	// Every online summary is a full reconciliation, including refresh=true.
+	cacheOnly := getBool(req, "cache_only")
 
-	var boards []jira.BoardInfo
-	var openIssues []jira.Issue
-
-	if cacheOnly {
-		if lastFetch.IsZero() {
-			return errorResult(fmt.Sprintf("no cached data for project %s", cfg.JiraProject)), nil
-		}
-		boards, err = db.GetBoards(cfg.JiraProject)
-		if err != nil {
-			return errorResult(err.Error()), nil
-		}
-		openIssues, err = db.GetIssues(cfg.JiraProject)
-		if err != nil {
-			return errorResult(err.Error()), nil
-		}
-	} else if !lastFetch.IsZero() && !refresh {
-		// Delta fetch
-		since := lastFetch.Add(-5 * time.Minute)
+	boards, openIssues, _, err := cache.LoadSummary(ctx, db, cfg, cacheOnly, func(ctx context.Context, invalidated []string) ([]jira.BoardInfo, []jira.Issue, error) {
 		client, err := jira.NewClient(cfg)
 		if err != nil {
-			return errorResult(err.Error()), nil
+			return nil, nil, err
 		}
-		delta, err := client.GetOpenIssuesSince(since)
-		if err != nil {
-			return errorResult(err.Error()), nil
-		}
-		if len(delta) > 0 {
-			db.UpsertIssues(cfg.JiraProject, delta)
-		}
-		db.RemoveDone(cfg.JiraProject)
-		db.LogFetch(cfg.JiraProject, cfg.Assignee())
-		boards, err = db.GetBoards(cfg.JiraProject)
-		if err != nil {
-			return errorResult(err.Error()), nil
-		}
-		openIssues, err = db.GetIssues(cfg.JiraProject)
-		if err != nil {
-			return errorResult(err.Error()), nil
-		}
-	} else {
-		// Full fetch
-		client, err := jira.NewClient(cfg)
-		if err != nil {
-			return errorResult(err.Error()), nil
-		}
-		boards, err = client.GetBoardIssues()
-		if err != nil {
-			return errorResult(err.Error()), nil
-		}
-		openIssues, err = client.GetOpenIssues()
-		if err != nil {
-			return errorResult(err.Error()), nil
-		}
-		var allIssues []jira.Issue
-		for _, b := range boards {
-			allIssues = append(allIssues, b.Issues...)
-		}
-		allIssues = append(allIssues, openIssues...)
-		if len(allIssues) > 0 {
-			db.UpsertIssues(cfg.JiraProject, allIssues)
-		}
-		db.RemoveDone(cfg.JiraProject)
-		db.LogFetch(cfg.JiraProject, cfg.Assignee())
+		return client.FetchSummary(ctx, invalidated)
+	})
+	if err != nil {
+		return errorResult(err.Error()), nil
 	}
 
 	slog.Info("summary complete", "boards", len(boards), "open_issues", len(openIssues))
@@ -578,6 +545,10 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	db, cacheErr := h.cacheForConfig(cfg)
+	if cacheErr != nil {
+		slog.Warn("cache unavailable for query", "error", cacheErr)
+	}
 
 	slog.Info("query", "input", naturalQuery)
 
@@ -600,7 +571,9 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 	issues := searchResult.Issues
 	info := searchResult.SearchInfo
 	if len(issues) > 0 && searchErr == nil && info.Complete {
-		h.cache.UpsertIssues(cfg.JiraProject, issues)
+		if db != nil {
+			db.UpsertIssues(cfg.JiraProject, issues)
+		}
 	}
 	// Keep useful partial search output available to the caller and dashboard.
 	displayJQL := jql.ResolveRelativeDatesForDisplay(result.JQL, time.Now())
@@ -725,7 +698,10 @@ func (h *Handlers) HandleDigest(ctx context.Context, req mcp.CallToolRequest) (*
 		return errorResult(err.Error()), nil
 	}
 
-	db := h.cache
+	db, err := h.cacheForConfig(cfg)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
 
 	issuesArg := getString(req, "issues")
 	cacheOnly := getBool(req, "cache_only")
@@ -935,6 +911,9 @@ func (h *Handlers) HandleEnrich(ctx context.Context, req mcp.CallToolRequest) (*
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	if getBool(req, "apply") {
+		h.prepareMutationCache(cfg)
+	}
 
 	issueKey := getString(req, "issue_key")
 	apply := getBool(req, "apply")
@@ -963,7 +942,7 @@ func (h *Handlers) HandleEnrich(ctx context.Context, req mcp.CallToolRequest) (*
 		if err := client.UpdateIssue(issueKey, fullDesc, enrichment.Labels); err != nil {
 			return errorResult(fmt.Sprintf("applied failed: %v", err)), nil
 		}
-		h.invalidateIssueCache(issueKey)
+		h.invalidateIssueCache(cfg, issueKey)
 	}
 
 	resultID := h.store.Save(ResultEnrich, fmt.Sprintf("Enrich: %s", issueKey), &EnrichResultData{
@@ -1027,7 +1006,10 @@ func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolReque
 
 	slog.Info("weekly status", "user", cfg.Assignee(), "start", startStr, "end", endStr)
 
-	db := h.cache
+	db, err := h.cacheForConfig(cfg)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
 
 	// Always run the fast search query to get current updated timestamps
 	client, err := jira.NewClient(cfg)
@@ -1049,42 +1031,26 @@ func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolReque
 		return errorResult(err.Error()), nil
 	}
 
-	issues, err := client.SearchJQL(weeklyJQL, 100)
+	search, err := client.SearchJQLResult(ctx, weeklyJQL, jira.SearchOptions{Limit: 10000, PageSize: 100, MaxPages: 100, ExactCount: true})
 	if err != nil {
 		return errorResult(fmt.Sprintf("JIRA search failed: %v", err)), nil
 	}
+	if !search.Complete {
+		return errorResult(fmt.Sprintf("JIRA search incomplete: %s", search.StopReason)), nil
+	}
+	issues := search.Issues
 
 	if len(issues) == 0 {
 		return textResult("No issues found for the specified date range."), nil
 	}
 
-	// Find the most recent update timestamp across all issues
-	var latestUpdate time.Time
-	for _, issue := range issues {
-		if issue.Updated.After(latestUpdate) {
-			latestUpdate = issue.Updated
-		}
-	}
-
-	// Check cache — use it only if no issue has been updated since we last cached
-	cacheKey := fmt.Sprintf("weekly:%s:%s:%s", cfg.JiraProject, startStr, endStr)
+	cacheKey := cache.WeeklyCacheKey(cfg, startStr, endStr, issues)
 	var status *llm.WeeklyStatusContent
 
-	if cachedJSON, cachedAt, ok := db.GetWeeklyCache(cacheKey); ok {
-		if !latestUpdate.After(cachedAt) {
-			// Nothing changed in JIRA since we cached — use cached result
-			if err := json.Unmarshal([]byte(cachedJSON), &status); err == nil {
-				slog.Info("using cached weekly status (no JIRA changes)", "key", cacheKey,
-					"cached_at", cachedAt.Format(time.RFC3339),
-					"latest_update", latestUpdate.Format(time.RFC3339))
-			} else {
-				slog.Warn("failed to unmarshal cached result, will regenerate", "error", err)
-				status = nil
-			}
-		} else {
-			slog.Info("cache stale, JIRA data updated since last run",
-				"cached_at", cachedAt.Format(time.RFC3339),
-				"latest_update", latestUpdate.Format(time.RFC3339))
+	if cachedJSON, _, ok := db.GetWeeklyCache(cacheKey); ok {
+		if err := json.Unmarshal([]byte(cachedJSON), &status); err != nil {
+			slog.Warn("failed to unmarshal cached result, will regenerate", "error", err)
+			status = nil
 		}
 	}
 
@@ -1115,26 +1081,19 @@ func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolReque
 				var err error
 				detail, err = client.GetIssue(issue.Key)
 				if err != nil {
-					slog.Warn("failed to get issue details", "key", issue.Key, "error", err)
-					continue
+					return errorResult(fmt.Sprintf("failed to get issue details for %s: %v", issue.Key, err)), nil
 				}
 				fetchedDetails = append(fetchedDetails, detail)
 			}
 
-			// Comments: use cached if detail was cached, otherwise fetch
-			var comments []jira.Comment
-			if freshKeys[issue.Key] {
-				comments, _ = db.GetCommentsByKeys([]string{issue.Key}, startTime)
+			// There is no completeness marker for cached comments, so always read
+			// the authoritative set when generating a report.
+			comments, err := client.GetComments(issue.Key)
+			if err != nil {
+				return errorResult(fmt.Sprintf("failed to get comments for %s: %v", issue.Key, err)), nil
 			}
-			if len(comments) == 0 {
-				var err error
-				comments, err = client.GetComments(issue.Key)
-				if err != nil {
-					slog.Warn("failed to get comments", "key", issue.Key, "error", err)
-				}
-				if len(comments) > 0 {
-					db.UpsertComments(comments)
-				}
+			if len(comments) > 0 {
+				db.UpsertComments(comments)
 			}
 
 			// Filter comments to date range
@@ -1294,6 +1253,11 @@ func (h *Handlers) HandleBacklogHealth(ctx context.Context, req mcp.CallToolRequ
 			return errorResult(err.Error()), nil
 		}
 	}
+	db, cacheErr := h.cacheForConfig(cfg)
+	if cacheErr != nil {
+		slog.Warn("cache unavailable for backlog health", "error", cacheErr)
+		db = nil
+	}
 
 	staleDays := int(getFloat(req, "stale_days"))
 	if staleDays <= 0 {
@@ -1322,14 +1286,17 @@ func (h *Handlers) HandleBacklogHealth(ctx context.Context, req mcp.CallToolRequ
 	for _, issue := range issues {
 		updatedByKey[issue.Key] = issue.Updated
 	}
-	freshKeys := h.cache.GetFreshDetailKeys(updatedByKey)
+	freshKeys := map[string]bool{}
+	if db != nil {
+		freshKeys = db.GetFreshDetailKeys(updatedByKey)
+	}
 
 	var details []*jira.IssueDetail
 	var fetchedDetails []*jira.IssueDetail
 	for _, issue := range issues {
 		var detail *jira.IssueDetail
 		if freshKeys[issue.Key] {
-			if cached, ok := h.cache.GetIssueDetail(issue.Key, issue.Updated); ok {
+			if cached, ok := db.GetIssueDetail(issue.Key, issue.Updated); ok {
 				detail = cached
 			}
 		}
@@ -1343,8 +1310,8 @@ func (h *Handlers) HandleBacklogHealth(ctx context.Context, req mcp.CallToolRequ
 		}
 		details = append(details, detail)
 	}
-	if len(fetchedDetails) > 0 {
-		h.cache.UpsertIssueDetails(fetchedDetails)
+	if len(fetchedDetails) > 0 && db != nil {
+		db.UpsertIssueDetails(fetchedDetails)
 	}
 
 	// Run checks
@@ -1421,6 +1388,11 @@ func (h *Handlers) HandleSummarizeComments(ctx context.Context, req mcp.CallTool
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	db, cacheErr := h.cacheForConfig(cfg)
+	if cacheErr != nil {
+		slog.Warn("cache unavailable for comment summary", "error", cacheErr)
+		db = nil
+	}
 
 	issueKey := getString(req, "issue_key")
 	if issueKey == "" {
@@ -1430,7 +1402,11 @@ func (h *Handlers) HandleSummarizeComments(ctx context.Context, req mcp.CallTool
 	slog.Info("summarize-comments", "key", issueKey)
 
 	// Fetch issue details (cache-aware)
-	detail, ok := h.cache.GetIssueDetail(issueKey, time.Time{})
+	var detail *jira.IssueDetail
+	ok := false
+	if db != nil {
+		detail, ok = db.GetIssueDetail(issueKey, time.Time{})
+	}
 	if !ok {
 		client, err := jira.NewClient(cfg)
 		if err != nil {
@@ -1440,11 +1416,16 @@ func (h *Handlers) HandleSummarizeComments(ctx context.Context, req mcp.CallTool
 		if err != nil {
 			return errorResult(err.Error()), nil
 		}
-		h.cache.UpsertIssueDetail(detail)
+		if db != nil {
+			db.UpsertIssueDetail(detail)
+		}
 	}
 
 	// Fetch comments (cache-aware)
-	comments, _ := h.cache.GetCommentsByKeys([]string{issueKey}, time.Time{})
+	var comments []jira.Comment
+	if db != nil {
+		comments, _ = db.GetCommentsByKeys([]string{issueKey}, time.Time{})
+	}
 	if len(comments) == 0 {
 		client, err := jira.NewClient(cfg)
 		if err != nil {
@@ -1454,8 +1435,8 @@ func (h *Handlers) HandleSummarizeComments(ctx context.Context, req mcp.CallTool
 		if err != nil {
 			return errorResult(err.Error()), nil
 		}
-		if len(comments) > 0 {
-			h.cache.UpsertComments(comments)
+		if len(comments) > 0 && db != nil {
+			db.UpsertComments(comments)
 		}
 	}
 
@@ -1503,6 +1484,7 @@ func (h *Handlers) HandleCreateEpic(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.prepareMutationCache(cfg)
 
 	description := getString(req, "description")
 	slog.Info("create-epic", "description", description)
@@ -1522,6 +1504,7 @@ func (h *Handlers) HandleCreateEpic(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	h.invalidateIssueCache(cfg, issue.Key)
 
 	resultID := h.store.Save(ResultCreateEpic, fmt.Sprintf("Epic: %s", issue.Key), &CreateEpicResultData{
 		CreatedKey: issue.Key,
@@ -1554,6 +1537,11 @@ func (h *Handlers) HandleFindSimilar(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	db, cacheErr := h.cacheForConfig(cfg)
+	if cacheErr != nil {
+		slog.Warn("cache unavailable for similarity search", "error", cacheErr)
+		db = nil
+	}
 
 	issueKey := getString(req, "issue_key")
 	text := getString(req, "text")
@@ -1584,7 +1572,7 @@ func (h *Handlers) HandleFindSimilar(ctx context.Context, req mcp.CallToolReques
 
 	// Fetch candidate issues
 	candidateJQL := fmt.Sprintf(
-		"project = %s AND status NOT IN (Done, Closed, Resolved) ORDER BY updated DESC",
+		"project = %s AND statusCategory != Done ORDER BY updated DESC",
 		jql.QuoteIdent(cfg.JiraProject),
 	)
 	issues, err := client.SearchJQL(candidateJQL, maxCandidates)
@@ -1597,14 +1585,17 @@ func (h *Handlers) HandleFindSimilar(ctx context.Context, req mcp.CallToolReques
 	for _, issue := range issues {
 		updatedByKey[issue.Key] = issue.Updated
 	}
-	freshKeys := h.cache.GetFreshDetailKeys(updatedByKey)
+	freshKeys := map[string]bool{}
+	if db != nil {
+		freshKeys = db.GetFreshDetailKeys(updatedByKey)
+	}
 
 	var candidates []*jira.IssueDetail
 	var fetchedDetails []*jira.IssueDetail
 	for _, issue := range issues {
 		var detail *jira.IssueDetail
 		if freshKeys[issue.Key] {
-			if cached, ok := h.cache.GetIssueDetail(issue.Key, issue.Updated); ok {
+			if cached, ok := db.GetIssueDetail(issue.Key, issue.Updated); ok {
 				detail = cached
 			}
 		}
@@ -1618,8 +1609,8 @@ func (h *Handlers) HandleFindSimilar(ctx context.Context, req mcp.CallToolReques
 		}
 		candidates = append(candidates, detail)
 	}
-	if len(fetchedDetails) > 0 {
-		h.cache.UpsertIssueDetails(fetchedDetails)
+	if len(fetchedDetails) > 0 && db != nil {
+		db.UpsertIssueDetails(fetchedDetails)
 	}
 
 	var result *llm.SimilarityResult

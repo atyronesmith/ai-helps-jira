@@ -46,7 +46,21 @@ func TestTransitionThenGetIssueCannotReturnPreTransitionStatus(t *testing.T) {
 	t.Setenv("JIRA_PROJECT", "TEST")
 
 	h := newTestHandlers(t)
-	if err := h.cache.UpsertIssueDetail(&jira.IssueDetail{
+	cfg, err := loadJIRAConfig(makeRequest(map[string]any{}))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	db, err := h.cacheForConfig(cfg)
+	if err != nil {
+		t.Fatalf("scope cache: %v", err)
+	}
+	otherCfg := *cfg
+	otherCfg.JiraEmail = "other@example.com"
+	otherDB, err := h.cacheForConfig(&otherCfg)
+	if err != nil {
+		t.Fatalf("scope other account cache: %v", err)
+	}
+	if err := db.UpsertIssueDetail(&jira.IssueDetail{
 		Key:       issueKey,
 		Summary:   "Cached issue",
 		Status:    "In Progress",
@@ -55,6 +69,9 @@ func TestTransitionThenGetIssueCannotReturnPreTransitionStatus(t *testing.T) {
 		Updated:   updated,
 	}); err != nil {
 		t.Fatalf("seed stale issue detail: %v", err)
+	}
+	if err := otherDB.UpsertIssueDetail(&jira.IssueDetail{Key: issueKey, Summary: "Other account issue", Status: "Open", Updated: updated}); err != nil {
+		t.Fatalf("seed other account issue detail: %v", err)
 	}
 
 	transitionResult, err := h.HandleTransition(t.Context(), makeRequest(map[string]any{
@@ -67,8 +84,11 @@ func TestTransitionThenGetIssueCannotReturnPreTransitionStatus(t *testing.T) {
 	if transitionResult.IsError {
 		t.Fatalf("transition returned tool error: %s", resultText(transitionResult))
 	}
-	if stale, ok := h.cache.GetIssueDetail(issueKey, time.Time{}); ok {
+	if stale, ok := db.GetIssueDetail(issueKey, time.Time{}); ok {
 		t.Fatalf("transition left stale detail in cache: status=%q", stale.Status)
+	}
+	if other, ok := otherDB.GetIssueDetail(issueKey, time.Time{}); !ok || other.Summary != "Other account issue" {
+		t.Fatalf("transition crossed account cache scope: detail=%+v cached=%t", other, ok)
 	}
 
 	getResult, err := h.HandleGetIssue(t.Context(), makeRequest(map[string]any{

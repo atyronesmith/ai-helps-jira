@@ -32,7 +32,7 @@ func NewWebServer(store *ResultStore, db *cache.Cache, port int, bindHost string
 			if db == nil {
 				return cacheStatusView{}
 			}
-			stats := db.Stats()
+			stats := db.AggregateStats()
 			hits, lookups := db.IssueDetailLookupStats()
 			return cacheStatusView{CachedIssues: stats.CachedIssues, Hits: hits, Lookups: lookups}
 		},

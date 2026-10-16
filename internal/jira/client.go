@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
@@ -17,23 +18,37 @@ import (
 )
 
 type Client struct {
-	http     *http.Client
-	base     string // e.g. https://yourcompany.atlassian.net
-	email    string
-	token    string
-	project  string
-	assignee string
+	http         *http.Client
+	base         string // e.g. https://yourcompany.atlassian.net
+	email        string
+	token        string
+	project      string
+	assignee     string
+	authEmail    string
+	userOverride string
 }
+
+// HTTPStatusError preserves the Jira response status for callers that need
+// to distinguish visibility losses from other request failures.
+type HTTPStatusError struct {
+	StatusCode int
+	Err        error
+}
+
+func (e *HTTPStatusError) Error() string { return e.Err.Error() }
+func (e *HTTPStatusError) Unwrap() error { return e.Err }
 
 func NewClient(cfg *config.Config) (*Client, error) {
 	slog.Info("connecting to JIRA", "server", cfg.JiraServer)
 	return &Client{
-		http:     &http.Client{Timeout: 30 * time.Second},
-		base:     cfg.JiraServer,
-		email:    cfg.JiraEmail,
-		token:    cfg.JiraAPIToken,
-		project:  cfg.JiraProject,
-		assignee: cfg.Assignee(),
+		http:         &http.Client{Timeout: 30 * time.Second},
+		base:         cfg.JiraServer,
+		email:        cfg.JiraEmail,
+		token:        cfg.JiraAPIToken,
+		project:      cfg.JiraProject,
+		assignee:     cfg.Assignee(),
+		authEmail:    cfg.JiraEmail,
+		userOverride: cfg.JiraUser,
 	}, nil
 }
 
@@ -78,15 +93,15 @@ func (c *Client) doRequestContext(ctx context.Context, method, path string, body
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		slog.Error("JIRA API auth error", "status", resp.StatusCode, "path", path,
 			"body", truncate(string(respBody), 200))
-		return fmt.Errorf("JIRA authentication failed (status %d) for %s %s: check JIRA_API_TOKEN/JIRA_EMAIL env vars or secrets files: %s",
-			resp.StatusCode, method, path, truncate(string(respBody), 200))
+		return &HTTPStatusError{StatusCode: resp.StatusCode, Err: fmt.Errorf("JIRA authentication failed (status %d) for %s %s: check JIRA_API_TOKEN/JIRA_EMAIL env vars or secrets files: %s",
+			resp.StatusCode, method, path, truncate(string(respBody), 200))}
 	}
 
 	if resp.StatusCode >= 400 {
 		slog.Error("JIRA API error", "status", resp.StatusCode, "path", path,
 			"body", truncate(string(respBody), 200))
-		return fmt.Errorf("JIRA API %s %s: %s (status %d)",
-			method, path, truncate(string(respBody), 200), resp.StatusCode)
+		return &HTTPStatusError{StatusCode: resp.StatusCode, Err: fmt.Errorf("JIRA API %s %s: %s (status %d)",
+			method, path, truncate(string(respBody), 200), resp.StatusCode)}
 	}
 
 	if out != nil {
@@ -119,14 +134,16 @@ type apiIssue struct {
 }
 
 type apiFields struct {
-	Summary  string       `json:"summary"`
-	Status   apiName      `json:"status"`
-	Priority *apiName     `json:"priority"`
-	Updated  string       `json:"updated"`
-	Labels   []string     `json:"labels"`
-	Type     apiName      `json:"issuetype"`
-	Project  apiKeyedName `json:"project"`
-	Assignee *apiAssignee `json:"assignee"`
+	Summary        string            `json:"summary"`
+	Status         apiName           `json:"status"`
+	Priority       *apiName          `json:"priority"`
+	Updated        string            `json:"updated"`
+	Labels         []string          `json:"labels"`
+	Type           apiName           `json:"issuetype"`
+	Project        apiKeyedName      `json:"project"`
+	Assignee       *apiAssignee      `json:"assignee"`
+	StatusCategory apiStatusCategory `json:"statusCategory"`
+	Parent         *apiParent        `json:"parent"`
 }
 
 type apiAssignee struct {
@@ -136,6 +153,12 @@ type apiAssignee struct {
 }
 
 type apiName struct {
+	Name           string            `json:"name"`
+	StatusCategory apiStatusCategory `json:"statusCategory"`
+}
+
+type apiStatusCategory struct {
+	Key  string `json:"key"`
 	Name string `json:"name"`
 }
 
@@ -161,9 +184,7 @@ func parseAPIIssues(raw []apiIssue) []Issue {
 	issues := make([]Issue, 0, len(raw))
 	for _, r := range raw {
 		var updated time.Time
-		if r.Fields.Updated != "" {
-			updated, _ = time.Parse("2006-01-02T15:04:05.000-0700", r.Fields.Updated)
-		}
+		updated, _ = parseJiraTime(r.Fields.Updated)
 		pri := ""
 		if r.Fields.Priority != nil {
 			pri = r.Fields.Priority.Name
@@ -179,15 +200,53 @@ func parseAPIIssues(raw []apiIssue) []Issue {
 			Summary:  r.Fields.Summary,
 			Updated:  updated,
 			Assignee: assignee,
+			AssigneeID: func() string {
+				if r.Fields.Assignee != nil {
+					return r.Fields.Assignee.AccountID
+				}
+				return ""
+			}(),
+			Project:        projectKey(r.Key, r.Fields.Project.Key),
+			StatusCategory: statusCategory(r.Fields.StatusCategory, r.Fields.Status.StatusCategory),
 		})
 	}
 	return issues
 }
 
+func projectKey(issueKey, actual string) string {
+	if actual != "" {
+		return actual
+	}
+	if i := strings.IndexByte(issueKey, '-'); i > 0 {
+		return issueKey[:i]
+	}
+	return ""
+}
+
+func statusCategory(topLevel, nested apiStatusCategory) string {
+	if topLevel.Key != "" {
+		return topLevel.Key
+	}
+	return nested.Key
+}
+
+func parseJiraTime(value string) (time.Time, error) {
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05.000-0700", "2006-01-02T15:04:05-0700"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("invalid Jira timestamp %q", value)
+}
+
+func IsOpenIssue(issue Issue) bool {
+	return issue.StatusCategory != "" && !strings.EqualFold(issue.StatusCategory, "done")
+}
+
 func (c *Client) GetOpenIssues() ([]Issue, error) {
 	q := fmt.Sprintf(
 		"assignee = %s AND project = %s "+
-			"AND status NOT IN (Done, Closed, Resolved) "+
+			"AND statusCategory != Done "+
 			"ORDER BY priority ASC, status ASC",
 		c.assignee, jql.QuoteIdent(c.project),
 	)
@@ -198,7 +257,7 @@ func (c *Client) GetOpenIssues() ([]Issue, error) {
 func (c *Client) GetOpenIssuesSince(since time.Time) ([]Issue, error) {
 	q := fmt.Sprintf(
 		"assignee = %s AND project = %s "+
-			"AND status NOT IN (Done, Closed, Resolved) "+
+			"AND statusCategory != Done "+
 			"AND updated >= %s "+
 			"ORDER BY priority ASC, status ASC",
 		c.assignee, jql.QuoteIdent(c.project), jql.Quote(since.Format("2006-01-02 15:04")),
@@ -280,7 +339,7 @@ func (c *Client) getSprintIssues(board apiBoard) *BoardInfo {
 	slog.Info("active sprint", "name", sprint.Name, "id", sprint.ID, "board", board.Name)
 
 	q := fmt.Sprintf(
-		"assignee = %s AND sprint = %d AND project = %s ORDER BY priority ASC",
+		"assignee = %s AND sprint = %d AND project = %s AND statusCategory != Done ORDER BY priority ASC",
 		c.assignee, sprint.ID, jql.QuoteIdent(c.project),
 	)
 	issues, err := c.searchIssues(q, 50)
@@ -318,7 +377,7 @@ func (c *Client) getSprintIssues(board apiBoard) *BoardInfo {
 func (c *Client) getKanbanIssues(board apiBoard) *BoardInfo {
 	// Use board-specific agile endpoint so each board only shows its own issues
 	kanbanJQL := fmt.Sprintf(
-		"assignee = %s AND status NOT IN (Done, Closed, Resolved) "+
+		"assignee = %s AND statusCategory != Done "+
 			"ORDER BY priority ASC, status ASC",
 		c.assignee,
 	)
@@ -422,15 +481,17 @@ type apiIssueDetail struct {
 }
 
 type apiDetailFields struct {
-	Summary     string       `json:"summary"`
-	Description any          `json:"description"` // ADF document
-	Status      apiName      `json:"status"`
-	Priority    *apiName     `json:"priority"`
-	Labels      []string     `json:"labels"`
-	Type        apiName      `json:"issuetype"`
-	Assignee    *apiAssignee `json:"assignee"`
-	Parent      *apiParent   `json:"parent"`
-	Updated     string       `json:"updated"`
+	Summary        string            `json:"summary"`
+	Description    any               `json:"description"` // ADF document
+	Status         apiName           `json:"status"`
+	Priority       *apiName          `json:"priority"`
+	Labels         []string          `json:"labels"`
+	Type           apiName           `json:"issuetype"`
+	Assignee       *apiAssignee      `json:"assignee"`
+	Parent         *apiParent        `json:"parent"`
+	Updated        string            `json:"updated"`
+	Project        apiKeyedName      `json:"project"`
+	StatusCategory apiStatusCategory `json:"statusCategory"`
 }
 
 type apiParent struct {
@@ -440,11 +501,15 @@ type apiParent struct {
 
 // GetIssue fetches full issue details including description.
 func (c *Client) GetIssue(key string) (*IssueDetail, error) {
-	path := fmt.Sprintf("/rest/api/3/issue/%s?fields=summary,description,status,priority,labels,issuetype,assignee,parent,updated", key)
+	return c.getIssueContext(context.Background(), key)
+}
+
+func (c *Client) getIssueContext(ctx context.Context, key string) (*IssueDetail, error) {
+	path := fmt.Sprintf("/rest/api/3/issue/%s?fields=summary,description,status,statusCategory,project,priority,labels,issuetype,assignee,parent,updated", key)
 	slog.Info("fetching issue", "key", key)
 
 	var raw apiIssueDetail
-	if err := c.doRequest("GET", path, nil, &raw); err != nil {
+	if err := c.doRequestContext(ctx, http.MethodGet, path, nil, &raw); err != nil {
 		return nil, fmt.Errorf("get issue %s: %w", key, err)
 	}
 
@@ -469,21 +534,29 @@ func (c *Client) GetIssue(key string) (*IssueDetail, error) {
 		parentSummary = raw.Fields.Parent.Fields.Summary
 	}
 
-	updated, _ := time.Parse("2006-01-02T15:04:05.000-0700", raw.Fields.Updated)
+	updated, _ := parseJiraTime(raw.Fields.Updated)
 
 	return &IssueDetail{
-		Key:           raw.Key,
-		Summary:       raw.Fields.Summary,
-		Description:   desc,
-		Status:        raw.Fields.Status.Name,
-		Priority:      pri,
-		Labels:        raw.Fields.Labels,
-		IssueType:     raw.Fields.Type.Name,
-		Assignee:      assignee,
-		AssigneeID:    assigneeID,
-		ParentKey:     parentKey,
-		ParentSummary: parentSummary,
-		Updated:       updated,
+		Key:            raw.Key,
+		Summary:        raw.Fields.Summary,
+		Description:    desc,
+		Status:         raw.Fields.Status.Name,
+		Priority:       pri,
+		Labels:         raw.Fields.Labels,
+		IssueType:      raw.Fields.Type.Name,
+		Assignee:       assignee,
+		AssigneeID:     assigneeID,
+		ParentKey:      parentKey,
+		ParentSummary:  parentSummary,
+		Updated:        updated,
+		Project:        projectKey(raw.Key, raw.Fields.Project.Key),
+		StatusCategory: statusCategory(raw.Fields.StatusCategory, raw.Fields.Status.StatusCategory),
+		AssigneeEmail: func() string {
+			if raw.Fields.Assignee != nil {
+				return raw.Fields.Assignee.EmailAddress
+			}
+			return ""
+		}(),
 	}, nil
 }
 
@@ -586,7 +659,7 @@ func (c *Client) GetComments(key string) ([]Comment, error) {
 
 	var comments []Comment
 	for _, c := range raw.Fields.Comment.Comments {
-		created, _ := time.Parse("2006-01-02T15:04:05.000-0700", c.Created)
+		created, _ := parseJiraTime(c.Created)
 		comments = append(comments, Comment{
 			ID:          c.ID,
 			IssueKey:    key,
@@ -603,14 +676,19 @@ func (c *Client) GetComments(key string) ([]Comment, error) {
 type apiIssueLinkResponse struct {
 	Key    string `json:"key"`
 	Fields struct {
-		Summary     string           `json:"summary"`
-		Description any              `json:"description"`
-		Status      apiName          `json:"status"`
-		Priority    *apiName         `json:"priority"`
-		Labels      []string         `json:"labels"`
-		Type        apiName          `json:"issuetype"`
-		IssueLinks  []apiIssueLink   `json:"issuelinks"`
-		Subtasks    []apiLinkedIssue `json:"subtasks"`
+		Summary        string            `json:"summary"`
+		Description    any               `json:"description"`
+		Status         apiName           `json:"status"`
+		StatusCategory apiStatusCategory `json:"statusCategory"`
+		Project        apiKeyedName      `json:"project"`
+		Parent         *apiParent        `json:"parent"`
+		Assignee       *apiAssignee      `json:"assignee"`
+		Updated        string            `json:"updated"`
+		Priority       *apiName          `json:"priority"`
+		Labels         []string          `json:"labels"`
+		Type           apiName           `json:"issuetype"`
+		IssueLinks     []apiIssueLink    `json:"issuelinks"`
+		Subtasks       []apiLinkedIssue  `json:"subtasks"`
 	} `json:"fields"`
 }
 
@@ -637,7 +715,7 @@ type apiLinkedIssue struct {
 
 // GetIssueWithLinks fetches an issue's details, its linked issues, and subtasks.
 func (c *Client) GetIssueWithLinks(key string) (*IssueDetail, []IssueLink, error) {
-	path := fmt.Sprintf("/rest/api/3/issue/%s?fields=summary,description,status,priority,labels,issuetype,issuelinks,subtasks", key)
+	path := fmt.Sprintf("/rest/api/3/issue/%s?fields=summary,description,status,statusCategory,project,priority,labels,issuetype,assignee,parent,updated,issuelinks,subtasks", key)
 	slog.Info("fetching issue with links", "key", key)
 
 	var raw apiIssueLinkResponse
@@ -651,13 +729,24 @@ func (c *Client) GetIssueWithLinks(key string) (*IssueDetail, []IssueLink, error
 	}
 
 	detail := &IssueDetail{
-		Key:         raw.Key,
-		Summary:     raw.Fields.Summary,
-		Description: extractADFText(raw.Fields.Description),
-		Status:      raw.Fields.Status.Name,
-		Priority:    pri,
-		Labels:      raw.Fields.Labels,
-		IssueType:   raw.Fields.Type.Name,
+		Key:            raw.Key,
+		Summary:        raw.Fields.Summary,
+		Description:    extractADFText(raw.Fields.Description),
+		Status:         raw.Fields.Status.Name,
+		Priority:       pri,
+		Labels:         raw.Fields.Labels,
+		IssueType:      raw.Fields.Type.Name,
+		Project:        projectKey(raw.Key, raw.Fields.Project.Key),
+		StatusCategory: statusCategory(raw.Fields.StatusCategory, raw.Fields.Status.StatusCategory),
+	}
+	detail.Updated, _ = parseJiraTime(raw.Fields.Updated)
+	if raw.Fields.Parent != nil {
+		detail.ParentKey, detail.ParentSummary = raw.Fields.Parent.Key, raw.Fields.Parent.Fields.Summary
+	}
+	if raw.Fields.Assignee != nil {
+		detail.AssigneeID = raw.Fields.Assignee.AccountID
+		detail.AssigneeEmail = raw.Fields.Assignee.EmailAddress
+		detail.Assignee = raw.Fields.Assignee.DisplayName
 	}
 
 	var links []IssueLink

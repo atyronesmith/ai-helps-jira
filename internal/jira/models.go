@@ -3,30 +3,36 @@ package jira
 import "time"
 
 type Issue struct {
-	Key      string
-	Status   string
-	Priority string
-	Summary  string
-	Updated  time.Time
-	Assignee string // email address of assignee
-	Board    string // board name this issue was found on
-	Sprint   string // sprint name, empty if kanban
+	Key            string
+	Status         string
+	Priority       string
+	Summary        string
+	Updated        time.Time
+	Assignee       string // email address of assignee
+	AssigneeID     string
+	Project        string
+	StatusCategory string
+	Board          string // board name this issue was found on
+	Sprint         string // sprint name, empty if kanban
 }
 
 // IssueDetail holds full issue fields for enrichment/editing.
 type IssueDetail struct {
-	Key           string
-	Summary       string
-	Description   string // plain text extracted from ADF
-	Status        string
-	Priority      string
-	Labels        []string
-	IssueType     string
-	Assignee      string    // display name
-	AssigneeID    string    // account ID for API operations
-	ParentKey     string    // parent issue key (if any)
-	ParentSummary string    // parent issue summary
-	Updated       time.Time // last update time from JIRA
+	Key            string
+	Summary        string
+	Description    string // plain text extracted from ADF
+	Status         string
+	Priority       string
+	Labels         []string
+	IssueType      string
+	Assignee       string    // display name
+	AssigneeID     string    // account ID for API operations
+	ParentKey      string    // parent issue key (if any)
+	ParentSummary  string    // parent issue summary
+	Updated        time.Time // last update time from JIRA
+	Project        string
+	StatusCategory string
+	AssigneeEmail  string
 }
 
 // Comment represents a single JIRA issue comment.
