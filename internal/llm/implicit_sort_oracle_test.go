@@ -12,12 +12,16 @@ import (
 // This test requires explicit oracle credentials/fixtures and is never part of
 // the hermetic suite. Check Jira's errors and parsed scope/owner/order shape,
 // rather than treating HTTP 200 as evidence of a correct translation.
-func TestOracle_CreationSortWithoutDirection(t *testing.T) {
+func TestOracle_DateSortWithoutDirection(t *testing.T) {
 	client := oracleClient(t)
 	cfg := &config.Config{JiraProject: oracleProject(t)}
-	for _, input := range []string{"my open issues ordered by date created", "list my open issues ordered by date created"} {
-		t.Run(input, func(t *testing.T) {
-			result, err := GenerateJQLWithProjects(t.Context(), cfg, input, nil)
+	for _, tc := range []struct{ input, field string }{
+		{"my open issues ordered by date created", "created"},
+		{"list my open issues ordered by date created", "created"},
+		{"list all my open jiras ordered by updated date", "updated"},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			result, err := GenerateJQLWithProjects(t.Context(), cfg, tc.input, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -32,7 +36,7 @@ func TestOracle_CreationSortWithoutDirection(t *testing.T) {
 				}
 			}
 			order := parsed.Structure.OrderBy
-			if order == nil || len(order.Fields) != 1 || !strings.EqualFold(order.Fields[0].Field.Name, "created") || !strings.EqualFold(order.Fields[0].Direction, "asc") {
+			if order == nil || len(order.Fields) != 1 || !strings.EqualFold(order.Fields[0].Field.Name, tc.field) || !strings.EqualFold(order.Fields[0].Direction, "asc") {
 				t.Fatalf("unexpected parsed order: %+v", order)
 			}
 		})

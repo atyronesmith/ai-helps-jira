@@ -14,8 +14,17 @@ func TestCreationSortWithoutDirectionPreservesScopedOwnership(t *testing.T) {
 	// valid-but-wrong output. A passing test must preserve the complete meaning,
 	// keep its scope, and avoid the provider entirely.
 	const wrongPlan = `{"version":1,"outcome":"supported","mode":"list","filter":{"kind":"comparison","field":"statusCategory","operator":"!=","value":{"kind":"string","text":"Done"}},"sort":[{"field":"created","direction":"ASC"}]}`
+	queries := []struct{ input, field, direction string }{
+		{"my open issues ordered by date created", "created", "ASC"},
+		{"list my open issues ordered by date created", "created", "ASC"},
+		{"my open issues ordered by creation date", "created", "ASC"},
+		{"my open issues ordered by created", "created", "ASC"},
+		{"list all my open jiras ordered by updated date", "updated", "ASC"},
+		{"list all my open jiras ordered by updated date descending", "updated", "DESC"},
+	}
 	for _, user := range []string{"", "reviewer"} {
-		for _, input := range []string{"my open issues ordered by date created", "list my open issues ordered by date created", "my open issues ordered by creation date", "my open issues ordered by created"} {
+		for _, query := range queries {
+			input := query.input
 			t.Run(input+"/"+user, func(t *testing.T) {
 				provider := &fixtureResponseProvider{response: wrongPlan}
 				cfg := &config.Config{JiraProject: "PROJ", JiraUser: user}
@@ -23,7 +32,7 @@ func TestCreationSortWithoutDirectionPreservesScopedOwnership(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				want := `statusCategory != Done AND assignee = ` + cfg.Assignee() + ` AND project = PROJ ORDER BY created ASC`
+				want := `statusCategory != Done AND assignee = ` + cfg.Assignee() + ` AND project = PROJ ORDER BY ` + query.field + ` ` + query.direction
 				if result.JQL != want || result.Route != RouteFastPath || result.ProviderCalls != 0 || provider.prompt != "" {
 					t.Fatalf("result=%+v prompt=%q; want %s without fallback", result, provider.prompt, want)
 				}

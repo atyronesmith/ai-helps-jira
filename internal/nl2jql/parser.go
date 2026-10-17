@@ -289,6 +289,7 @@ var orderFieldJQL = map[string]string{
 	"creation date":   "created",
 	"date created":    "created",
 	"updated":         "updated",
+	"updated date":    "updated",
 	"update date":     "updated",
 	"last updated":    "updated",
 	"due":             "due",

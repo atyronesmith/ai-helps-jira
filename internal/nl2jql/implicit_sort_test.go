@@ -14,6 +14,8 @@ func TestImplicitOrderByDirection(t *testing.T) {
 		{"list wording", "list my open issues ordered by date created", "", `statusCategory != Done AND assignee = currentUser() ORDER BY created ASC`, 1},
 		{"created alias", "my issues ordered by created", "", `assignee = currentUser() ORDER BY created ASC`, 1},
 		{"creation date alias", "my issues ordered by creation date", "", `assignee = currentUser() ORDER BY created ASC`, 1},
+		{"updated date alias", "list all my open jiras ordered by updated date", "", `statusCategory != Done AND assignee = currentUser() ORDER BY updated ASC`, 1},
+		{"updated date explicit descending", "list all my open jiras ordered by updated date descending", "", `statusCategory != Done AND assignee = currentUser() ORDER BY updated DESC`, 1},
 		{"assigned to me with open", "assigned to me open issues ordered by date created", "", `statusCategory != Done AND assignee = currentUser() ORDER BY created ASC`, 1},
 		{"explicit ascending", "my issues ordered by created asc", "", `assignee = currentUser() ORDER BY created ASC`, 1},
 		{"explicit descending", "my issues ordered by created desc", "", `assignee = currentUser() ORDER BY created DESC`, 1},
@@ -61,6 +63,7 @@ func TestImplicitOrderByStillRejectsMalformedOrdering(t *testing.T) {
 	for _, input := range []string{
 		"my issues ordered by",
 		"my issues ordered by created upwards",
+		"list all my open jiras ordered by updated date upwards",
 		"my issues ordered by sprint",
 		"my issues ordered by created extra words",
 		"my issues ordered by priority asc sorted by created desc",
