@@ -672,6 +672,12 @@ make build          # Build binary
 make run ARGS="summary"  # Build and run
 make check          # Run tidy + fmt + vet
 make test           # Run tests
+make train-jql      # Review translations and collect private feedback
+make train-jql-report # Summarize private feedback
+make train-jql-replay # Replay the sanitized corpus (CORPUS=path to override)
+make test-translation # Run focused translation/replay tests
+make test-dashboard # Run browser refresh + MCP regressions (requires Node.js)
+make verify         # Build, vet, race tests, docs, browser tests, diff checks
 make lint           # Run vet + staticcheck
 make restart-mcp    # Rebuild and restart MCP server
 make container      # Build container image
@@ -683,6 +689,11 @@ make container-sbom # Generate SBOM (SPDX)
 make release        # Cross-compile for all platforms
 make help           # Show all targets
 ```
+
+`verify` checks the working tree without running the formatting or module
+rewrites performed by `check`; it requires Node.js for the dashboard browser
+regressions. Trainer targets accept extra CLI flags through `ARGS`, for example
+`make train-jql ARGS='-p PROJ'`. See [feedback and replay](docs/translation-feedback.md).
 
 ## License
 

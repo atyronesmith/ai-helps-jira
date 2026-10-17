@@ -24,7 +24,10 @@ BWS_ENV_FILE ?= .env
 
 .PHONY: all build clean install uninstall test lint fmt vet tidy run \
         release check doc-lint restart-mcp container container-build container-run container-run-bitwarden container-stop \
-        container-scan container-sign container-sbom help
+        container-scan container-sign container-sbom train-jql train-jql-report train-jql-replay \
+        test-translation test-dashboard verify help
+
+CORPUS ?= internal/nlfeedback/testdata/regressions.jsonl
 
 all: check build  ## Run checks then build
 
@@ -60,6 +63,28 @@ lint: vet  ## Run linters (vet + staticcheck if available)
 
 test:  ## Run tests
 	go test -v -race -count=1 ./...
+
+train-jql: build  ## Review translations interactively and collect private feedback (customize with ARGS)
+	./$(BINARY) train-jql $(ARGS)
+
+train-jql-report: build  ## Report translation feedback statistics (ARGS="--feedback-file PATH" to select a file)
+	./$(BINARY) train-jql report $(ARGS)
+
+train-jql-replay: build  ## Replay the sanitized regression corpus (override with CORPUS=PATH)
+	./$(BINARY) train-jql replay "$(CORPUS)" $(ARGS)
+
+test-translation:  ## Run focused JQL translation tests with the race detector
+	go test -race -count=1 ./internal/jql ./internal/fieldmeta ./internal/nl2jql ./internal/llm ./internal/nlfeedback ./cmd
+
+test-dashboard:  ## Run dashboard browser refresh regression and MCP server tests
+	@command -v node >/dev/null 2>&1 || { echo "node is required for the dashboard browser regression"; exit 1; }
+	node scripts/test_dashboard_refresh.cjs
+	go test -race -count=1 ./internal/mcpserver
+
+verify: build vet test doc-lint  ## Run build, vet, tests, docs, dashboard browser regression, and diff checks
+	@command -v node >/dev/null 2>&1 || { echo "node is required for the dashboard browser regression"; exit 1; }
+	node scripts/test_dashboard_refresh.cjs
+	git diff --check
 
 check: tidy fmt vet  ## Run all checks (tidy, fmt, vet)
 

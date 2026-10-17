@@ -14,6 +14,22 @@ jira-cli train-jql replay internal/nlfeedback/testdata/regressions.jsonl
 jira-cli train-jql --feedback-file /private/path/examples.jsonl replay
 ```
 
+The Makefile builds the current binary before running collection or reports:
+
+```sh
+make train-jql
+make train-jql ARGS='-p PROJ --feedback-file /private/path/examples.jsonl'
+make train-jql-report
+make train-jql-replay
+make train-jql-replay CORPUS=/private/path/reviewed.jsonl
+```
+
+`train-jql-replay` defaults to the checked-in sanitized regression corpus and
+never calls Jira or a live model. Collection translates entered requests and may
+use the configured model for unsupported wording; it gathers review data rather
+than updating model weights or automatically promoting corrections.
+`make test-translation` runs the focused translation/replay suites.
+
 The default file is `~/.jira-cli/nl2jql-feedback.jsonl`. New directories use
 0700 and the corpus file uses 0600, including an existing file opened for append.
 Input, corrections, effective user overrides, cached tenant metadata, field
