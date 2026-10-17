@@ -214,7 +214,27 @@ The MCP server starts a web dashboard on port 18080 in both stdio and SSE modes.
 
 ### Index page
 
-The landing page (`/`) lists all stored results in reverse chronological order. Each row shows the tool type (color-coded badge), title, and timestamp. Bulk select and delete is supported.
+The landing page (`/`) lists stored results and call attempts in reverse
+chronological order, including failures. Query rows include outcome, route, and
+display JQL; query views distinguish exact execution text from display changes,
+with original/normalized input, validation, duration, and search completeness.
+Bulk select and delete affects only the selected history owner.
+
+History is private durable SQLite storage under `~/.jira-cli/results-v1/`.
+`--history-instance NAME` selects a stable owner (default `default`); use different
+names for independent local servers. Matching names share results and retention.
+`--history-max-age 720h --history-max-results 1000` are the defaults, enforced at
+startup and save. Zero disables the respective limit; negative values are invalid.
+The container's `.jira-cli` volume retains this history across replacement.
+
+The header separates liveness from readiness and shows dependency checked-at
+times. `/healthz` is liveness; `/readyz` is conservative observed readiness, with
+503 for unknown/stale/failed required observations. Observations expire after
+five minutes. Deterministic-only or idle servers can remain unknown. Polling
+`/api/status` never calls Jira or an LLM; it reads observations from normal tool
+operations. The cache hit window measures the last ten eligible issue-detail
+lookups, not natural-language requests. See the
+[Phase 6 limitations](project-reliability-implementation-plan.md#phase-6-remaining-limitations).
 
 ### Views by tool
 

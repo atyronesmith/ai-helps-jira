@@ -1,16 +1,21 @@
 package cmd
 
 import (
+	"time"
+
 	"github.com/spf13/cobra"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/mcpserver"
 )
 
 var (
-	flagMCPPort      int
-	flagMCPTransport string
-	flagMCPSSEPort   int
-	flagMCPBind      string
+	flagMCPPort              int
+	flagMCPTransport         string
+	flagMCPSSEPort           int
+	flagMCPBind              string
+	flagMCPHistoryInstance   string
+	flagMCPHistoryMaxAge     time.Duration
+	flagMCPHistoryMaxResults int
 )
 
 var mcpCmd = &cobra.Command{
@@ -59,6 +64,9 @@ func init() {
 		"Port for SSE/streamable-http transport (only used with --transport sse|streamable-http).")
 	mcpCmd.Flags().StringVar(&flagMCPBind, "bind", "127.0.0.1",
 		"Bind address for servers. Use 0.0.0.0 for containers.")
+	mcpCmd.Flags().StringVar(&flagMCPHistoryInstance, "history-instance", "default", "Stable history owner; use a different name for each isolated local instance.")
+	mcpCmd.Flags().DurationVar(&flagMCPHistoryMaxAge, "history-max-age", 30*24*time.Hour, "Delete this instance's history older than this duration at startup and on save (0 disables).")
+	mcpCmd.Flags().IntVar(&flagMCPHistoryMaxResults, "history-max-results", 1000, "Keep at most this many results for this instance (0 disables).")
 	rootCmd.AddCommand(mcpCmd)
 }
 
@@ -66,10 +74,13 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	// Redirect all logging to file — never stdout (MCP stdio uses it)
 	setupLogging()
 	return mcpserver.Run(mcpserver.Config{
-		WebPort:   flagMCPPort,
-		Transport: flagMCPTransport,
-		SSEPort:   flagMCPSSEPort,
-		BindHost:  flagMCPBind,
-		Version:   binaryVersion,
+		WebPort:           flagMCPPort,
+		Transport:         flagMCPTransport,
+		SSEPort:           flagMCPSSEPort,
+		BindHost:          flagMCPBind,
+		Version:           binaryVersion,
+		HistoryInstance:   flagMCPHistoryInstance,
+		HistoryMaxAge:     flagMCPHistoryMaxAge,
+		HistoryMaxResults: flagMCPHistoryMaxResults,
 	})
 }

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/cache"
@@ -61,11 +62,14 @@ func noAuthMiddleware(next http.Handler) http.Handler {
 
 // Config holds MCP server configuration.
 type Config struct {
-	WebPort   int
-	Transport string // "stdio", "sse", or "streamable-http"
-	SSEPort   int    // port for SSE / streamable-http transport
-	BindHost  string // bind address: "127.0.0.1" (default) or "0.0.0.0" (container)
-	Version   string // build version reported during MCP initialization; defaults to "dev"
+	WebPort           int
+	Transport         string        // "stdio", "sse", or "streamable-http"
+	SSEPort           int           // port for SSE / streamable-http transport
+	BindHost          string        // bind address: "127.0.0.1" (default) or "0.0.0.0" (container)
+	HistoryInstance   string        // stable local history namespace
+	HistoryMaxAge     time.Duration // zero disables age retention
+	HistoryMaxResults int           // zero disables count retention
+	Version           string        // build version reported during MCP initialization; defaults to "dev"
 }
 
 // newMCPServer constructs the MCP server and registers all available tools.
@@ -85,52 +89,60 @@ func newMCPServer(version string, h *Handlers) *server.MCPServer {
 		server.WithInstructions("For Jira searches, pass the user's exact original natural-language wording to jira_query.natural_query. Do not pretranslate it to JQL, replace my/me with a username or email, or call jira_lookup_user first. Use jira_translate_query.natural_query when you only need to inspect the translation; it validates locally and does not search. jira_query performs deterministic translation, then uses the configured LLM fallback if needed. For recommendation or prioritization requests (for example, 'Which of my open jiras should I work on next?'), use jira_query to retrieve candidate issues. When the candidate count is reasonably bounded, call jira_get_issue for each candidate to inspect its full issue content before recommending. If there are too many candidates, shortlist using the returned priority, status, and summary, disclose that shortlist in your answer, and inspect those issues with jira_get_issue. The host assistant should reason over the inspected issue content and make the recommendation; jira_query only retrieves candidates and does not make recommendations. If jira_query returns an error, report that error; do not seek credentials or bypass MCP with direct REST or shell calls."),
 	)
 
+	add := func(tool mcp.Tool, handler server.ToolHandlerFunc) {
+		s.AddTool(tool, h.withDiagnostics(tool.Name, handler))
+	}
+
 	// Register core tools.
-	s.AddTool(summaryToolDef(), h.HandleSummary)
-	s.AddTool(translateQueryToolDef(), h.HandleTranslateQuery)
-	s.AddTool(queryToolDef(), h.HandleQuery)
-	s.AddTool(digestToolDef(), h.HandleDigest)
-	s.AddTool(enrichToolDef(), h.HandleEnrich)
-	s.AddTool(createEpicToolDef(), h.HandleCreateEpic)
-	s.AddTool(weeklyStatusToolDef(), h.HandleWeeklyStatus)
-	s.AddTool(summarizeCommentsToolDef(), h.HandleSummarizeComments)
-	s.AddTool(backlogHealthToolDef(), h.HandleBacklogHealth)
-	s.AddTool(findSimilarToolDef(), h.HandleFindSimilar)
-	s.AddTool(confluenceAnalyticsToolDef(), h.HandleConfluenceAnalytics)
-	s.AddTool(confluenceUpdateToolDef(), h.HandleConfluenceUpdate)
-	s.AddTool(confluenceGetPageToolDef(), h.HandleConfluenceGetPage)
-	s.AddTool(confluenceSearchToolDef(), h.HandleConfluenceSearch)
-	s.AddTool(confluenceListPagesToolDef(), h.HandleConfluenceListPages)
-	s.AddTool(confluenceGetCommentsToolDef(), h.HandleConfluenceGetComments)
-	s.AddTool(confluenceAddLabelToolDef(), h.HandleConfluenceAddLabel)
-	s.AddTool(confluenceCreatePageToolDef(), h.HandleConfluenceCreatePage)
-	s.AddTool(confluenceCreateBlogToolDef(), h.HandleConfluenceCreateBlog)
+	add(summaryToolDef(), h.HandleSummary)
+	add(translateQueryToolDef(), h.HandleTranslateQuery)
+	add(queryToolDef(), h.HandleQuery)
+	add(digestToolDef(), h.HandleDigest)
+	add(enrichToolDef(), h.HandleEnrich)
+	add(createEpicToolDef(), h.HandleCreateEpic)
+	add(weeklyStatusToolDef(), h.HandleWeeklyStatus)
+	add(summarizeCommentsToolDef(), h.HandleSummarizeComments)
+	add(backlogHealthToolDef(), h.HandleBacklogHealth)
+	add(findSimilarToolDef(), h.HandleFindSimilar)
+	add(confluenceAnalyticsToolDef(), h.HandleConfluenceAnalytics)
+	add(confluenceUpdateToolDef(), h.HandleConfluenceUpdate)
+	add(confluenceGetPageToolDef(), h.HandleConfluenceGetPage)
+	add(confluenceSearchToolDef(), h.HandleConfluenceSearch)
+	add(confluenceListPagesToolDef(), h.HandleConfluenceListPages)
+	add(confluenceGetCommentsToolDef(), h.HandleConfluenceGetComments)
+	add(confluenceAddLabelToolDef(), h.HandleConfluenceAddLabel)
+	add(confluenceCreatePageToolDef(), h.HandleConfluenceCreatePage)
+	add(confluenceCreateBlogToolDef(), h.HandleConfluenceCreateBlog)
 
 	// CRUD tools.
-	s.AddTool(getIssueToolDef(), h.HandleGetIssue)
-	s.AddTool(createIssueToolDef(), h.HandleCreateIssue)
-	s.AddTool(editIssueToolDef(), h.HandleEditIssue)
-	s.AddTool(getTransitionsToolDef(), h.HandleGetTransitions)
-	s.AddTool(transitionToolDef(), h.HandleTransition)
-	s.AddTool(addCommentToolDef(), h.HandleAddComment)
-	s.AddTool(lookupUserToolDef(), h.HandleLookupUser)
-	s.AddTool(addWorklogToolDef(), h.HandleAddWorklog)
-	s.AddTool(linkIssuesToolDef(), h.HandleLinkIssues)
-	s.AddTool(attachFileToolDef(), h.HandleAttachFile)
-	s.AddTool(watchIssueToolDef(), h.HandleWatchIssue)
-	s.AddTool(unwatchIssueToolDef(), h.HandleUnwatchIssue)
-	s.AddTool(addLabelsToolDef(), h.HandleAddLabels)
-	s.AddTool(removeLabelsToolDef(), h.HandleRemoveLabels)
-	s.AddTool(listSprintsToolDef(), h.HandleListSprints)
-	s.AddTool(voteIssueToolDef(), h.HandleVoteIssue)
-	s.AddTool(unvoteIssueToolDef(), h.HandleUnvoteIssue)
+	add(getIssueToolDef(), h.HandleGetIssue)
+	add(createIssueToolDef(), h.HandleCreateIssue)
+	add(editIssueToolDef(), h.HandleEditIssue)
+	add(getTransitionsToolDef(), h.HandleGetTransitions)
+	add(transitionToolDef(), h.HandleTransition)
+	add(addCommentToolDef(), h.HandleAddComment)
+	add(lookupUserToolDef(), h.HandleLookupUser)
+	add(addWorklogToolDef(), h.HandleAddWorklog)
+	add(linkIssuesToolDef(), h.HandleLinkIssues)
+	add(attachFileToolDef(), h.HandleAttachFile)
+	add(watchIssueToolDef(), h.HandleWatchIssue)
+	add(unwatchIssueToolDef(), h.HandleUnwatchIssue)
+	add(addLabelsToolDef(), h.HandleAddLabels)
+	add(removeLabelsToolDef(), h.HandleRemoveLabels)
+	add(listSprintsToolDef(), h.HandleListSprints)
+	add(voteIssueToolDef(), h.HandleVoteIssue)
+	add(unvoteIssueToolDef(), h.HandleUnvoteIssue)
 
 	return s
 }
 
 // Run starts the MCP server and web dashboard.
 func Run(cfg Config) error {
-	store := NewResultStore()
+	store, err := OpenResultStore(ResultStoreOptions{InstanceID: cfg.HistoryInstance, MaxAge: cfg.HistoryMaxAge, MaxResults: cfg.HistoryMaxResults})
+	if err != nil {
+		return fmt.Errorf("open result history: %w", err)
+	}
+	defer store.Close()
 
 	db, err := cache.OpenManager()
 	if err != nil {
@@ -150,6 +162,7 @@ func Run(cfg Config) error {
 
 	// Start web server (finds an available port starting from cfg.WebPort)
 	ws := NewWebServer(store, db, cfg.WebPort, bindHost)
+	defer ws.Close()
 	actualPort, err := ws.Start()
 	if err != nil {
 		slog.Error("web dashboard failed to start", "error", err)
@@ -160,6 +173,7 @@ func Run(cfg Config) error {
 
 	// Create handlers
 	h := NewHandlers(store, db, actualPort, bindHost)
+	h.dependencies = ws.dependencies
 	s := newMCPServer(cfg.Version, h)
 
 	switch cfg.Transport {

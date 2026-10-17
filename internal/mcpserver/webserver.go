@@ -17,11 +17,13 @@ import (
 
 // WebServer serves rich HTML dashboards for MCP tool results.
 type WebServer struct {
-	store     *ResultStore
-	port      int
-	bindHost  string
-	tmpls     map[string]*template.Template
-	startedAt time.Time
+	store        *ResultStore
+	port         int
+	bindHost     string
+	tmpls        map[string]*template.Template
+	startedAt    time.Time
+	dependencies *dependencyObservations
+	httpServer   *http.Server
 }
 
 // NewWebServer creates a web server with parsed templates.
@@ -88,7 +90,14 @@ func NewWebServer(store *ResultStore, db *cache.Cache, port int, bindHost string
 		// the full issue payload.
 		"queryMeta": func(r *StoredResult) queryMetaView {
 			if q, ok := r.Data.(*QueryResultData); ok {
-				return queryMetaView{Query: q.Query, Route: q.Route, JQL: q.JQL}
+				return queryMetaView{Query: q.Query, Route: q.Route, JQL: q.JQL, Outcome: q.Outcome, ErrorStage: q.ErrorStage, ErrorCategory: q.ErrorCategory}
+			}
+			if a, ok := r.Data.(*AttemptResultData); ok {
+				meta := queryMetaView{Outcome: a.Outcome, ErrorCategory: a.ErrorCategory}
+				if a.Trace != nil {
+					meta.Query, meta.Route, meta.JQL, meta.ErrorStage = a.Trace.Query, a.Trace.Route, a.Trace.DisplayJQL, a.Trace.ErrorStage
+				}
+				return meta
 			}
 			return queryMetaView{}
 		},
@@ -96,7 +105,7 @@ func NewWebServer(store *ResultStore, db *cache.Cache, port int, bindHost string
 	}
 
 	// Parse each view template separately with layout to avoid block name collisions.
-	pages := []string{"index.html", "summary.html", "query.html", "digest.html", "enrich.html", "create_epic.html", "weekly_status.html"}
+	pages := []string{"index.html", "summary.html", "query.html", "digest.html", "enrich.html", "create_epic.html", "weekly_status.html", "attempt.html"}
 	tmpls := make(map[string]*template.Template, len(pages))
 	for _, page := range pages {
 		tmpls[page] = template.Must(
@@ -105,11 +114,15 @@ func NewWebServer(store *ResultStore, db *cache.Cache, port int, bindHost string
 	}
 
 	ws = &WebServer{
-		store:     store,
-		port:      port,
-		bindHost:  bindHost,
-		tmpls:     tmpls,
-		startedAt: time.Now(),
+		store:        store,
+		port:         port,
+		bindHost:     bindHost,
+		tmpls:        tmpls,
+		startedAt:    time.Now(),
+		dependencies: newDependencyObservations(),
+	}
+	if db != nil {
+		ws.dependencies.observe("cache", nil)
 	}
 	return ws
 }
@@ -145,6 +158,7 @@ func (s cacheStatusView) HitPercent() float64 {
 func (ws *WebServer) Start() (int, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", ws.handleHealthz)
+	mux.HandleFunc("GET /readyz", ws.handleReadyz)
 	mux.HandleFunc("GET /api/status", ws.handleStatus)
 	mux.HandleFunc("GET /", ws.handleIndex)
 	mux.HandleFunc("GET /view/{id}", ws.handleView)
@@ -171,25 +185,59 @@ func (ws *WebServer) Start() (int, error) {
 	}
 
 	ws.port = port
+	if addr, ok := ln.Addr().(*net.TCPAddr); ok {
+		ws.port = addr.Port
+	}
 	ws.startedAt = time.Now()
+	ws.httpServer = &http.Server{Handler: mux}
 	slog.Info("web dashboard starting", "addr", ln.Addr().String())
 	go func() {
-		if err := http.Serve(ln, mux); err != nil {
+		if err := ws.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 			slog.Error("web server failed", "error", err)
 		}
 	}()
 
-	return port, nil
+	return ws.port, nil
+}
+
+// Close stops dashboard requests before its stores are closed by Run.
+func (ws *WebServer) Close() error {
+	if ws.httpServer == nil {
+		return nil
+	}
+	return ws.httpServer.Close()
 }
 
 type serverStatusView struct {
-	Status        string `json:"status"`
-	Uptime        string `json:"uptime"`
-	UptimeSeconds int64  `json:"uptime_seconds"`
+	Status        string                  `json:"status"`
+	Uptime        string                  `json:"uptime"`
+	UptimeSeconds int64                   `json:"uptime_seconds"`
+	Readiness     string                  `json:"readiness"`
+	Dependencies  []DependencyObservation `json:"dependencies"`
 }
 
 func (ws *WebServer) status() serverStatusView {
-	return statusSince(ws.startedAt)
+	status := statusSince(ws.startedAt)
+	status.Dependencies, status.Readiness = ws.dependencies.snapshot(time.Now())
+	if ws.store != nil {
+		err, checkedAt := ws.store.PersistenceObservation()
+		for i, obs := range status.Dependencies {
+			if obs.Name != "history" {
+				continue
+			}
+			obs.CheckedAt, obs.State = checkedAt, "ok"
+			if checkedAt.IsZero() {
+				obs.State = "unknown"
+			} else if time.Since(checkedAt) > observationMaxAge {
+				obs.State = "stale"
+			} else if err != nil {
+				obs.State = "failed"
+			}
+			status.Dependencies[i] = obs
+		}
+		status.Readiness = observedReadiness(status.Dependencies)
+	}
+	return status
 }
 
 func statusSince(startedAt time.Time) serverStatusView {
@@ -198,6 +246,18 @@ func statusSince(startedAt time.Time) serverStatusView {
 		seconds = 0
 	}
 	return serverStatusView{Status: "ok", Uptime: (time.Duration(seconds) * time.Second).String(), UptimeSeconds: seconds}
+}
+
+// handleReadyz reports recent passive observations. Unknown/stale observations
+// are not readiness. Polling performs no dependency operation.
+func (ws *WebServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	status := ws.status()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	if status.Readiness != "ready" {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	_ = json.NewEncoder(w).Encode(status)
 }
 
 // handleStatus returns non-sensitive process status for the dashboard header.
@@ -209,6 +269,7 @@ func (ws *WebServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // handleIndex shows all stored results.
 func (ws *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
@@ -227,6 +288,7 @@ func (ws *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 // handleView renders a result by ID using the appropriate template.
 func (ws *WebServer) handleView(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	id := r.PathValue("id")
 	result, ok := ws.store.Get(id)
 	if !ok {
@@ -249,6 +311,7 @@ func (ws *WebServer) handleView(w http.ResponseWriter, r *http.Request) {
 
 // handleAPIResult returns result data as JSON for JS charts.
 func (ws *WebServer) handleAPIResult(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	id := r.PathValue("id")
 	result, ok := ws.store.Get(id)
 	if !ok {

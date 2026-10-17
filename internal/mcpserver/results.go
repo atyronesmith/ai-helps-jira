@@ -9,6 +9,18 @@ import (
 	"github.com/atyronesmith/ai-helps-jira/internal/format"
 )
 
+// AttemptResultData stores bounded lifecycle metadata for tools without a query
+// trace. Arguments and upstream errors are deliberately excluded.
+type AttemptResultData struct {
+	Tool          string
+	Outcome       string
+	ErrorCategory string
+	StartedAt     time.Time
+	CompletedAt   time.Time
+	Duration      time.Duration
+	Trace         *QueryResultData `json:",omitempty"`
+}
+
 // SummaryResult holds summary data for the web template.
 type SummaryResult struct {
 	Boards     []jira.BoardInfo
@@ -21,15 +33,28 @@ type SummaryResult struct {
 
 // QueryResultData holds query results for the web template.
 type QueryResultData struct {
-	Query       string
-	Route       string
-	JQL         string
-	Issues      []jira.Issue
-	Search      *jira.SearchInfo
-	SearchError string
-	User        string
-	JiraServer  string
-	QueriedAt   time.Time
+	Query           string
+	NormalizedInput string
+	// JQL retains the legacy display field. Execution evidence is separate and
+	// remains empty when validation/translation prevented a search attempt.
+	GeneratedJQL  string
+	ExecutedJQL   string
+	DisplayJQL    string
+	Outcome       string
+	ErrorStage    string
+	ErrorCategory string
+	Validation    string
+	StartedAt     time.Time
+	CompletedAt   time.Time
+	Duration      time.Duration
+	Route         string
+	JQL           string
+	Issues        []jira.Issue
+	Search        *jira.SearchInfo
+	SearchError   string
+	User          string
+	JiraServer    string
+	QueriedAt     time.Time
 }
 
 // Metadata keeps missing or incomplete metadata explicitly unknown. Returned
@@ -132,7 +157,10 @@ type ConfluencePageStats struct {
 // query, translation route, and generated JQL. The results index uses it to
 // list the query and its generated JQL without the full issue payload.
 type queryMetaView struct {
-	Query string
-	Route string
-	JQL   string
+	Query         string
+	Route         string
+	JQL           string
+	Outcome       string
+	ErrorStage    string
+	ErrorCategory string
 }

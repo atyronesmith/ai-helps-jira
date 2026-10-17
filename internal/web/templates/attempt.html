@@ -1,0 +1,34 @@
+{{template "layout" .}}
+
+{{define "title"}}Tool Attempt{{end}}
+
+{{define "content"}}
+<hgroup>
+    <h1>Tool attempt</h1>
+    <p class="timestamp">{{.Data.Tool}}</p>
+</hgroup>
+<article>
+    <p><strong>Outcome:</strong> {{if .Data.Outcome}}{{.Data.Outcome}}{{else}}unknown{{end}}
+        {{if .Data.ErrorCategory}} · <strong>Error category:</strong> {{.Data.ErrorCategory}}{{end}}</p>
+    <p>{{if .Data.StartedAt.IsZero}}<strong>Started:</strong> not recorded{{else}}<strong>Started:</strong> {{formatTime .Data.StartedAt}}{{end}}
+        · {{if .Data.CompletedAt.IsZero}}<strong>Completed:</strong> not recorded{{else}}<strong>Completed:</strong> {{formatTime .Data.CompletedAt}}{{end}}
+        {{if .Data.Duration}} · <strong>Duration:</strong> {{.Data.Duration}}{{end}}</p>
+</article>
+{{if .Data.Trace}}
+<article>
+    <h2>Query trace</h2>
+    {{if .Data.Trace.Query}}<p><strong>Original input:</strong></p><blockquote>{{.Data.Trace.Query}}</blockquote>{{end}}
+    {{if .Data.Trace.NormalizedInput}}<p><strong>Normalized input:</strong> {{.Data.Trace.NormalizedInput}}</p>{{end}}
+    {{if .Data.Trace.Route}}<p><strong>Route:</strong> {{.Data.Trace.Route}}</p>{{end}}
+    {{if .Data.Trace.ErrorStage}}<p><strong>Stage:</strong> {{.Data.Trace.ErrorStage}}</p>{{end}}
+    {{if .Data.Trace.Validation}}<p><strong>Validation:</strong> {{.Data.Trace.Validation}}</p>{{end}}
+    {{if .Data.Trace.ExecutedJQL}}
+    <details open><summary>Exact executed JQL</summary><pre><code class="jql">{{.Data.Trace.ExecutedJQL}}</code></pre></details>
+    {{else}}<p><strong>Exact executed JQL:</strong> not recorded (no execution established)</p>{{end}}
+    {{if .Data.Trace.GeneratedJQL}}<details><summary>Generated JQL (before execution)</summary><pre><code class="jql">{{.Data.Trace.GeneratedJQL}}</code></pre></details>{{end}}
+    {{if .Data.Trace.DisplayJQL}}<details><summary>Display JQL (display only)</summary><pre><code class="jql">{{.Data.Trace.DisplayJQL}}</code></pre></details>
+    {{else if .Data.Trace.JQL}}<details><summary>Legacy JQL (display only; execution not established)</summary><pre><code class="jql">{{.Data.Trace.JQL}}</code></pre></details>{{end}}
+    <p><strong>Search completeness:</strong> {{.Data.Trace.Summary}}</p>
+</article>
+{{end}}
+{{end}}

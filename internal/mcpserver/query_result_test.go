@@ -69,8 +69,8 @@ func TestHandleQueryInterruptedSearchReturnsAndStoresPartialPreview(t *testing.T
 	if err := ws.tmpls["query.html"].ExecuteTemplate(&dashboard, "layout", list[0]); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(dashboard.String(), "page two unavailable") {
-		t.Fatalf("dashboard omitted search error: %s", dashboard.String())
+	if !strings.Contains(dashboard.String(), "search failed (upstream_http)") || strings.Contains(dashboard.String(), "page two unavailable") {
+		t.Fatalf("dashboard must show bounded error and exclude upstream body: %s", dashboard.String())
 	}
 }
 

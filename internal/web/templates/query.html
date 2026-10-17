@@ -9,14 +9,28 @@
 </hgroup>
 
 <article>
-    <h3>Query</h3>
+    <h3>Query diagnostics</h3>
     <blockquote>{{.Data.Query}}</blockquote>
+    {{if .Data.NormalizedInput}}<p><strong>Normalized input:</strong> {{.Data.NormalizedInput}}</p>{{end}}
+    <p><strong>Outcome:</strong> {{if .Data.Outcome}}{{.Data.Outcome}}{{else}}unknown{{end}}
+        {{if .Data.ErrorStage}} · <strong>Stage:</strong> {{.Data.ErrorStage}}{{end}}
+        {{if .Data.ErrorCategory}} · <strong>Error category:</strong> {{.Data.ErrorCategory}}{{end}}</p>
+    <p><strong>Validation:</strong> {{if .Data.Validation}}{{.Data.Validation}}{{else}}not recorded{{end}}
+        {{if .Data.StartedAt.IsZero}}{{else}} · <strong>Started:</strong> {{formatTime .Data.StartedAt}}{{end}}
+        {{if .Data.CompletedAt.IsZero}}{{else}} · <strong>Completed:</strong> {{formatTime .Data.CompletedAt}}{{end}}
+        {{if .Data.Duration}} · <strong>Duration:</strong> {{.Data.Duration}}{{end}}</p>
     {{if .Data.Route}}<p><span class="badge badge-query" title="{{routeTooltip .Data.Route}}">Route: {{.Data.Route}}</span>
     <small class="timestamp">{{routeTooltip .Data.Route}}</small></p>{{end}}
-    <details open>
-        <summary>Generated JQL</summary>
-        <pre><code class="jql">{{.Data.JQL}}</code></pre>
-    </details>
+    {{if .Data.ExecutedJQL}}<details open>
+        <summary>Exact executed JQL</summary>
+        <pre><code class="jql">{{.Data.ExecutedJQL}}</code></pre>
+    </details>{{else}}<p><strong>Exact executed JQL:</strong> not recorded (no execution established)</p>{{end}}
+    {{if and .Data.GeneratedJQL (or (eq .Data.Outcome "failure") (eq .Data.Validation "local_invalid"))}}
+    <details><summary>Generated JQL (before execution)</summary><pre><code class="jql">{{.Data.GeneratedJQL}}</code></pre></details>
+    {{end}}
+    {{if .Data.DisplayJQL}}<details><summary>Display JQL (display only)</summary><pre><code class="jql">{{.Data.DisplayJQL}}</code></pre></details>
+    {{else if .Data.JQL}}<details><summary>Legacy JQL (display only; execution not established)</summary><pre><code class="jql">{{.Data.JQL}}</code></pre></details>{{end}}
+    {{if .Data.SearchError}}<p class="server-status-unhealthy"><strong>Search error:</strong> {{.Data.SearchError}}</p>{{end}}
 </article>
 
 {{if .Data.Issues}}

@@ -1,7 +1,7 @@
 # Project Reliability Implementation Plan
 
-Status: Phases 0–5 implemented and locally verified on 2026-10-16.
-Phases 6–7 remain proposed. Hosted CI execution remains pending; live Jira
+Status: Phases 0–6 implemented and locally verified on 2026-10-16.
+Phase 7 remains proposed. Hosted CI execution remains pending; live Jira
 validation is unavailable without explicitly exported credentials and fixtures.
 Review date: 2026-10-16.
 
@@ -14,7 +14,7 @@ consistent behavior before expanding the feature roadmap.
 
 This plan captures the project review of the current working tree, including
 uncommitted work. Phase 0 implementation was explicitly requested on 2026-10-16.
-Phases 1–5 were subsequently authorized. Phases 6–7 still require authorization.
+Phases 1–6 were subsequently authorized. Phase 7 still requires authorization.
 Jira mutations and deployments are outside this delivery.
 
 ## Keep
@@ -882,6 +882,152 @@ handlers, and `internal/web/templates/`.
 Required regressions: failed attempt appears in history; exact execution text is
 retained; restart preserves history; retention respects instance ownership;
 dependency failure does not report full readiness; polling does not query an LLM.
+
+### Phase 6 delivered contracts (2026-10-16)
+
+Implemented against committed Phase 5 `909e7f0`. Root retained lifecycle,
+ownership, concurrency, readiness, and diagnostic semantics; Luna 6 implemented
+bounded storage and view work. Root reviewed every diff and integrated the
+handler instrumentation and regressions. The initial untracked `test.sh` and
+`docs/HARNESS-QWEN-REVERT.md` remain unchanged. No commit, deployment, live model
+call, production Jira operation, or credential discovery was performed.
+
+- Every `jira_query` attempt now produces one history entry, including input,
+  configuration, translation, local validation, canceled/interrupted search,
+  partial search, and successful search outcomes. Original wording is retained
+  verbatim alongside partial normalized input and route when available. Generated
+  JQL, the exact text submitted to the validated search boundary, and optional
+  date-expanded display JQL are distinct fields. Preflight failures have no
+  executed JQL. A canceled context already present before search also leaves
+  execution unestablished. This records attempted execution, not server receipt
+  or a proof of semantic correctness.
+- Query diagnostics retain start/completion timestamps, duration, bounded error
+  stage/category, local validation, and the existing typed search completeness,
+  exact/reported/unknown totals, preview limits, and partial rows. Missing search
+  metadata remains unknown. Local validity never claims strict tenant validation.
+  Legacy display JQL is explicitly labeled as lacking execution evidence.
+- Registered non-query tools get a separate bounded call-outcome entry in
+  addition to any existing rich report they produce. Natural-language digest
+  attempts and failed translation-only attempts retain query traces too; digest
+  search uses the same bounded search service and preserves its completeness.
+  Successful translation-only inspection retains its no-history contract. Digest
+  item errors recorded in a trace make the attempt a failure even though its
+  existing aggregate MCP response still contains per-item error text.
+- Upstream error messages/bodies and arbitrary tool arguments are excluded from
+  durable attempt diagnostics. MCP responses retain their existing error detail.
+  Original wording, JQL literals, issue content, and effective-user information
+  are still private. Dashboard responses use `Cache-Control: no-store`, rendered
+  diagnostics are escaped, and dependency JSON contains only bounded names,
+  states, required labels, and observation times. No token or credential-bearing
+  provider configuration is collected.
+- Result history now uses `~/.jira-cli/results-v1/<sha256(instance-id)>.db`, with
+  a 0700 directory and 0600 database. The MCP command defaults to stable owner
+  `default`. `--history-instance NAME` selects a different owner for independent
+  local servers; reusing a name deliberately shares history, including deletion
+  and retention. Filenames cannot include owner path components. SQL reads are
+  authoritative, so simultaneous processes with the same name see inserts and
+  deletions rather than stale per-process memory snapshots.
+- `--history-max-age` defaults to `720h` (30 days), and
+  `--history-max-results` defaults to `1000`; each accepts zero to disable that
+  limit and rejects negative values. Pruning runs at open and on save, scoped
+  only to the selected owner's database; insertion and pruning commit together.
+  Existing dashboard selection/delete controls delete selected owner's rows.
+  PID databases are neither imported nor deleted. The existing container's
+  `.jira-cli` volume includes the new history directory.
+- Durable-open failures stop MCP startup explicitly. Later history failures are
+  exposed through storage observations without changing a completed remote tool
+  response into an apparent failure. Closed stores cannot silently accept new
+  volatile writes. SQLite uses a bounded busy timeout, fixed-width UTC timestamps
+  for correct lexical retention ordering, and cross-handle transaction isolation.
+  The dashboard closes before its stores when the server exits.
+- `/healthz` retains its 200 liveness contract. `/api/status` adds readiness and
+  dependency observations; `/readyz` returns 200 only when every required
+  observation is recently successful and otherwise 503. States are `ok`,
+  `failed`, `unknown`, and `stale`, with actual checked-at times. Observations
+  expire after five minutes and do not survive a process restart.
+- Observations describe actual dispatch/storage/cache-open/query-translation/
+  query-search operations: MCP when a registered call is dispatched, history
+  on SQLite operations, cache on initialization/scoped opens, Jira on query and
+  digest searches, and provider on observed translation fallback attempts. There
+  is no timer-based dependency probe. Dashboard status/readiness polling reads
+  snapshots only; dashboard rendering may read local SQLite data but performs
+  no Jira request or model completion. The UI separates Alive/uptime from
+  readiness and shows never-observed dependencies explicitly.
+- The cache header retains its accurate label: the last ten eligible
+  **issue-detail lookups**, with the actual number observed so far. This window
+  does not measure natural-language query requests or overall cache efficiency.
+  Database journal/WAL/shared-memory sidecars are ignored by Git alongside the
+  existing private database/log exclusions.
+
+### Phase 6 verification results
+
+- **Passed:** relevant MCP/storage/template regressions, `go build ./...`,
+  `go vet ./...`, and the final integrated
+  `go test -race -count=1 -timeout=120s ./...`. Phase 1–5 regressions remain in the
+  full suite; query translation and Jira mutation behavior are unchanged.
+- **Passed:** failed attempts across input/configuration/translation/validation/
+  search stages, original and partial normalized wording, exact search-request
+  text versus display transformations, successful-query and failed/successful
+  digest restart persistence, provider/Jira failures, partial-result rendering,
+  and bounded diagnostics excluding synthetic upstream secrets.
+- **Passed:** stable shared-owner handles, distinct-owner retention isolation,
+  actual count/age limits, simultaneous first opens, concurrent writes with
+  transactional count pruning, concurrent close/status reads, private modes,
+  symlink/invalid-option rejection, corrupt-row health reporting, and preservation
+  of old PID-named files. Root review corrected a status-snapshot race, variable
+  timestamp ordering, silent write-after-close behavior, and corrupt-row masking.
+- **Passed:** unknown/stale readiness, dependency failure preserving liveness,
+  recent successful readiness, storage failure preserving completed tool results,
+  escaped diagnostic views, dependency checked-at labels, and repeated passive
+  status/readiness/liveness/index polling with unchanged mock Jira/provider call
+  counts and external observation times.
+- **Passed:** `make doc-lint`, changed-Go-file formatting, `git diff --check`,
+  a redacted Gitleaks scan of all 21 changed/new implementation and documentation
+  files, and SHA-256 comparisons for both preexisting harness files. Initial sandboxed
+  listener tests required approved execution for local mocks. Earlier assertions
+  expecting rejected requests to leave no history were updated for this phase;
+  those intermediate failures are not counted as passes.
+
+No JQL construction semantics changed. The full hermetic suite includes the
+existing generated-query corpus; no live strict Jira oracle was run or enabled.
+Hosted CI, real restarts of a deployed container, and live tenant/model readiness
+remain unverified. No deployment or production request was used for verification.
+
+### Phase 6 remaining limitations
+
+- Readiness is conservative, recent observed behavior, not an active dependency
+  guarantee or comprehensive monitoring. Provider observations concern translation
+  fallback, not every report-generation call, and cache observations establish
+  local opens rather than every cache read/write. Deterministic-only use can keep
+  provider readiness unknown. All listed dependencies are required for full
+  readiness; idle servers become unknown after observations expire. Use
+  `/healthz` for container liveness rather than restarting an idle service based
+  on `/readyz`. Normal calls refresh relevant observations without probes.
+- Instance ownership is explicitly chosen by the operator, not authenticated
+  client identity or automatic Jira-account isolation. Separate accounts or
+  independent local instances should use different names. Processes sharing a
+  name share deletion and the strictest retention policy applied by any writer.
+  This remains a trusted local/single-account service; existing authentication
+  and remote-access restrictions still apply.
+- Age retention is enforced on startup and save, not by an idle background
+  sweeper; count limits apply to entries, not bytes. Rich reports and their call
+  outcome entries each count toward the cap. Old PID histories are left untouched
+  for manual review/removal. There is no import, cross-version migration promise,
+  backup, encrypted storage, or secure-erasure guarantee for deleted SQLite data.
+- Later disk/serialization failures can prevent an attempt from being retained;
+  readiness exposes the last local storage outcome. A successful later local
+  operation can replace a previous failure observation. The compatibility
+  `NewResultStore` constructor still supports an explicitly observable memory
+  fallback for internal callers, while production `Run` requires durable open.
+- Exact executed text means submitted to the search boundary after local
+  validation; it cannot prove receipt/execution by Jira after a network failure.
+  Unknown/legacy data cannot reconstruct old execution text. Other tool attempts
+  retain bounded lifecycle metadata, not arbitrary tool inputs or response bodies.
+  Search traces do not establish full digest/report content completeness.
+- Private natural-language input and JQL may themselves contain sensitive user
+  text. Permissions, Git exclusions, bounded error categories, and no-store HTTP
+  headers reduce accidental exposure but do not sanitize arbitrary wording or
+  make an unauthenticated dashboard suitable for public access.
 
 ## Phase 7: Shared workflows and supported setup
 

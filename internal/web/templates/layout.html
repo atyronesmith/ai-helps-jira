@@ -60,9 +60,18 @@
     <main class="container">
         {{with serverStatus}}
         <section class="server-status" aria-label="Server status">
-            <span>Server <strong id="server-health">{{if eq .Status "ok"}}Healthy{{else}}Unhealthy{{end}}</strong></span>
+            <span>Server <strong id="server-health">{{if eq .Status "ok"}}Alive{{else}}Unavailable{{end}}</strong></span>
             <span>Uptime <strong id="server-uptime">{{.Uptime}}</strong></span>
+            <span>Readiness <strong id="server-readiness">{{if .Readiness}}{{.Readiness}}{{else}}unknown{{end}}</strong></span>
             <small id="server-status-updated">Updated just now</small>
+        </section>
+        <section aria-label="Dependency observations">
+            <h2>Dependencies</h2>
+            <ul id="server-dependencies">
+                {{range .Dependencies}}
+                <li><strong>{{.Name}}</strong>: {{.State}}{{if .Required}} (required){{end}} · checked {{if .CheckedAt.IsZero}}never observed{{else}}{{formatTime .CheckedAt}}{{end}}</li>
+                {{else}}<li>No dependency observations recorded.</li>{{end}}
+            </ul>
         </section>
         {{end}}
         {{with cacheStatus}}
@@ -81,21 +90,42 @@
         (() => {
             const health = document.getElementById('server-health');
             const uptime = document.getElementById('server-uptime');
+            const readiness = document.getElementById('server-readiness');
+            const dependencies = document.getElementById('server-dependencies');
             const updated = document.getElementById('server-status-updated');
-            if (!health || !uptime || !updated) return;
+            if (!health || !uptime || !readiness || !dependencies || !updated) return;
+            const renderDependencies = (observations) => {
+                dependencies.replaceChildren();
+                if (!Array.isArray(observations) || observations.length === 0) {
+                    const item = document.createElement('li');
+                    item.textContent = 'No dependency observations recorded.';
+                    dependencies.appendChild(item);
+                    return;
+                }
+                observations.forEach((observation) => {
+                    const item = document.createElement('li');
+                    const checkedAt = observation.checked_at && !observation.checked_at.startsWith('0001-01-01')
+                        ? observation.checked_at : 'never observed';
+                    item.textContent = `${observation.name || 'Unknown dependency'}: ${observation.state || 'unknown'}${observation.required ? ' (required)' : ''} · checked ${checkedAt}`;
+                    dependencies.appendChild(item);
+                });
+            };
             const refreshStatus = async () => {
                 try {
                     const response = await fetch('/api/status', {cache: 'no-store'});
                     if (!response.ok) throw new Error('status request failed');
                     const status = await response.json();
-                    health.textContent = status.status === 'ok' ? 'Healthy' : 'Unhealthy';
+                    health.textContent = status.status === 'ok' ? 'Alive' : 'Unavailable';
                     health.classList.toggle('server-status-unhealthy', status.status !== 'ok');
                     uptime.textContent = status.uptime;
+                    readiness.textContent = status.readiness || 'unknown';
+                    renderDependencies(status.dependencies);
                     updated.textContent = 'Updated just now';
                 } catch (_) {
                     health.textContent = 'Unreachable';
                     health.classList.add('server-status-unhealthy');
                     uptime.textContent = 'Unavailable';
+                    readiness.textContent = 'unknown';
                     updated.textContent = 'Could not reach server';
                 }
             };

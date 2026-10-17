@@ -38,7 +38,8 @@ type Handlers struct {
 	// provider-setup cost (notably Vertex auth) at most once instead of on every
 	// request. NewHandlers wires the seams below through it; a nil cache leaves
 	// the seams unwired.
-	jqlCache *llm.TranslatorCache
+	jqlCache     *llm.TranslatorCache
+	dependencies *dependencyObservations
 
 	// translate and digestTranslate are the natural-language→JQL functions used
 	// by the query and digest handlers. NewHandlers wires them through jqlCache to the tenant's
@@ -67,7 +68,8 @@ func NewHandlers(store *ResultStore, db *cache.Cache, webPort int, bindHost stri
 		// One cache for the handler set's lifetime: both translation seams
 		// route through it so the FallbackEngine is built once per provider
 		// configuration rather than per request.
-		jqlCache: llm.NewTranslatorCache(),
+		jqlCache:     llm.NewTranslatorCache(),
+		dependencies: newDependencyObservations(),
 	}
 	// The seams fold the tenant's fetched+cached project list into translation
 	// while the shared cache memoizes the engine. Tests override these.
@@ -127,9 +129,13 @@ func projectListContext(ctx context.Context, c *cache.Cache, cfg *config.Config)
 // cross tenant/account boundaries when handlers serve concurrent requests.
 func (h *Handlers) cacheForConfig(cfg *config.Config) (*cache.Cache, error) {
 	if h.cache == nil {
-		return nil, fmt.Errorf("cache unavailable")
+		err := fmt.Errorf("cache unavailable")
+		h.dependencies.observe("cache", err)
+		return nil, err
 	}
-	return h.cache.ForConfig(cfg)
+	db, err := h.cache.ForConfig(cfg)
+	h.dependencies.observe("cache", err)
+	return db, err
 }
 
 func (h *Handlers) viewURL(id string) string {
@@ -522,6 +528,19 @@ func (h *Handlers) HandleSummary(ctx context.Context, req mcp.CallToolRequest) (
 
 func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	naturalQuery := getString(req, "natural_query")
+	attempt := &QueryResultData{Query: naturalQuery, Outcome: "failure", ErrorStage: "input", ErrorCategory: "invalid_input", Validation: "not_checked", StartedAt: time.Now().UTC()}
+	var resultID string
+	finish := func() string {
+		if resultID == "" && h.store != nil {
+			attempt.CompletedAt = time.Now().UTC()
+			attempt.Duration = attempt.CompletedAt.Sub(attempt.StartedAt)
+			attempt.QueriedAt = attempt.StartedAt
+			resultID = h.store.Save(ResultQuery, fmt.Sprintf("Query: %s", naturalQuery), attempt)
+			h.dependencies.observe("history", h.store.PersistenceError())
+		}
+		return resultID
+	}
+	defer finish()
 
 	if strings.TrimSpace(naturalQuery) == "" {
 		return errorResult("natural_query is required; pass the user's original wording"), nil
@@ -547,10 +566,12 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 		}
 	}
 
+	attempt.ErrorStage, attempt.ErrorCategory = "configuration", "configuration"
 	cfg, err := loadConfig(req)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	attempt.User, attempt.JiraServer = cfg.Assignee(), cfg.JiraServer
 	db, cacheErr := h.cacheForConfig(cfg)
 	if cacheErr != nil {
 		slog.Warn("cache unavailable for query", "error", cacheErr)
@@ -559,13 +580,24 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 	slog.Info("query", "input", naturalQuery)
 
 	// Translate to JQL
+	attempt.ErrorStage, attempt.ErrorCategory = "translation", "unknown"
 	result, err := h.translate(ctx, cfg, naturalQuery)
+	if result != nil {
+		attempt.NormalizedInput, attempt.Route, attempt.GeneratedJQL = result.NormalizedInput, result.Route, result.JQL
+		attempt.DisplayJQL = jql.ResolveRelativeDatesForDisplay(result.JQL, attempt.StartedAt)
+		attempt.JQL = attempt.DisplayJQL
+		if result.ProviderCalls > 0 || (result.Route == llm.RouteFallback && err != nil) {
+			h.dependencies.observe("provider", err)
+		}
+	}
 	if err != nil {
+		attempt.ErrorCategory = diagnosticErrorCategory(err)
 		return errorResult(fmt.Sprintf("JQL generation failed: %v", err)), nil
 	}
 	slog.Info("JQL generated", "jql", result.JQL, "route", result.Route)
 
 	// Execute search
+	attempt.ErrorStage, attempt.ErrorCategory = "client", "configuration"
 	client, err := jira.NewClient(cfg)
 	if err == nil {
 		client = client.WithContext(ctx)
@@ -573,12 +605,32 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	attempt.Validation = "local_valid"
+	if validationErr := jql.Validate(result.JQL, jql.Options{DefaultProject: cfg.JiraProject}); validationErr != nil {
+		attempt.Validation = "local_invalid"
+		attempt.ErrorStage, attempt.ErrorCategory = "validation", "invalid_jql"
+		return errorResult(fmt.Sprintf("JIRA search failed: %v", validationErr)), nil
+	}
+	attempt.ErrorStage, attempt.ErrorCategory = "search", "unknown"
+	// Preserve the exact text submitted to the search boundary, independently
+	// of the optional date-expanded presentation below.
+	if ctx.Err() == nil {
+		attempt.ExecutedJQL = result.JQL
+	}
 
 	searchResult, searchErr := client.SearchJQLResult(ctx, result.JQL, jira.SearchOptions{
 		Limit: maxResults, ExactCount: getBool(req, "exact_count") || llm.IsCountQuery(naturalQuery),
 	})
 	issues := searchResult.Issues
 	info := searchResult.SearchInfo
+	h.dependencies.observe("jira", searchErr)
+	attempt.Issues, attempt.Search = issues, &info
+	if searchErr != nil {
+		attempt.ErrorCategory = diagnosticErrorCategory(searchErr)
+		attempt.SearchError = "search failed (" + attempt.ErrorCategory + ")"
+	} else {
+		attempt.Outcome, attempt.ErrorStage, attempt.ErrorCategory = "success", "", ""
+	}
 	if len(issues) > 0 && searchErr == nil && info.Complete {
 		if db != nil {
 			db.UpsertIssues(cfg.JiraProject, issues)
@@ -586,7 +638,7 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 	}
 	// Keep useful partial search output available to the caller and dashboard.
 	displayJQL := jql.ResolveRelativeDatesForDisplay(result.JQL, time.Now())
-	var resultID string
+	attempt.DisplayJQL, attempt.JQL = displayJQL, displayJQL
 
 	// Build the same preview text for successful and interrupted searches.
 	var text strings.Builder
@@ -595,10 +647,6 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 		fmt.Fprintf(&text, "**Route:** `%s`\n\n", result.Route)
 	}
 	fmt.Fprintf(&text, "**JQL:** `%s`\n\n", displayJQL)
-	searchError := ""
-	if searchErr != nil {
-		searchError = searchErr.Error()
-	}
 	text.WriteString(format.SearchSummary(info) + "\n\n")
 	if len(issues) > 0 {
 		for _, issue := range issues {
@@ -616,10 +664,7 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 			text.WriteString("\nFor this recommendation request, inspect each candidate with jira_get_issue, then use the issue content to make your recommendation.\n")
 		}
 	}
-	resultID = h.store.Save(ResultQuery, fmt.Sprintf("Query: %s", naturalQuery), &QueryResultData{
-		Query: naturalQuery, Route: result.Route, JQL: displayJQL, Issues: issues, Search: &info, SearchError: searchError,
-		User: cfg.Assignee(), JiraServer: cfg.JiraServer, QueriedAt: time.Now(),
-	})
+	resultID = finish()
 	fmt.Fprintf(&text, "\n---\nRich dashboard: %s\n", h.viewURL(resultID))
 	if searchErr != nil {
 		return errorResult(fmt.Sprintf("JIRA search failed: %v\n\n%s", searchErr, text.String())), nil
@@ -657,6 +702,7 @@ func (h *Handlers) HandleTranslateQuery(ctx context.Context, req mcp.CallToolReq
 		return errorResult(err.Error()), nil
 	}
 	result, err := h.translate(context.WithValue(ctx, translationOnlyContextKey{}, true), cfg, naturalQuery)
+	h.observeTranslation(ctx, cfg, result, err)
 	if err != nil {
 		return errorResult(fmt.Sprintf("JQL generation failed: %v", err)), nil
 	}
@@ -747,6 +793,7 @@ func (h *Handlers) HandleDigest(ctx context.Context, req mcp.CallToolRequest) (*
 		queryKey = "nl:" + naturalQuery
 
 		result, err := h.digestTranslate(ctx, cfg, naturalQuery)
+		h.observeTranslation(ctx, cfg, result, err)
 		if err != nil {
 			return errorResult(fmt.Sprintf("JQL generation failed: %v", err)), nil
 		}
@@ -760,7 +807,22 @@ func (h *Handlers) HandleDigest(ctx context.Context, req mcp.CallToolRequest) (*
 		if err != nil {
 			return errorResult(err.Error()), nil
 		}
-		issues, err := client.SearchJQL(result.JQL, 50)
+		trace := attemptTrace(ctx)
+		if trace != nil && trace.Validation == "local_valid" && ctx.Err() == nil {
+			trace.ExecutedJQL = result.JQL
+		}
+		search, err := client.SearchJQLResult(ctx, result.JQL, jira.SearchOptions{Limit: 50})
+		issues := search.Issues
+		h.dependencies.observe("jira", err)
+		if trace != nil {
+			trace.Search = &search.SearchInfo
+			if err != nil {
+				trace.ErrorStage, trace.ErrorCategory = "search", diagnosticErrorCategory(err)
+				if trace.Validation == "local_invalid" {
+					trace.ErrorStage, trace.ErrorCategory = "validation", "invalid_jql"
+				}
+			}
+		}
 		if err != nil {
 			return errorResult(fmt.Sprintf("JIRA search failed: %v", err)), nil
 		}
@@ -793,6 +855,9 @@ func (h *Handlers) HandleDigest(ctx context.Context, req mcp.CallToolRequest) (*
 	for _, key := range issueKeys {
 		result, err := h.runSingleDigest(ctx, cfg, db, key, since, cacheOnly)
 		if err != nil {
+			if trace := attemptTrace(ctx); trace != nil {
+				trace.ErrorStage, trace.ErrorCategory = "digest", diagnosticErrorCategory(err)
+			}
 			fmt.Fprintf(&text, "**%s**: Error: %v\n\n", key, err)
 			slog.Error("digest error", "key", key, "error", err)
 			continue

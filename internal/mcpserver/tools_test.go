@@ -998,7 +998,7 @@ func TestHandleQuery_CountQuestionEnumeratesExactCount(t *testing.T) {
 	}
 }
 
-func TestHandleQuery_RejectsPretranslatedJQLWithoutStoring(t *testing.T) {
+func TestHandleQuery_RejectsPretranslatedJQLAndRecordsFailure(t *testing.T) {
 	h := newTestHandlers(t)
 	setTestFullEnv(t)
 	translatorCalled := false
@@ -1018,8 +1018,8 @@ func TestHandleQuery_RejectsPretranslatedJQLWithoutStoring(t *testing.T) {
 	if translatorCalled {
 		t.Error("translator was called for pretranslated JQL")
 	}
-	if got := len(h.store.List()); got != 0 {
-		t.Errorf("stored %d results after rejecting JQL input, want none", got)
+	if got := len(h.store.List()); got != 1 {
+		t.Errorf("stored %d attempts after rejecting JQL input, want one failure", got)
 	}
 }
 
@@ -1065,8 +1065,8 @@ func TestHandleQuery_RejectsLegacyQueryArgumentBeforeTranslation(t *testing.T) {
 	if calls != 0 {
 		t.Errorf("translator called %d times for legacy-only arguments, want 0", calls)
 	}
-	if len(h.store.List()) != 0 {
-		t.Error("stored result despite rejecting legacy-only arguments")
+	if len(h.store.List()) != 1 {
+		t.Error("expected one failed attempt for rejected legacy-only arguments")
 	}
 }
 

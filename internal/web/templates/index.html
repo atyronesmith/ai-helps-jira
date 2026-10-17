@@ -3,7 +3,7 @@
 {{define "title"}}JIRA CLI Dashboard{{end}}
 
 {{define "content"}}
-<h1>Results</h1>
+<h1>Results and attempts</h1>
 {{if .Results}}
 <div style="margin-bottom: 0.5em;">
     <button id="bulk-delete-btn" class="outline secondary" style="display:none;" onclick="bulkDelete()">Delete Selected</button>
@@ -12,7 +12,7 @@
     <thead>
         <tr>
             <th><input type="checkbox" id="select-all" title="Select all"></th>
-            <th>Type</th><th>Title</th><th>JQL</th><th>Time</th><th></th>
+            <th>Type</th><th>Title</th><th>Diagnostics (JQL is display only)</th><th>Time</th><th></th>
         </tr>
     </thead>
     <tbody>
@@ -21,7 +21,7 @@
             <td><input type="checkbox" class="row-check" data-id="{{.ID}}"></td>
             <td><span class="badge badge-{{.Type}}">{{.Type}}</span></td>
             <td>{{resultTitle .}}</td>
-            <td>{{with queryMeta .}}{{if .JQL}}<code class="jql">{{.JQL}}</code>{{end}}{{if .Route}}<div class="timestamp">route: {{.Route}}</div>{{end}}{{end}}</td>
+            <td>{{with queryMeta .}}{{if .JQL}}<code class="jql">{{.JQL}}</code>{{end}}{{if .Route}}<div class="timestamp">route: {{.Route}}</div>{{end}}{{if .Outcome}}<div><strong>Outcome: {{.Outcome}}</strong>{{if .ErrorStage}} · stage: {{.ErrorStage}}{{end}}{{if .ErrorCategory}} · category: {{.ErrorCategory}}{{end}}</div>{{end}}{{end}}</td>
             <td class="timestamp">{{formatTime .CreatedAt}}</td>
             <td><a href="/view/{{.ID}}" role="button" class="outline">View</a></td>
         </tr>

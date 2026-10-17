@@ -598,8 +598,8 @@ internal/
     server.go          # MCP server setup, tool registration, SSE/stdio transport
     tools.go           # Tool handlers (summary, query, digest, enrich, weekly, health, comments)
     crud_tools.go      # CRUD tool handlers (get, create, edit, transition, etc.)
-    store.go           # In-memory result store for web dashboard
-    webserver.go       # HTTP server for dashboard + /healthz endpoint
+    store.go           # Durable instance-owned dashboard history and retention
+    webserver.go       # Dashboard, /healthz liveness, /readyz passive readiness
   format/
     terminal.go        # pterm tables, spinners, color
     markdown.go        # GitHub + Slack markdown output
@@ -639,10 +639,22 @@ The container launchers mount the named volume `jira-cli-cache` at
 Named volumes are independent of containers; even `podman rm --volumes` removes
 anonymous volumes, not this named volume. See the
 [Podman removal documentation](https://docs.podman.io/en/latest/markdown/podman-rm.1.html#volumes-v).
-Cache persistence does not guarantee dashboard history persistence: dashboard
-results currently use `results-<pid>.db` and stale-process cleanup. Their files
-are in the volume, but cross-restart history is unreliable because of process ID
-reuse and cleanup. Stable result-history ownership remains separate planned work.
+Dashboard history persists in `~/.jira-cli/results-v1/<instance-hash>.db`, also
+inside the named volume. The stable owner defaults to `default`; use
+`jira-cli mcp --history-instance workbench` for a separately owned history.
+Reusing an owner shares its results, deletion, and retention across local
+processes. Defaults retain up to 1000 entries for 30 days; customize with
+`--history-max-results` and `--history-max-age` (zero disables the respective
+limit). Pruning occurs at startup and on save. Old PID histories are left alone.
+
+The dashboard lists successes and failed attempts. Query views keep original and
+normalized wording, exact execution text, separate display JQL, validation,
+timing, and search completeness. `/healthz` reports liveness only. `/readyz`
+returns 503 for failed, unknown, or stale required dependency observations;
+`/api/status` includes checked-at times. These are passive observations from
+normal operations and expire after five minutes. Deterministic-only or idle use
+can leave readiness unknown. Polling does not call Jira or a model. See the
+[Phase 6 contracts and limitations](docs/project-reliability-implementation-plan.md#phase-6-delivered-contracts-2026-10-16).
 
 ### JIRA API
 
