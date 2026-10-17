@@ -150,6 +150,11 @@ queries use one typed LLM completion, compiled and validated locally, with a
 45-second deadline and no automatic retries. Invalid output and provider errors
 are terminal; the translator never switches prompts to retry the request.
 
+Recognized ordering phrases accept an omitted direction and default to ascending.
+For example, `my open issues ordered by date created` stays deterministic,
+preserves the effective assignee and open-work filter, and orders oldest first.
+Use `descending` or `desc` for newest first.
+
 The trainer saves failures, skips, and corrections in a private local corpus.
 Replay uses the production translator with a frozen clock, catalog, aliases,
 and canned provider responses, and exits nonzero for regressions or missing

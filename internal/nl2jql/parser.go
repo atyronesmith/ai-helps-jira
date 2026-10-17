@@ -142,7 +142,7 @@ var jqlLexer = lexer.MustStateful(lexer.Rules{
 //	IssueType = Bugs | Epics | Tasks | Stories .
 //	Status    = Open | Done | InProgress .
 //	Project   = In (Word | Filler)+ .
-//	OrderBy   = OrderFrame (Word | Filler | PriorityField | StoryPoints)+ Direction .
+//	OrderBy   = OrderFrame (Word | Filler | PriorityField | StoryPoints | DateField)+ [ Direction ] .
 //	Noise     = Filler .
 //
 // Every alternative in Clause starts with a mutually disjoint token set, so
@@ -216,18 +216,19 @@ type Priority struct {
 	Tokens []string `parser:"( @Highest | @Lowest | @Critical | @High | @Medium | @Low ) @PriorityField | @PriorityField ( @Highest | @Lowest | @Critical | @High | @Medium | @Low )"`
 }
 
-// OrderBy captures one field and an explicit direction. Field aliases are
-// resolved through orderFieldJQL below; arbitrary field names are rejected.
+// OrderBy captures one field and an optional direction. An omitted direction
+// defaults to ASC during rendering. Field aliases are resolved through
+// orderFieldJQL below; arbitrary field names are rejected.
 type OrderBy struct {
 	Frame     string      `parser:"@OrderFrame"`
 	Field     []string    `parser:"( @Word | @Filler | @PriorityField | @StoryPoints | @DateField )+"`
-	Direction string      `parser:"@Direction"`
+	Direction string      `parser:"( @Direction )?"`
 	More      []*SortTerm `parser:"( Comma @@ )*"`
 }
 
 type SortTerm struct {
 	Field     []string `parser:"( @Word | @Filler | @PriorityField | @StoryPoints | @DateField )+"`
-	Direction string   `parser:"@Direction"`
+	Direction string   `parser:"( @Direction )?"`
 }
 
 // Project -> project = <Key>.
@@ -328,6 +329,8 @@ func (o *OrderBy) sort() (jql.Sort, error) {
 	}
 	direction := strings.ToLower(o.Direction)
 	switch direction {
+	case "":
+		direction = "ASC"
 	case "ascending", "asc":
 		direction = "ASC"
 	case "descending", "desc":

@@ -48,7 +48,7 @@ func TestReplayCommandUsesProductionFixturePathWithoutJiraOrLiveConfig(t *testin
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.Passed != 16 || report.Total != 16 {
+	if report.Passed != 18 || report.Total != 18 {
 		t.Fatalf("unexpected replay: %+v", report)
 	}
 }
