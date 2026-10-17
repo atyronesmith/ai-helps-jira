@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"context"
+
 	"github.com/atyronesmith/ai-helps-jira/internal/cache"
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
@@ -17,12 +19,15 @@ import (
 // FetchProjects, so a fresh cache keeps the call network- and client-construction-
 // free.
 func fetchProjectList(cfg *config.Config, db *cache.Cache) []jira.Project {
+	return fetchProjectListContext(context.Background(), cfg, db)
+}
+func fetchProjectListContext(ctx context.Context, cfg *config.Config, db *cache.Cache) []jira.Project {
 	return cache.WarmupProjects(db, func() (cache.ProjectFetcher, error) {
 		client, err := jira.NewClient(cfg)
 		if err != nil {
 			return nil, err
 		}
-		return client, nil
+		return client.WithContext(ctx), nil
 	}, cache.DefaultProjectTTL)
 }
 

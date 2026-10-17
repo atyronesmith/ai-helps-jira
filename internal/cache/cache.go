@@ -66,10 +66,22 @@ func initializeSchema(db *sql.DB) error {
 			return fmt.Errorf("set cache schema version: %w", err)
 		}
 	}
+	// Field metadata was added additively and must also be present in existing
+	// format-1 databases. Keep the schema version unchanged.
+	for _, statement := range fieldSchemaStatements {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("initialize field metadata schema: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit cache initialization: %w", err)
 	}
 	return nil
+}
+
+var fieldSchemaStatements = []string{
+	`CREATE TABLE IF NOT EXISTS field_catalog (id TEXT PRIMARY KEY, field_json TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS field_catalog_state (id INTEGER PRIMARY KEY CHECK(id=1), refreshed_at TEXT NOT NULL)`,
 }
 
 var currentSchemaStatements = []string{

@@ -26,6 +26,7 @@ type Client struct {
 	assignee     string
 	authEmail    string
 	userOverride string
+	ctx          context.Context
 }
 
 // HTTPStatusError preserves the Jira response status for callers that need
@@ -49,12 +50,27 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		assignee:     cfg.Assignee(),
 		authEmail:    cfg.JiraEmail,
 		userOverride: cfg.JiraUser,
+		ctx:          context.Background(),
 	}, nil
+}
+
+// WithContext returns a shallow client copy whose requests inherit ctx.
+func (c *Client) WithContext(ctx context.Context) *Client {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	copy := *c
+	copy.ctx = ctx
+	return &copy
 }
 
 // doRequest executes an authenticated request and decodes the JSON response.
 func (c *Client) doRequest(method, path string, body any, out any) error {
-	return c.doRequestContext(context.Background(), method, path, body, out)
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return c.doRequestContext(ctx, method, path, body, out)
 }
 
 func (c *Client) doRequestContext(ctx context.Context, method, path string, body any, out any) error {
@@ -176,7 +192,11 @@ type apiKeyedName struct {
 // repairs: a rejected query returns an error rather than a silently
 // rewritten one.
 func (c *Client) searchIssues(rawJQL string, max int) ([]Issue, error) {
-	result, err := c.SearchJQLResult(context.Background(), rawJQL, SearchOptions{Limit: max})
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	result, err := c.SearchJQLResult(ctx, rawJQL, SearchOptions{Limit: max})
 	return result.Issues, err
 }
 
@@ -500,7 +520,11 @@ type apiParent struct {
 
 // GetIssue fetches full issue details including description.
 func (c *Client) GetIssue(key string) (*IssueDetail, error) {
-	return c.getIssueContext(context.Background(), key)
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return c.getIssueContext(ctx, key)
 }
 
 func (c *Client) getIssueContext(ctx context.Context, key string) (*IssueDetail, error) {

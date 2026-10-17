@@ -4,105 +4,139 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	"github.com/atyronesmith/ai-helps-jira/internal/fieldmeta"
 )
 
-func TestFallbackPromptDefinesOpenWorkSemantics(t *testing.T) {
-	t.Parallel()
+const supportedStatusPlan = `{"version":1,"outcome":"supported","mode":"list","filter":{"kind":"comparison","field":"status","operator":"=","value":{"kind":"string","text":"Open"}}}`
 
+func TestFallbackPromptDefinesTypedContractAndOpenWork(t *testing.T) {
 	prompt := buildSystemPrompt(nil)
-	for _, required := range []string{
-		"open, unresolved, active, unfinished, or not-done work",
-		"statusCategory != Done",
-		"Never substitute an issuetype != ... predicate for a requested status filter",
-		"reserved punctuation (including @ and . in email addresses)",
-	} {
+	for _, required := range []string{"version\":1", "typed", "statusCategory != Done", "Never substitute an issuetype !=", "Fields must be core fields or fields in the supplied catalog", "No raw JQL"} {
 		if !strings.Contains(prompt, required) {
-			t.Errorf("fallback prompt is missing %q", required)
+			t.Errorf("prompt missing %q", required)
 		}
 	}
 }
 
-// genJSON drives the fallback engine with a canned model response so the
-// JSON-envelope unwrapping (extractJQL) can be asserted in isolation, without a
-// grammar or normalizer in the way. The empty schema is fine: renderSchema
-// tolerates it.
-func genJSON(t *testing.T, raw string) (string, error) {
+func fallbackOutput(t *testing.T, raw string, fields []fieldmeta.Field) (string, error) {
 	t.Helper()
-	fb, err := NewFallbackEngine(&recordingProvider{jql: raw})
+	p := &recordingProvider{jql: raw}
+	fb, err := NewFallbackEngine(p)
 	if err != nil {
-		t.Fatalf("NewFallbackEngine: %v", err)
+		t.Fatal(err)
 	}
-	return fb.Generate(context.Background(), "my open bugs", map[string]string{})
+	return fb.generate(context.Background(), "request", nil, fieldmeta.New(fields, nil), "OPS", "")
 }
 
-// TestGenerateUnwrapsJSONEnvelope pins the fix for the JSON-forcing collision:
-// the LLM providers this fallback is wired to (Vertex prefills "{"; OpenAI sets
-// response_format json_object) force the model to answer with a JSON object, so
-// the strict prompt now emits {"jql": "..."} and extractJQL must unwrap it --
-// while still accepting a raw (non-JSON) response from a non-forcing provider.
-func TestGenerateUnwrapsJSONEnvelope(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name string
-		raw  string
-		want string
-		err  error
-	}{
-		{"plain envelope", `{"jql": "status = Open"}`, "status = Open", nil},
-		{"extra fields ignored", `{"jql": "status = Open", "days": 7}`, "status = Open", nil},
-		{"alternate query key", `{"query": "status = Open"}`, "status = Open", nil},
-		{"fenced json", "```json\n{\"jql\": \"status = Open\"}\n```", "status = Open", nil},
-		{"prose then json", `Sure! {"jql": "status = Open"}`, "status = Open", nil},
-		{"raw non-json still works", "status = Open", "status = Open", nil},
-		{"empty envelope", `{"jql": ""}`, "", ErrEmptyResponse},
-		{"unmappable envelope", `{"jql": "EMPTY"}`, "", ErrUnmappable},
-		{"raw unmappable", "EMPTY", "", ErrUnmappable},
-		{"malformed json", `{"jql": "status = Open`, "", ErrEmptyResponse},
+func TestTypedFallbackPreservesBooleanGroupsAndQuotesValues(t *testing.T) {
+	raw := `{"version":1,"outcome":"supported","mode":"list","filter":{"kind":"and","children":[{"kind":"comparison","field":"status","operator":"=","value":{"kind":"string","text":"Open"}},{"kind":"or","children":[{"kind":"comparison","field":"summary","operator":"~","value":{"kind":"string","text":"x\" OR project = OTHER"}},{"kind":"comparison","field":"summary","operator":"~","value":{"kind":"string","text":"safe"}}]}]}}`
+	got, err := fallbackOutput(t, raw, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := genJSON(t, tc.raw)
-			if tc.err != nil {
-				if !errors.Is(err, tc.err) {
-					t.Fatalf("Generate(%q) error = %v, want %v", tc.raw, err, tc.err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("Generate(%q): %v", tc.raw, err)
-			}
-			if got != tc.want {
-				t.Errorf("Generate(%q) = %q, want %q", tc.raw, got, tc.want)
+	if !strings.Contains(got, `status = Open AND (summary ~ "x\" OR project = OTHER" OR summary ~ safe)`) {
+		t.Fatalf("compiled plan lost grouping or escaping: %s", got)
+	}
+	if strings.Contains(got, `" OR project = OTHER" OR project = OTHER`) {
+		t.Fatalf("hostile literal escaped its quoted operand: %s", got)
+	}
+}
+
+func TestTypedFallbackRequiresMetadataAndAppliesScope(t *testing.T) {
+	unknown := `{"version":1,"outcome":"supported","mode":"list","filter":{"kind":"comparison","field":"Budget Owner","operator":"=","value":{"kind":"string","text":"Sam"}}}`
+	if _, err := fallbackOutput(t, unknown, nil); !errors.Is(err, fieldmeta.ErrMissingMetadata) {
+		t.Fatalf("unknown field error=%v", err)
+	}
+	fields := []fieldmeta.Field{{ID: "customfield_9", Name: "Budget Owner", Type: "string", Projects: []string{"OTHER"}, ApplicabilityKnown: true}}
+	if _, err := fallbackOutput(t, unknown, fields); !errors.Is(err, fieldmeta.ErrInapplicableField) {
+		t.Fatalf("inapplicable field error=%v", err)
+	}
+	fields = append(fields, fieldmeta.Field{ID: "customfield_10", Name: "Budget Owner", Type: "string"})
+	if _, err := fallbackOutput(t, unknown, fields); !errors.Is(err, fieldmeta.ErrAmbiguousField) {
+		t.Fatalf("ambiguous field error=%v", err)
+	}
+}
+
+func TestTypedFallbackValidatesOperandTypes(t *testing.T) {
+	cases := []string{
+		`{"version":1,"outcome":"supported","mode":"list","filter":{"kind":"comparison","field":"status","operator":">","value":{"kind":"number","text":"3"}}}`,
+		`{"version":1,"outcome":"supported","mode":"list","filter":{"kind":"comparison","field":"created","operator":"=","value":{"kind":"string","text":"yesterday"}}}`,
+	}
+	for _, raw := range cases {
+		if _, err := fallbackOutput(t, raw, nil); err == nil {
+			t.Errorf("accepted operand type mismatch: %s", raw)
+		}
+	}
+}
+
+func TestTypedFallbackRejectsMalformedContracts(t *testing.T) {
+	cases := map[string]string{
+		"wrong version":    strings.Replace(supportedStatusPlan, `"version":1`, `"version":2`, 1),
+		"unknown operator": strings.Replace(supportedStatusPlan, `"operator":"="`, `"operator":"EXEC"`, 1),
+		"raw jql":          strings.Replace(supportedStatusPlan, `"filter":{`, `"rawJQL":"project = OPS","filter":{`, 1),
+		"unknown property": strings.Replace(supportedStatusPlan, `"mode":"list"`, `"mode":"list","surprise":true`, 1),
+		"trailing json":    supportedStatusPlan + ` {"version":1}`,
+		"non-json raw jql": "status = Open",
+	}
+	deep := `{"kind":"comparison","field":"status","operator":"=","value":{"kind":"string","text":"Open"}}`
+	for i := 0; i < 18; i++ {
+		deep = `{"kind":"not","children":[` + deep + `]}`
+	}
+	cases["complexity limit"] = `{"version":1,"outcome":"supported","mode":"list","filter":` + deep + `}`
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := fallbackOutput(t, raw, nil); err == nil {
+				t.Fatalf("accepted invalid model output %s", raw)
 			}
 		})
 	}
 }
 
-// TestExtractJQLRawPath proves the historical raw-JQL sanitation is untouched:
-// a response with no JSON object passes through sanitizeJQL verbatim, so a raw
-// (non-JSON-forcing) provider behaves exactly as before.
-func TestExtractJQLRawPath(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"plain", "status = Open", "status = Open"},
-		{"quoted value", `issuetype = Bug AND priority = "High"`, `issuetype = Bug AND priority = "High"`},
-		{"fenced", "```jql\nstatus = Open\n```", "status = Open"},
-		{"jql label", "jql: status = Open", "status = Open"},
+type controlledProvider struct {
+	calls    int32
+	response string
+	err      error
+	cancel   bool
+}
+
+func (p *controlledProvider) Generate(ctx context.Context, _, _ string) (string, error) {
+	atomic.AddInt32(&p.calls, 1)
+	if p.cancel {
+		return "", context.Canceled
 	}
-	for _, tc := range cases {
-		tc := tc
+	return p.response, p.err
+}
+
+func TestFallbackCallsProviderOnceAndPropagatesErrors(t *testing.T) {
+	failure := errors.New("provider failed")
+	for _, tc := range []struct {
+		name     string
+		provider *controlledProvider
+		ctx      context.Context
+		want     error
+	}{{"provider error", &controlledProvider{err: failure}, context.Background(), failure}, {"canceled before call", &controlledProvider{response: supportedStatusPlan}, makeCanceledContext(), context.Canceled}, {"cancel returned by provider", &controlledProvider{cancel: true}, context.Background(), context.Canceled}} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if got := extractJQL(tc.in); got != tc.want {
-				t.Errorf("extractJQL(%q) = %q, want %q", tc.in, got, tc.want)
+			fb, _ := NewFallbackEngine(tc.provider)
+			_, err := fb.generate(tc.ctx, "query", nil, fieldmeta.New(nil, nil), "", "")
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("error=%v want %v", err, tc.want)
+			}
+			wantCalls := int32(1)
+			if tc.name == "canceled before call" {
+				wantCalls = 0
+			}
+			if got := atomic.LoadInt32(&tc.provider.calls); got != wantCalls {
+				t.Fatalf("calls=%d want %d", got, wantCalls)
 			}
 		})
 	}
+}
+
+func makeCanceledContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
 }

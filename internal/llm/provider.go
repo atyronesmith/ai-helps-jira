@@ -9,13 +9,16 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/vertex"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
+	"github.com/atyronesmith/ai-helps-jira/internal/translationerror"
 )
 
 // Provider abstracts LLM completion so different backends can be used.
@@ -47,24 +50,48 @@ type OpenAIProvider struct {
 //   - LLM_PROVIDER=vertex  → Claude on Vertex AI (existing behavior)
 //   - (default)            → Vertex AI if ANTHROPIC_VERTEX_PROJECT_ID is set, else error
 func NewProvider(cfg *config.Config) (Provider, error) {
+	return NewProviderContext(context.Background(), cfg)
+}
+
+// NewProviderContext constructs a provider using ctx for initialization that may
+// contact an identity service, such as Vertex Application Default Credentials.
+func NewProviderContext(ctx context.Context, cfg *config.Config) (Provider, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		kind := translationerror.Cancellation
+		if errors.Is(err, context.DeadlineExceeded) {
+			kind = translationerror.Timeout
+		}
+		return nil, translationerror.New(kind, err)
+	}
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
 	provider := config.GetEnvOrSecret("LLM_PROVIDER")
 
 	switch provider {
 	case "openai":
 		baseURL := config.GetEnvOrSecret("LLM_BASE_URL")
 		if baseURL == "" {
-			return nil, fmt.Errorf("LLM_BASE_URL required when LLM_PROVIDER=openai")
+			return nil, translationerror.New(translationerror.Unsupported, errors.New("LLM_BASE_URL required when LLM_PROVIDER=openai"))
+		}
+		var err error
+		baseURL, err = normalizeChatURL(baseURL)
+		if err != nil {
+			return nil, translationerror.New(translationerror.Unsupported, err)
 		}
 		model := config.GetEnvOrSecret("LLM_MODEL")
 		if model == "" {
-			return nil, fmt.Errorf("LLM_MODEL required when LLM_PROVIDER=openai")
+			return nil, translationerror.New(translationerror.Unsupported, errors.New("LLM_MODEL required when LLM_PROVIDER=openai"))
 		}
 		slog.Info("using OpenAI-compatible provider", "base_url", baseURL, "model", model)
 		return &OpenAIProvider{
 			baseURL: baseURL,
 			apiKey:  config.GetEnvOrSecret("LLM_API_KEY"),
 			model:   model,
-			http:    &http.Client{Timeout: 120 * time.Second},
+			http:    providerHTTPClient(120 * time.Second),
 		}, nil
 
 	case "ollama":
@@ -72,40 +99,62 @@ func NewProvider(cfg *config.Config) (Provider, error) {
 		if baseURL == "" {
 			baseURL = "http://localhost:11434"
 		}
+		var err error
+		baseURL, err = normalizeChatURL(baseURL)
+		if err != nil {
+			return nil, translationerror.New(translationerror.Unsupported, err)
+		}
 		model := config.GetEnvOrSecret("LLM_MODEL")
 		if model == "" {
-			return nil, fmt.Errorf("LLM_MODEL required when LLM_PROVIDER=ollama")
+			return nil, translationerror.New(translationerror.Unsupported, errors.New("LLM_MODEL required when LLM_PROVIDER=ollama"))
 		}
 		slog.Info("using Ollama provider", "base_url", baseURL, "model", model)
 		return &OpenAIProvider{
 			baseURL: baseURL,
 			model:   model,
-			http:    &http.Client{Timeout: 300 * time.Second},
+			http:    providerHTTPClient(300 * time.Second),
 		}, nil
 
 	case "vertex", "":
 		if cfg.VertexProjectID == "" {
 			if provider == "vertex" {
-				return nil, fmt.Errorf("ANTHROPIC_VERTEX_PROJECT_ID required for vertex provider")
+				return nil, translationerror.New(translationerror.Authentication, errors.New("ANTHROPIC_VERTEX_PROJECT_ID required for Vertex authentication"))
 			}
-			return nil, fmt.Errorf("no LLM provider configured — set LLM_PROVIDER (openai, ollama, vertex)")
+			return nil, translationerror.New(translationerror.Unsupported, errors.New("no LLM provider configured"))
 		}
 		model := config.GetEnvOrSecret("LLM_MODEL")
 		if model == "" {
 			model = "claude-sonnet-4-6"
 		}
-		ctx := context.Background()
 		slog.Info("using Vertex AI provider", "project", cfg.VertexProjectID, "region", cfg.VertexRegion, "model", model)
 		return &VertexProvider{
-			client:    anthropic.NewClient(vertex.WithGoogleAuth(ctx, cfg.VertexRegion, cfg.VertexProjectID)),
+			client:    anthropic.NewClient(vertex.WithGoogleAuth(ctx, cfg.VertexRegion, cfg.VertexProjectID), option.WithMaxRetries(0), option.WithHTTPClient(providerHTTPClient(120*time.Second))),
 			model:     model,
 			projectID: cfg.VertexProjectID,
 			region:    cfg.VertexRegion,
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("unknown LLM_PROVIDER %q — use openai, ollama, or vertex", provider)
+		return nil, translationerror.New(translationerror.Unsupported, fmt.Errorf("unknown LLM_PROVIDER %q", provider))
 	}
+}
+
+func providerHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+func normalizeChatURL(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.Contains(raw, "#") {
+		return "", fmt.Errorf("invalid LLM base URL: expected an HTTP(S) URL without credentials, query, or fragment")
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	if strings.HasSuffix(u.Path, "/v1") {
+		u.Path = strings.TrimSuffix(u.Path, "/v1")
+	}
+	u.Path += "/v1/chat/completions"
+	u.RawPath = ""
+	return strings.TrimRight(u.String(), "/"), nil
 }
 
 // Complete sends a chat completion request via the Anthropic SDK.
@@ -128,10 +177,17 @@ func (p *VertexProvider) Complete(ctx context.Context, system, prompt string, ma
 		},
 	})
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return "", fmt.Errorf("LLM request timed out (vertex, project %s, model %s): %w", p.projectID, p.model, err)
+		if errors.Is(err, context.Canceled) {
+			return "", translationerror.New(translationerror.Cancellation, fmt.Errorf("LLM request canceled: %w", context.Canceled))
 		}
-		return "", fmt.Errorf("LLM provider unreachable (vertex, project %s, model %s): check ANTHROPIC_VERTEX_PROJECT_ID/credentials: %w", p.projectID, p.model, err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", translationerror.New(translationerror.Timeout, fmt.Errorf("LLM request timed out: %w", context.DeadlineExceeded))
+		}
+		var apiErr *anthropic.Error
+		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden) {
+			return "", translationerror.New(translationerror.Authentication, errors.New("Vertex authentication failed"))
+		}
+		return "", translationerror.New(translationerror.Connectivity, errors.New("Vertex LLM provider unreachable"))
 	}
 
 	slog.Info("vertex response", "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens)
@@ -141,7 +197,7 @@ func (p *VertexProvider) Complete(ctx context.Context, system, prompt string, ma
 			return "{" + block.Text, nil
 		}
 	}
-	return "", fmt.Errorf("no text in vertex response")
+	return "", translationerror.New(translationerror.InvalidOutput, errors.New("no text in Vertex response"))
 }
 
 // openAIRequest is the OpenAI chat completions request format.
@@ -200,10 +256,16 @@ func (p *OpenAIProvider) Complete(ctx context.Context, system, prompt string, ma
 		return "", err
 	}
 
-	url := p.baseURL + "/v1/chat/completions"
+	url := p.baseURL
+	if !strings.HasSuffix(url, "/chat/completions") {
+		url, err = normalizeChatURL(url)
+		if err != nil {
+			return "", err
+		}
+	}
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return "", translationerror.New(translationerror.InvalidOutput, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if p.apiKey != "" {
@@ -212,38 +274,53 @@ func (p *OpenAIProvider) Complete(ctx context.Context, system, prompt string, ma
 
 	resp, err := p.http.Do(req)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return "", fmt.Errorf("LLM request timed out (%s): %w", url, err)
+		if errors.Is(err, context.Canceled) {
+			return "", translationerror.New(translationerror.Cancellation, fmt.Errorf("LLM request canceled: %w", context.Canceled))
 		}
-		return "", fmt.Errorf("LLM provider unreachable (%s): check network connectivity and LLM_BASE_URL/OLLAMA_BASE_URL: %w", url, err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", translationerror.New(translationerror.Timeout, fmt.Errorf("LLM request timed out: %w", context.DeadlineExceeded))
+		}
+		return "", translationerror.New(translationerror.Connectivity, errors.New("LLM provider unreachable"))
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	const maxProviderResponseBytes = 1 << 20
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes+1))
 	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
+		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+			return "", translationerror.New(translationerror.Cancellation, context.Canceled)
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", translationerror.New(translationerror.Timeout, context.DeadlineExceeded)
+		}
+		return "", translationerror.New(translationerror.Connectivity, errors.New("could not read LLM response"))
+	}
+	if len(respBody) > maxProviderResponseBytes {
+		return "", translationerror.New(translationerror.InvalidOutput, errors.New("LLM response exceeds size limit"))
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return "", fmt.Errorf("LLM authentication failed (status %d) for %s: check LLM_API_KEY: %s",
-			resp.StatusCode, url, truncateStr(string(respBody), 300))
+		return "", translationerror.New(translationerror.Authentication, fmt.Errorf("LLM authentication failed (status %d); check LLM_API_KEY", resp.StatusCode))
 	}
 
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("openai api %s: %s (status %d)", url, truncateStr(string(respBody), 300), resp.StatusCode)
+		if resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
+			return "", translationerror.New(translationerror.InvalidOutput, fmt.Errorf("LLM API rejected the request (status %d)", resp.StatusCode))
+		}
+		return "", translationerror.New(translationerror.Connectivity, fmt.Errorf("LLM API returned status %d", resp.StatusCode))
 	}
 
 	var result openAIResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
+		return "", translationerror.New(translationerror.InvalidOutput, errors.New("could not decode LLM response"))
 	}
 
 	if result.Error != nil {
-		return "", fmt.Errorf("openai api error: %s", result.Error.Message)
+		return "", translationerror.New(translationerror.InvalidOutput, errors.New("LLM returned an error response"))
 	}
 
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("no choices in openai response")
+		return "", translationerror.New(translationerror.InvalidOutput, errors.New("no choices in LLM response"))
 	}
 
 	slog.Info("openai response", "prompt_tokens", result.Usage.PromptTokens, "completion_tokens", result.Usage.CompletionTokens)

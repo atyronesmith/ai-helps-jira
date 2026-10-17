@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.25@sha256:b8a5d153cd3b1a82120dd42acce6b38e725514b23724eaee66407829f706fe5f AS builder
+FROM golang:1.27.2 AS builder
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
     -o /jira-cli .
 
 # Runtime stage — Red Hat UBI minimal (pinned)
-FROM registry.access.redhat.com/ubi9/ubi-minimal:9.5
+FROM registry.access.redhat.com/ubi9/ubi-minimal:9.8
 
 LABEL name="jira-cli" \
       version="1.0.0" \

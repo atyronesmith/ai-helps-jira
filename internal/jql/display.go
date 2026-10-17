@@ -19,36 +19,15 @@ import (
 // gives a human nothing to compare against a request like "since July 1
 // 2026", while "created >= 2025-10-09" is wrong (or right) at a glance.
 //
-// relativeDurationRe matches the signed relative-date tokens this project's
-// generators actually emit: the nl2jql normalizer
-// (internal/nl2jql/normalizer.go, the "%s >= -%dd" family) always writes
-// digits followed by a lowercase "d" (days), but the JSON-prompt LLM
-// fallback's QuerySystemPrompt (internal/llm/query.go) separately *tells the
-// model* to write "-1w", "-1d", "-2w", "-1m" directly, so the same shapes can
-// reach the final JQL without ever passing through the normalizer. The
-// pattern therefore covers the general JQL relative-duration shape
-// (d/w/h/m/M/y) rather than only the normalizer's "d" case.
-//
-// Units follow Jira's grammar, not this project's prompt text. Both "m" and
-// "M" mean MINUTES — Jira matches the unit case-insensitively and has no month
-// period unit at all. Confirmed against a live tenant: "-100000m" and
-// "-100000M" return the same issues as "-70d", 100000 minutes being about 69
-// days. QuerySystemPrompt lists "-1m" among its relative-date examples in a
-// way that reads as "one month", so the model may emit it meaning a month and
-// Jira will silently apply a sixty-second window (FIELDCTO-2817).
-//
-// Resolving by Jira's semantics is the whole point. This display exists to
-// show what the query will actually do, so a "-1m" the model intended as a
-// month must render as a timestamp a minute old -- visibly wrong at a glance.
-// Rendering it as the model's intent would hide precisely the defect this
-// feature was built to surface.
+// relativeDurationRe recognizes relative durations in existing JQL, including
+// historical model output. Both m and M mean minutes in Jira; months require
+// calendar functions. Current translation uses typed days and calendar bounds.
 var relativeDurationRe = regexp.MustCompile(`-(\d+)([dwhmMy])\b`)
 
 // relativeFuncRe matches the zero-argument JQL date functions the normalizer
 // emits unparameterized: startOfDay() and startOfWeek(). Other JQL date
-// functions (startOfMonth, endOfDay, endOfWeek, endOfMonth, now(), ...) are
-// not produced by anything in this codebase today and are deliberately left
-// unresolved rather than guessed at.
+// functions (startOfMonth, endOfDay, endOfWeek, endOfMonth, now(), ...) remain
+// unresolved here rather than being approximated.
 var relativeFuncRe = regexp.MustCompile(`\b(startOfDay|startOfWeek)\(\)`)
 
 // ResolveRelativeDatesForDisplay returns jqlStr with every recognised

@@ -14,21 +14,23 @@ import (
 
 	"github.com/atyronesmith/ai-helps-jira/internal/cache"
 	"github.com/atyronesmith/ai-helps-jira/internal/config"
+	"github.com/atyronesmith/ai-helps-jira/internal/fieldmeta"
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
 	"github.com/atyronesmith/ai-helps-jira/internal/nl2jql"
+	"github.com/atyronesmith/ai-helps-jira/internal/translationerror"
 )
 
 // fakeJQLProvider is a counting nl2jql.Provider used to assert which tier a
 // query routes through. It records how often the LLM fallback was reached.
 type fakeJQLProvider struct {
-	calls int32
-	jql   string
-	fail  error
+	calls    int32
+	response string
+	fail     error
 }
 
 func (f *fakeJQLProvider) Generate(_ context.Context, _, _ string) (string, error) {
 	atomic.AddInt32(&f.calls, 1)
-	return f.jql, f.fail
+	return f.response, f.fail
 }
 
 // fakeLLMProvider implements this package's Provider for the adapter test.
@@ -198,16 +200,15 @@ func TestFastPathSkipsProvider(t *testing.T) {
 // An unparseable query must fall through to the LLM fallback, which returns JQL
 // and leaves the comment-window Days untouched (0).
 func TestFallbackUsedOnParseFailure(t *testing.T) {
-	const wantJQL = "status = Open AND priority = High"
-	fb := &fakeJQLProvider{jql: wantJQL}
+	fb := &fakeJQLProvider{response: modelStatusOpen}
 	tr := newTestTranslator(t, fb)
 
 	res, err := tr.Translate(context.Background(), "external bugs")
 	if err != nil {
 		t.Fatalf("Translate: %v", err)
 	}
-	if res.JQL != wantJQL {
-		t.Errorf("fallback JQL = %q, want %q", res.JQL, wantJQL)
+	if res.JQL != "status = Open" {
+		t.Errorf("fallback JQL = %q, want status = Open", res.JQL)
 	}
 	if res.Route != "fallback" {
 		t.Errorf("route = %q, want fallback", res.Route)
@@ -239,12 +240,15 @@ func openAIJSON(content string) string {
 	return string(body)
 }
 
+const modelStatusOpen = `{"version":1,"outcome":"supported","mode":"list","filter":{"kind":"comparison","field":"status","operator":"=","value":{"kind":"string","text":"Open"}},"sort":[]}`
+const modelUnsupported = `{"version":1,"outcome":"unsupported"}`
+
 // GenerateJQL on a parseable query must use the fast path and never call the LLM.
 func TestGenerateJQLFastPath(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
-		_, _ = io.WriteString(w, openAIJSON(`status = Open`))
+		_, _ = io.WriteString(w, openAIJSON(modelStatusOpen))
 	}))
 	defer srv.Close()
 	withOpenAIEnv(t, srv.URL)
@@ -280,7 +284,7 @@ func TestGenerateJQLOrderByFastPathAndScope(t *testing.T) {
 	}{
 		{
 			query: "list all my open work items ordered by story points ascending.",
-			want:  `statusCategory != Done AND assignee = currentUser() AND project = PROJ ORDER BY "Story Points" ASC`,
+			want:  `statusCategory != Done AND assignee = currentUser() AND project = PROJ ORDER BY cf[12] ASC`,
 		},
 		{
 			query: "my bugs sorted by priority desc",
@@ -297,7 +301,11 @@ func TestGenerateJQLOrderByFastPathAndScope(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.query, func(t *testing.T) {
-			res, err := GenerateJQL(context.Background(), &config.Config{JiraProject: "PROJ"}, tc.query)
+			ctx := context.Background()
+			if strings.Contains(tc.query, "story points") {
+				ctx = context.WithValue(ctx, metadataKey{}, TranslationMetadata{Fields: []fieldmeta.Field{{ID: "customfield_12", Name: "Story Points", Type: "number"}}})
+			}
+			res, err := GenerateJQL(ctx, &config.Config{JiraProject: "PROJ"}, tc.query)
 			if err != nil {
 				t.Fatalf("GenerateJQL: %v", err)
 			}
@@ -428,7 +436,7 @@ func TestGenerateJQLInvalidOrderByUsesFallback(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
-		_, _ = io.WriteString(w, openAIJSON(`status = Open`))
+		_, _ = io.WriteString(w, openAIJSON(modelStatusOpen))
 	}))
 	defer srv.Close()
 	withOpenAIEnv(t, srv.URL)
@@ -457,11 +465,10 @@ func TestGenerateJQLInvalidOrderByUsesFallback(t *testing.T) {
 
 // GenerateJQL on an unparseable query must route to the strict FallbackEngine.
 func TestGenerateJQLFallback(t *testing.T) {
-	const wantJQL = "status = Open AND priority = High AND project = SUP"
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
-		_, _ = io.WriteString(w, openAIJSON(wantJQL))
+		_, _ = io.WriteString(w, openAIJSON(modelStatusOpen))
 	}))
 	defer srv.Close()
 	withOpenAIEnv(t, srv.URL)
@@ -470,8 +477,8 @@ func TestGenerateJQLFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateJQL: %v", err)
 	}
-	if res.JQL != wantJQL {
-		t.Errorf("JQL = %q, want %q", res.JQL, wantJQL)
+	if res.JQL != "status = Open AND project = SUP" {
+		t.Errorf("JQL = %q, want status = Open AND project = SUP", res.JQL)
 	}
 	if res.Days != 0 {
 		t.Errorf("Days = %d, want 0 (FallbackEngine emits no comment window)", res.Days)
@@ -484,43 +491,108 @@ func TestGenerateJQLFallback(t *testing.T) {
 	}
 }
 
-// When the strict fallback refuses (EMPTY sentinel), GenerateJQL must fall back
-// to the original LLM JSON path, which is the only tier that extracts Days.
-func TestGenerateJQLJSONFallbackExtractsDays(t *testing.T) {
+// A legacy response containing executable JQL must fail as invalid typed output.
+func TestGenerateJQLFallbackDoesNotAcceptLegacyJQL(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		n := atomic.AddInt32(&calls, 1)
-		var content string
-		if n == 1 {
-			// First hit is the FallbackEngine; refuse it so we cascade to
-			// generateJQLLLM on the second hit.
-			content = "EMPTY"
-		} else {
-			content = `{"jql":"status = Open","days":7}`
-		}
+		atomic.AddInt32(&calls, 1)
+		content := `{"jql":"status = Open","days":7}`
 		_, _ = io.WriteString(w, openAIJSON(content))
 	}))
 	defer srv.Close()
 	withOpenAIEnv(t, srv.URL)
 
-	res, err := GenerateJQL(context.Background(), &config.Config{JiraProject: "SUP"}, "external bugs")
-	if err != nil {
-		t.Fatalf("GenerateJQL: %v", err)
+	_, err := GenerateJQL(context.Background(), &config.Config{JiraProject: "SUP"}, "external bugs")
+	if err == nil {
+		t.Fatal("legacy JQL response unexpectedly accepted")
 	}
-	if res.JQL != "status = Open AND project = SUP" {
-		t.Errorf("JQL = %q, want %q (JSON tier hard-scopes the default project)", res.JQL, "status = Open AND project = SUP")
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Errorf("LLM reached %d times, want 1 terminal response", n)
 	}
-	if res.Days != 7 {
-		t.Errorf("Days = %d, want 7 (preserved by the JSON fallback)", res.Days)
+}
+
+func TestGenerateJQLFallbackTerminalErrorsCallProviderOnce(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		kind   translationerror.Kind
+		digest bool
+	}{
+		{"invalid output", http.StatusOK, "not-json", translationerror.InvalidOutput, false},
+		{"unsupported", http.StatusOK, modelUnsupported, translationerror.Unsupported, true},
+		{"authentication", http.StatusUnauthorized, "secret body", translationerror.Authentication, false},
+		{"connectivity", http.StatusBadGateway, "secret body", translationerror.Connectivity, false},
 	}
-	if res.Route != RouteJSON {
-		t.Errorf("route = %q, want %q (JSON-prompt LLM path)", res.Route, RouteJSON)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, openAIJSON(tc.body))
+			}))
+			defer srv.Close()
+			withOpenAIEnv(t, srv.URL)
+			var err error
+			if tc.digest {
+				_, err = GenerateJQLForDigest(context.Background(), &config.Config{JiraProject: "SUP"}, "external bugs")
+			} else {
+				_, err = GenerateJQL(context.Background(), &config.Config{JiraProject: "SUP"}, "external bugs")
+			}
+			if err == nil {
+				t.Fatal("expected terminal translation error")
+			}
+			if got := translationerror.KindOf(err); got != tc.kind {
+				t.Errorf("error kind = %q, want %q (err %v)", got, tc.kind, err)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Errorf("provider requests = %d, want 1", got)
+			}
+		})
 	}
-	if res.Input != "external bugs" || res.NormalizedInput != "" || res.ParseError == "" {
-		t.Errorf("JSON fallback diagnostics = input %q normalized %q parse error %q", res.Input, res.NormalizedInput, res.ParseError)
-	}
-	if n := atomic.LoadInt32(&calls); n != 2 {
-		t.Errorf("LLM reached %d times, want 2 (strict fallback + JSON fallback)", n)
+}
+
+func TestGenerateJQLFallbackTimeoutAndCancellationAreSingleCall(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "timeout", true: "cancellation"}[canceled], func(t *testing.T) {
+			var calls atomic.Int32
+			entered := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				close(entered)
+				select {
+				case <-r.Context().Done():
+				case <-time.After(time.Second):
+				}
+			}))
+			defer srv.Close()
+			withOpenAIEnv(t, srv.URL)
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if canceled {
+				ctx, cancel = context.WithCancel(context.Background())
+				go func() { <-entered; cancel() }()
+			} else {
+				ctx, cancel = context.WithTimeout(context.Background(), 20*time.Millisecond)
+			}
+			_, err := GenerateJQL(ctx, &config.Config{JiraProject: "SUP"}, "external bugs")
+			defer cancel()
+			if err == nil {
+				t.Fatal("expected context error")
+			}
+			want := translationerror.Cancellation
+			if !canceled {
+				want = translationerror.Timeout
+			}
+			if got := translationerror.KindOf(err); got != want {
+				t.Errorf("kind = %q, want %q (err %v)", got, want, err)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Errorf("provider requests = %d, want 1", got)
+			}
+		})
 	}
 }
 
@@ -630,7 +702,7 @@ func TestEnsureProjectScope(t *testing.T) {
 }
 
 func TestTranslateCascadeDoesNotRetryAmbiguousIntent(t *testing.T) {
-	p := &fakeJQLProvider{jql: `project = SUP`}
+	p := &fakeJQLProvider{response: modelStatusOpen}
 	_, err := translateCascade(context.Background(), &config.Config{JiraProject: "SUP"}, "issues from the last few months", nil,
 		func(*config.Config, []jira.Project) (*nl2jql.Translator, error) { return newTestTranslator(t, p), nil })
 	if !errors.Is(err, nl2jql.ErrAmbiguousIntent) {
@@ -663,178 +735,34 @@ func TestEnsureProjectScopeQuotesConfiguredProjectAndValidatesSortOnly(t *testin
 	}
 }
 
-// TestGenerateJQLJSONFallbackScopesProject locks in that the JSON-prompt LLM
-// tier -- reached when the strict FallbackEngine refuses -- hard-scopes the
-// tenant's default project even when the model returns JQL with no project
-// predicate, i.e. scoping no longer depends on QuerySystemPrompt rule #1.
-func TestGenerateJQLJSONFallbackScopesProject(t *testing.T) {
-	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		n := atomic.AddInt32(&calls, 1)
-		var content string
-		if n == 1 {
-			content = "EMPTY" // strict fallback refuses, cascading to the JSON path
-		} else {
-			content = `{"jql":"status = Open"}`
-		}
-		_, _ = io.WriteString(w, openAIJSON(content))
-	}))
-	defer srv.Close()
-	withOpenAIEnv(t, srv.URL)
-
-	res, err := GenerateJQL(context.Background(), &config.Config{JiraProject: "SUP"}, "external bugs")
-	if err != nil {
-		t.Fatalf("GenerateJQL: %v", err)
-	}
-	if res.JQL != "status = Open AND project = SUP" {
-		t.Errorf("JQL = %q, want %q (default project appended even when the LLM omits it)", res.JQL, "status = Open AND project = SUP")
-	}
-	if res.Route != RouteJSON {
-		t.Errorf("route = %q, want %q", res.Route, RouteJSON)
-	}
-	if n := atomic.LoadInt32(&calls); n != 2 {
-		t.Errorf("LLM reached %d times, want 2 (strict fallback + JSON fallback)", n)
-	}
-}
-
-// GenerateJQLForDigest (gap B, option 2): a window the regex reads off the query
-// wins over whatever "days" the LLM JSON path would have produced.
-func TestGenerateJQLForDigestExtractsDays(t *testing.T) {
-	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		n := atomic.AddInt32(&calls, 1)
-		var content string
-		if n == 1 {
-			content = "EMPTY" // strict fallback refuses, cascading to the JSON path
-		} else {
-			content = `{"jql":"status = Open","days":30}`
-		}
-		_, _ = io.WriteString(w, openAIJSON(content))
-	}))
-	defer srv.Close()
-	withOpenAIEnv(t, srv.URL)
-
-	res, err := GenerateJQLForDigest(context.Background(), &config.Config{JiraProject: "SUP"}, "external bugs in the last 3 days")
-	if err != nil {
-		t.Fatalf("GenerateJQLForDigest: %v", err)
-	}
-	if res.Days != 3 {
-		t.Errorf("Days = %d, want 3 (ExtractDays wins over the JSON path's 30)", res.Days)
-	}
-	if res.Route != RouteJSON {
-		t.Errorf("route = %q, want %q (digest JSON-prompt LLM path)", res.Route, RouteJSON)
-	}
-	if n := atomic.LoadInt32(&calls); n != 2 {
-		t.Errorf("LLM reached %d times, want 2 (strict fallback + JSON fallback)", n)
-	}
-}
-
-// GenerateJQLForDigest (gap B consistency): a window-less query the fast path
-// can parse now routes through GenerateJQL's fast-first pipeline instead of
-// skipping it, so it yields the same JQL as jira_query and never touches the LLM.
-func TestGenerateJQLForDigestWindowlessFastPath(t *testing.T) {
+func TestGenerateJQLForDigestUsesExplicitCommentWindow(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
-		_, _ = io.WriteString(w, openAIJSON(`status = Open`))
+		_, _ = io.WriteString(w, openAIJSON(modelStatusOpen))
 	}))
 	defer srv.Close()
 	withOpenAIEnv(t, srv.URL)
 
-	res, err := GenerateJQLForDigest(context.Background(), &config.Config{JiraProject: "SUP"}, "my open bugs in Support")
-	if err != nil {
-		t.Fatalf("GenerateJQLForDigest: %v", err)
-	}
-	want := `project = Support AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser()`
-	if res.JQL != want {
-		t.Errorf("JQL = %q, want %q", res.JQL, want)
-	}
-	if res.Route != "fast_path" {
-		t.Errorf("route = %q, want fast_path", res.Route)
-	}
-	if res.Days != 0 {
-		t.Errorf("Days = %d, want 0 (fast path bakes no separate window)", res.Days)
-	}
-	if n := atomic.LoadInt32(&calls); n != 0 {
-		t.Errorf("LLM reached %d times, want 0 (window-less fast path)", n)
-	}
-}
-
-// GenerateJQLForDigest (gap B, option 1): when the regex finds no window AND the
-// strict fallback refuses, the window is recovered by the JSON LLM path, reached
-// through GenerateJQL's own cascade rather than a direct call.
-func TestGenerateJQLForDigestWindowlessJSONFallback(t *testing.T) {
-	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		n := atomic.AddInt32(&calls, 1)
-		var content string
-		if n == 1 {
-			content = "EMPTY" // strict fallback refuses, cascading to the JSON path
-		} else {
-			content = `{"jql":"status = Open","days":7}`
-		}
-		_, _ = io.WriteString(w, openAIJSON(content))
-	}))
-	defer srv.Close()
-	withOpenAIEnv(t, srv.URL)
-
-	res, err := GenerateJQLForDigest(context.Background(), &config.Config{JiraProject: "SUP"}, "external bugs")
-	if err != nil {
-		t.Fatalf("GenerateJQLForDigest: %v", err)
-	}
-	if res.JQL != "status = Open AND project = SUP" {
-		t.Errorf("JQL = %q, want %q (JSON tier hard-scopes the default project)", res.JQL, "status = Open AND project = SUP")
-	}
-	if res.Days != 7 {
-		t.Errorf("Days = %d, want 7 (extracted by the JSON fallback)", res.Days)
-	}
-	if n := atomic.LoadInt32(&calls); n != 2 {
-		t.Errorf("LLM reached %d times, want 2 (strict fallback + JSON fallback)", n)
-	}
-}
-
-// TestGenerateJQLForDigestWindowRetriesJSON locks in the Issue-#2 fix: when the
-// regex reads a window off the query but every tier of GenerateJQLWithProjects
-// fails (fast path rejects, the strict FallbackEngine refuses, and its own JSON
-// last resort errors), GenerateJQLForDigestWithProjects must not hard-fail. It
-// retries generateJQLLLM for the JQL and keeps the regex-derived window.
-func TestGenerateJQLForDigestWindowRetriesJSON(t *testing.T) {
-	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		n := atomic.AddInt32(&calls, 1)
-		var content string
-		switch n {
-		case 1:
-			// strict FallbackEngine refuses, cascading to the JSON path
-			content = "EMPTY"
-		case 2:
-			// JSON path inside GenerateJQLWithProjects fails (not JSON), so the
-			// windowed call must now fall through to the last-resort retry below.
-			content = "I cannot translate that"
-		default:
-			// last-resort retry: a real JSON answer; its days (99) must be
-			// overridden by the regex window (3), not the model's.
-			content = `{"jql":"status = Open","days":99}`
-		}
-		_, _ = io.WriteString(w, openAIJSON(content))
-	}))
-	defer srv.Close()
-	withOpenAIEnv(t, srv.URL)
-
-	// "external" is not in the vocabulary so the fast path rejects; "in the last 3
-	// days" is what ExtractDays reads as the window (3).
 	res, err := GenerateJQLForDigest(context.Background(), &config.Config{JiraProject: "SUP"}, "external bugs in the last 3 days")
 	if err != nil {
-		t.Fatalf("GenerateJQLForDigest: %v (windowed translation must not hard-fail)", err)
-	}
-	if res.JQL != "status = Open AND project = SUP" {
-		t.Errorf("JQL = %q, want %q (JSON retry hard-scopes the default project)", res.JQL, "status = Open AND project = SUP")
+		t.Fatalf("GenerateJQLForDigest: %v", err)
 	}
 	if res.Days != 3 {
-		t.Errorf("Days = %d, want 3 (regex window wins over the retry's 99)", res.Days)
+		t.Errorf("Days = %d, want 3", res.Days)
 	}
-	if n := atomic.LoadInt32(&calls); n != 3 {
-		t.Errorf("LLM reached %d times, want 3 (strict fallback + JSON failure + retry)", n)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("provider calls = %d, want 1", got)
+	}
+}
+
+func TestGenerateJQLForDigestDoesNotUseIssueDateAsCommentWindow(t *testing.T) {
+	res, err := GenerateJQLForDigest(context.Background(), &config.Config{JiraProject: "SUP"}, "issues created in the last 3 days")
+	if err != nil {
+		t.Fatalf("GenerateJQLForDigest: %v", err)
+	}
+	if res.Days != 0 {
+		t.Errorf("Days = %d, want 0 for an explicit issue date", res.Days)
 	}
 }
 
@@ -855,7 +783,7 @@ func TestTranslatorCache_ReusesEngine(t *testing.T) {
 		engines: make(map[string]*nl2jql.FallbackEngine),
 		build: func(cfg *config.Config) (*nl2jql.FallbackEngine, error) {
 			atomic.AddInt32(&builds, 1)
-			return nl2jql.NewFallbackEngine(&fakeJQLProvider{jql: "status = Open"})
+			return nl2jql.NewFallbackEngine(&fakeJQLProvider{response: modelStatusOpen})
 		},
 	}
 	cfg := &config.Config{JiraProject: "SUP"}
@@ -889,7 +817,7 @@ func TestTranslatorCache_DigestReusesEngine(t *testing.T) {
 		engines: make(map[string]*nl2jql.FallbackEngine),
 		build: func(cfg *config.Config) (*nl2jql.FallbackEngine, error) {
 			atomic.AddInt32(&builds, 1)
-			return nl2jql.NewFallbackEngine(&fakeJQLProvider{jql: "status = Open"})
+			return nl2jql.NewFallbackEngine(&fakeJQLProvider{response: modelStatusOpen})
 		},
 	}
 	cfg := &config.Config{JiraProject: "SUP"}
@@ -916,7 +844,7 @@ func TestTranslatorCache_RetriesBuildError(t *testing.T) {
 			if atomic.AddInt32(&attempts, 1) == 1 {
 				return nil, errors.New("transient provider setup failure")
 			}
-			return nl2jql.NewFallbackEngine(&fakeJQLProvider{jql: "status = Open"})
+			return nl2jql.NewFallbackEngine(&fakeJQLProvider{response: modelStatusOpen})
 		},
 	}
 	cfg := &config.Config{JiraProject: "SUP"}
@@ -1108,18 +1036,11 @@ func TestGenerateJQLWithProjectsResolvesHumanName(t *testing.T) {
 	}
 }
 
-func TestGenerateJQLStoryPointsFastPathKeepsDefaultProjectScope(t *testing.T) {
+func TestGenerateJQLStoryPointsRequiresCachedMetadata(t *testing.T) {
 	const query = "list all my work items with story points > 3?"
-	res, err := GenerateJQL(context.Background(), &config.Config{JiraProject: "SUP"}, query)
-	if err != nil {
-		t.Fatalf("GenerateJQL: %v", err)
-	}
-	if res.Route != nl2jql.RouteFastPath {
-		t.Errorf("route = %q, want %q", res.Route, nl2jql.RouteFastPath)
-	}
-	want := `assignee = currentUser() AND "Story Points" > 3 AND project = SUP`
-	if res.JQL != want {
-		t.Errorf("JQL = %q, want %q", res.JQL, want)
+	_, err := GenerateJQL(context.Background(), &config.Config{JiraProject: "SUP"}, query)
+	if !errors.Is(err, fieldmeta.ErrMissingMetadata) {
+		t.Fatalf("error = %v, want missing field metadata", err)
 	}
 }
 
@@ -1169,17 +1090,17 @@ func TestGenerateJQLForDigestWithProjectsResolvesHumanName(t *testing.T) {
 	}
 }
 
-func TestMalformedGeneratedJQLDoesNotRetryDigest(t *testing.T) {
+func TestMalformedTypedIntentDoesNotRetryDigest(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		_, _ = io.WriteString(w, openAIJSON(`status = Open ORDER BY updated DESC AND project = OTHER`))
+		_, _ = io.WriteString(w, openAIJSON(`{"version":1,"outcome":"supported","mode":"list","filter":{"kind":"comparison","field":"status","operator":"BETWEEN","value":{"kind":"string","text":"Open"}},"sort":[]}`))
 	}))
 	defer srv.Close()
 	withOpenAIEnv(t, srv.URL)
 	_, err := GenerateJQLForDigest(context.Background(), &config.Config{JiraProject: "PROJ"}, "external bugs")
-	if !errors.Is(err, ErrInvalidGeneratedJQL) {
-		t.Fatalf("want generated-query error, got %v", err)
+	if translationerror.KindOf(err) != translationerror.InvalidOutput {
+		t.Fatalf("want invalid typed output error, got %v", err)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("provider calls=%d, want one terminal parse failure", calls.Load())

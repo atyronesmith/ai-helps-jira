@@ -46,6 +46,7 @@ func runLinkIssues(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	client = client.WithContext(commandContext(cmd))
 
 	if err := client.LinkIssues(flagLinkInward, flagLinkOutward, flagLinkType); err != nil {
 		return err

@@ -40,6 +40,7 @@ func runAddComment(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	client = client.WithContext(commandContext(cmd))
 
 	comment, err := client.AddComment(args[0], flagCommentBody)
 	if err != nil {

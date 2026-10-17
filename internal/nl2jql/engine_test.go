@@ -15,6 +15,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/atyronesmith/ai-helps-jira/internal/fieldmeta"
 )
 
 // recordingProvider counts fallback invocations and captures the exact user
@@ -100,7 +103,7 @@ func TestRoutingExpectations(t *testing.T) {
 			if tc.wantCalls > 0 {
 				fail = nil
 			}
-			p := &recordingProvider{jql: "status = Open", fail: fail}
+			p := &recordingProvider{jql: supportedStatusPlan, fail: fail}
 			tr := newRoutingTranslator(t, p)
 
 			res, err := tr.Translate(context.Background(), tc.query)
@@ -181,25 +184,28 @@ func TestDueThisWeekQuestionUsesFastPath(t *testing.T) {
 }
 
 func TestStoryPointsQueryUsesFastPath(t *testing.T) {
-	const query = "list all my work items with story points > 3?"
-	provider := &recordingProvider{fail: errors.New("story point query must not call the LLM")}
-	tr := newRoutingTranslator(t, provider)
-
-	result, err := tr.Translate(context.Background(), query)
+	result, err := ParsePlan("list all my work items with story points > 3?", "", time.Now())
 	if err != nil {
-		t.Fatalf("Translate: %v", err)
+		t.Fatalf("ParsePlan: %v", err)
 	}
-	if result.Route != RouteFastPath {
-		t.Errorf("route = %q, want %q", result.Route, RouteFastPath)
+	if result.Filter == nil || len(result.Filter.Children) == 0 {
+		t.Fatalf("Story Points plan = %+v", result)
 	}
-	if result.Input != query || result.NormalizedInput != query {
-		t.Errorf("input/normalized = %q/%q, want exact original input %q", result.Input, result.NormalizedInput, query)
+	last := result.Filter.Children[len(result.Filter.Children)-1]
+	if last.Field != `"Story Points"` || last.Operator != ">" || last.Value != "3" {
+		t.Fatalf("Story Points predicate = %+v", last)
 	}
-	if result.JQL != `assignee = currentUser() AND "Story Points" > 3` {
-		t.Errorf("JQL = %q", result.JQL)
+}
+
+func TestStoryPointsTranslationRequiresMetadata(t *testing.T) {
+	provider := &recordingProvider{jql: supportedStatusPlan}
+	tr := newRoutingTranslator(t, provider)
+	_, err := tr.Translate(context.Background(), "my work items with story points > 3")
+	if !errors.Is(err, fieldmeta.ErrMissingMetadata) {
+		t.Fatalf("Translate error=%v, want missing field metadata", err)
 	}
 	if got := atomic.LoadInt32(&provider.calls); got != 0 {
-		t.Errorf("provider called %d times, want 0", got)
+		t.Fatalf("provider calls=%d want 0", got)
 	}
 }
 
@@ -210,7 +216,7 @@ func TestOrderByQueriesUseFastPath(t *testing.T) {
 	}{
 		{
 			query: "list all my open work items ordered by story points ascending.",
-			want:  `statusCategory != Done AND assignee = currentUser() ORDER BY "Story Points" ASC`,
+			want:  `statusCategory != Done AND assignee = currentUser() ORDER BY cf[10001] ASC`,
 		},
 		{
 			query: "my bugs sorted by priority desc",
@@ -224,7 +230,18 @@ func TestOrderByQueriesUseFastPath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.query, func(t *testing.T) {
 			provider := &recordingProvider{fail: errors.New("ORDER BY query must not call the LLM")}
-			tr := newRoutingTranslator(t, provider)
+			fb, err := NewFallbackEngine(provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts := Options{}
+			if strings.Contains(tt.query, "story points") {
+				opts.Fields = []fieldmeta.Field{{ID: "customfield_10001", Name: "Story Points", Type: "number"}}
+			}
+			tr, err := NewTranslator(NewNormalizer(), fb, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
 			result, err := tr.Translate(context.Background(), tt.query)
 			if err != nil {
 				t.Fatalf("Translate: %v", err)
@@ -248,7 +265,7 @@ func TestInvalidOrderByQueriesFallBack(t *testing.T) {
 		"my issues ordered by priority upwards",
 	} {
 		t.Run(query, func(t *testing.T) {
-			provider := &recordingProvider{jql: `summary ~ "fallback"`}
+			provider := &recordingProvider{jql: supportedStatusPlan}
 			tr := newRoutingTranslator(t, provider)
 			result, err := tr.Translate(context.Background(), query)
 			if err != nil {
@@ -273,7 +290,7 @@ func TestInvalidOrderByQueriesFallBack(t *testing.T) {
 func TestMalformedStoryPointsComparisonFallsBack(t *testing.T) {
 	for _, query := range []string{"my work items with story points >", "my work items with story points > -3", "my work items with story points > many"} {
 		t.Run(query, func(t *testing.T) {
-			provider := &recordingProvider{jql: `summary ~ "fallback"`}
+			provider := &recordingProvider{jql: supportedStatusPlan}
 			tr := newRoutingTranslator(t, provider)
 			result, err := tr.Translate(context.Background(), query)
 			if err != nil {
@@ -291,7 +308,7 @@ func TestMalformedStoryPointsComparisonFallsBack(t *testing.T) {
 
 func TestRecommendationNormalizationIsNarrow(t *testing.T) {
 	const query = "Which of my open jiras should I work on next sprint?"
-	provider := &recordingProvider{jql: `status = Open`}
+	provider := &recordingProvider{jql: supportedStatusPlan}
 	tr := newRoutingTranslator(t, provider)
 
 	result, err := tr.Translate(context.Background(), query)
@@ -333,7 +350,7 @@ func TestTranslateOpenWorkPhrases(t *testing.T) {
 		t.Run(tc.query, func(t *testing.T) {
 			t.Parallel()
 			provider := &recordingProvider{
-				jql:  `issuetype != Task`,
+				jql:  supportedStatusPlan,
 				fail: errors.New("open-work phrasing must be handled deterministically"),
 			}
 			tr := newRoutingTranslator(t, provider)
@@ -361,7 +378,7 @@ func TestTranslateOpenWorkPhrases(t *testing.T) {
 func TestTranslateExplicitEmailAndCompoundOpenPhrase(t *testing.T) {
 	t.Parallel()
 	provider := &recordingProvider{
-		jql:  `issuetype != Task`,
+		jql:  supportedStatusPlan,
 		fail: errors.New("explicit email and open status must be handled deterministically"),
 	}
 	tr := newRoutingTranslator(t, provider)
@@ -388,7 +405,7 @@ func TestTranslateExplicitEmailAndCompoundOpenPhrase(t *testing.T) {
 // diagnostics intact; supported date bounds alone no longer require a provider.
 func TestFallbackReceivesNormalizedInput(t *testing.T) {
 	t.Parallel()
-	p := &recordingProvider{jql: "status = Open"}
+	p := &recordingProvider{jql: supportedStatusPlan}
 	tr := newRoutingTranslator(t, p)
 
 	_, err := tr.Translate(context.Background(), "my open bugs in SUP created in the last 3 days with custom constraint")

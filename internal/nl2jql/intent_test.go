@@ -19,7 +19,6 @@ func TestIntentBooleanBehavior(t *testing.T) {
 		{"my bugs and stories", `issuetype IN (Bug, Story) AND assignee = currentUser()`},
 		{"not (done or in progress) bugs", `issuetype = Bug AND NOT status IN (Done, "In Progress")`},
 		{`my (created today or updated yesterday)`, `assignee = currentUser() AND (created >= startOfDay() AND created < startOfDay("+1") OR updated >= startOfDay("-1") AND updated < startOfDay())`},
-		{`my (story points > 3 or story points < 1)`, `assignee = currentUser() AND ("Story Points" > 3 OR "Story Points" < 1)`},
 		{"currently closed bugs", `issuetype = Bug AND status = Closed`},
 		{"my open bugs ordered by priority desc, updated asc", `issuetype = Bug AND statusCategory != Done AND assignee = currentUser() ORDER BY priority DESC, updated ASC`},
 	} {
@@ -47,6 +46,25 @@ func TestIntentBooleanBehavior(t *testing.T) {
 		})
 	}
 }
+
+func TestStoryPointsParsePlanRetainsTenantFieldIntent(t *testing.T) {
+	plan, err := ParsePlan(`my (story points > 3 or story points < 1)`, "", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Filter == nil || len(plan.Filter.Children) < 2 {
+		t.Fatalf("plan = %+v", plan)
+	}
+	for _, child := range plan.Filter.Children {
+		if child.Kind == IntentAny {
+			for _, predicate := range child.Children {
+				if predicate.Field != `"Story Points"` {
+					t.Fatalf("field = %q", predicate.Field)
+				}
+			}
+		}
+	}
+}
 func TestIntentAmbiguityDoesNotReachProvider(t *testing.T) {
 	for _, input := range []string{
 		"open and done bugs", "done and in progress bugs", "open done bugs",
@@ -56,7 +74,7 @@ func TestIntentAmbiguityDoesNotReachProvider(t *testing.T) {
 		"bugs created in the last 2 months", "bugs created in the last 0 days", "bugs across all projects", "bugs were open", "my open and",
 	} {
 		t.Run(input, func(t *testing.T) {
-			p := &recordingProvider{jql: "status = Open"}
+			p := &recordingProvider{jql: supportedStatusPlan}
 			tr := newRoutingTranslator(t, p)
 			_, err := tr.Translate(context.Background(), input)
 			if !errors.Is(err, ErrAmbiguousIntent) {

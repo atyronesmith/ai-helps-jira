@@ -2,6 +2,7 @@ package confluence
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ type Client struct {
 	base  string // e.g. https://yourcompany.atlassian.net/wiki
 	email string
 	token string
+	ctx   context.Context
 }
 
 // NewClient creates a Confluence client using the same Atlassian credentials as JIRA.
@@ -28,7 +30,18 @@ func NewClient(cfg *config.Config) *Client {
 		base:  cfg.JiraServer + "/wiki",
 		email: cfg.JiraEmail,
 		token: cfg.JiraAPIToken,
+		ctx:   context.Background(),
 	}
+}
+
+// WithContext returns a shallow client copy whose requests inherit ctx.
+func (c *Client) WithContext(ctx context.Context) *Client {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	copy := *c
+	copy.ctx = ctx
+	return &copy
 }
 
 func (c *Client) doRequest(method, path string, body any, out any) error {
@@ -41,7 +54,11 @@ func (c *Client) doRequest(method, path string, body any, out any) error {
 		reader = bytes.NewReader(b)
 	}
 
-	req, err := http.NewRequest(method, c.base+path, reader)
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reader)
 	if err != nil {
 		return err
 	}

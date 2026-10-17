@@ -150,7 +150,7 @@ func DisplayEnrichPreview(issue *jira.IssueDetail, desc string, criteria []strin
 
 // DisplayQueryResults prints the query results, and, when jql is non-empty,
 // the JQL that produced them. route is the translation tier label
-// (nl2jql.RouteFastPath / RouteFallback / llm.RouteJSON); when non-empty it
+// (nl2jql.RouteFastPath / RouteFallback); when non-empty it
 // is printed alongside the JQL so a reader knows whether a human-written
 // grammar or an LLM produced the query they are about to inspect.
 func DisplayQueryResults(result jira.SearchResult, jql string, route string) {

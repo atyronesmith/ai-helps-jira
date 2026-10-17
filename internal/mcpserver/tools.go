@@ -80,7 +80,11 @@ func NewHandlers(store *ResultStore, db *cache.Cache, webPort int, bindHost stri
 			slog.Warn("project cache unavailable for translation", "error", err)
 			return h.jqlCache.GenerateJQL(ctx, cfg, query, nil)
 		}
-		return h.jqlCache.GenerateJQL(ctx, cfg, query, projectList(scoped, cfg))
+		projects, _, _ := scoped.GetProjects()
+		if only, _ := ctx.Value(translationOnlyContextKey{}).(bool); !only {
+			projects = projectListContext(ctx, scoped, cfg)
+		}
+		return h.jqlCache.GenerateJQL(llm.WithTranslationMetadata(ctx, scoped), cfg, query, projects)
 	}
 	h.digestTranslate = func(ctx context.Context, cfg *config.Config, query string) (*llm.QueryResult, error) {
 		if db == nil {
@@ -91,7 +95,8 @@ func NewHandlers(store *ResultStore, db *cache.Cache, webPort int, bindHost stri
 			slog.Warn("project cache unavailable for digest translation", "error", err)
 			return h.jqlCache.GenerateJQLForDigest(ctx, cfg, query, nil)
 		}
-		return h.jqlCache.GenerateJQLForDigest(ctx, cfg, query, projectList(scoped, cfg))
+		projects := projectListContext(ctx, scoped, cfg)
+		return h.jqlCache.GenerateJQLForDigest(llm.WithTranslationMetadata(ctx, scoped), cfg, query, projects)
 	}
 	return h
 }
@@ -105,12 +110,15 @@ func NewHandlers(store *ResultStore, db *cache.Cache, webPort int, bindHost stri
 // The fetcher is built lazily inside FetchProjects, so a fresh cache keeps the
 // per-query hot path network- and client-construction-free.
 func projectList(c *cache.Cache, cfg *config.Config) []jira.Project {
+	return projectListContext(context.Background(), c, cfg)
+}
+func projectListContext(ctx context.Context, c *cache.Cache, cfg *config.Config) []jira.Project {
 	return cache.WarmupProjects(c, func() (cache.ProjectFetcher, error) {
 		client, err := jira.NewClient(cfg)
 		if err != nil {
 			return nil, err
 		}
-		return client, nil
+		return client.WithContext(ctx), nil
 	}, cache.DefaultProjectTTL)
 }
 
@@ -461,6 +469,9 @@ func (h *Handlers) HandleSummary(ctx context.Context, req mcp.CallToolRequest) (
 
 	boards, openIssues, _, err := cache.LoadSummary(ctx, db, cfg, cacheOnly, func(ctx context.Context, invalidated []string) ([]jira.BoardInfo, []jira.Issue, error) {
 		client, err := jira.NewClient(cfg)
+		if err == nil {
+			client = client.WithContext(ctx)
+		}
 		if err != nil {
 			return nil, nil, err
 		}
@@ -556,6 +567,9 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 
 	// Execute search
 	client, err := jira.NewClient(cfg)
+	if err == nil {
+		client = client.WithContext(ctx)
+	}
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
@@ -627,6 +641,8 @@ func isRecommendationQuery(query string) bool {
 
 // HandleTranslateQuery translates and structurally validates a query without
 // executing it or writing issue results to the cache/store.
+type translationOnlyContextKey struct{}
+
 func (h *Handlers) HandleTranslateQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	naturalQuery := getString(req, "natural_query")
 	if strings.TrimSpace(naturalQuery) == "" {
@@ -636,11 +652,11 @@ func (h *Handlers) HandleTranslateQuery(ctx context.Context, req mcp.CallToolReq
 		return errorResult("natural_query looks like JQL; pass the user's original natural-language wording verbatim so it can be translated"), nil
 	}
 
-	cfg, err := loadConfig(req)
+	cfg, err := config.LoadTranslation(getString(req, "user"), getString(req, "project"))
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
-	result, err := h.translate(ctx, cfg, naturalQuery)
+	result, err := h.translate(context.WithValue(ctx, translationOnlyContextKey{}, true), cfg, naturalQuery)
 	if err != nil {
 		return errorResult(fmt.Sprintf("JQL generation failed: %v", err)), nil
 	}
@@ -655,13 +671,17 @@ func (h *Handlers) HandleTranslateQuery(ctx context.Context, req mcp.CallToolReq
 		validation.Error = err.Error()
 	}
 	response := struct {
-		Input           string           `json:"input"`
-		NormalizedInput string           `json:"normalized_input,omitempty"`
-		Route           string           `json:"route,omitempty"`
-		JQL             string           `json:"jql"`
-		Validation      validationResult `json:"validation"`
-		ParseError      string           `json:"parse_error,omitempty"`
+		MetadataFetchedAt          time.Time        `json:"metadata_fetched_at,omitzero"`
+		MetadataStale              bool             `json:"metadata_stale,omitempty"`
+		MetadataApplicabilityKnown bool             `json:"metadata_applicability_known"`
+		Input                      string           `json:"input"`
+		NormalizedInput            string           `json:"normalized_input,omitempty"`
+		Route                      string           `json:"route,omitempty"`
+		JQL                        string           `json:"jql"`
+		Validation                 validationResult `json:"validation"`
+		ParseError                 string           `json:"parse_error,omitempty"`
 	}{
+		MetadataFetchedAt: result.MetadataFetchedAt, MetadataStale: result.MetadataStale, MetadataApplicabilityKnown: result.MetadataApplicabilityKnown,
 		Input:           naturalQuery,
 		NormalizedInput: result.NormalizedInput,
 		Route:           result.Route,
@@ -734,6 +754,9 @@ func (h *Handlers) HandleDigest(ctx context.Context, req mcp.CallToolRequest) (*
 		slog.Info("digest JQL", "jql", result.JQL, "days", result.Days, "route", result.Route)
 
 		client, err := jira.NewClient(cfg)
+		if err == nil {
+			client = client.WithContext(ctx)
+		}
 		if err != nil {
 			return errorResult(err.Error()), nil
 		}
@@ -842,6 +865,9 @@ func (h *Handlers) runSingleDigest(ctx context.Context, cfg *config.Config, db *
 		parent = &jira.IssueDetail{Key: issueKey, Summary: "(cached)"}
 	} else {
 		client, err := jira.NewClient(cfg)
+		if err == nil {
+			client = client.WithContext(ctx)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -918,6 +944,9 @@ func (h *Handlers) HandleEnrich(ctx context.Context, req mcp.CallToolRequest) (*
 	prompt, _ := llm.LoadEnrichPrompt()
 
 	client, err := jira.NewClient(cfg)
+	if err == nil {
+		client = client.WithContext(ctx)
+	}
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
@@ -1008,6 +1037,9 @@ func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolReque
 
 	// Always run the fast search query to get current updated timestamps
 	client, err := jira.NewClient(cfg)
+	if err == nil {
+		client = client.WithContext(ctx)
+	}
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
@@ -1174,7 +1206,7 @@ func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolReque
 			return errorResult("confluence_parent_id is required (no default configured)"), nil
 		}
 
-		confClient := confluence.NewClient(cfg)
+		confClient := confluence.NewClient(cfg).WithContext(ctx)
 		pageTitle := fmt.Sprintf("Weekly Status: %s to %s", startStr, endStr)
 		storageBody := confluence.WeeklyStatusToStorage(status.UserName, cfg.JiraServer, status.Projects)
 
@@ -1263,6 +1295,9 @@ func (h *Handlers) HandleBacklogHealth(ctx context.Context, req mcp.CallToolRequ
 	slog.Info("backlog-health", "project", cfg.JiraProject, "stale_days", staleDays)
 
 	client, err := jira.NewClient(cfg)
+	if err == nil {
+		client = client.WithContext(ctx)
+	}
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
@@ -1404,6 +1439,9 @@ func (h *Handlers) HandleSummarizeComments(ctx context.Context, req mcp.CallTool
 	}
 	if !ok {
 		client, err := jira.NewClient(cfg)
+		if err == nil {
+			client = client.WithContext(ctx)
+		}
 		if err != nil {
 			return errorResult(err.Error()), nil
 		}
@@ -1423,6 +1461,9 @@ func (h *Handlers) HandleSummarizeComments(ctx context.Context, req mcp.CallTool
 	}
 	if len(comments) == 0 {
 		client, err := jira.NewClient(cfg)
+		if err == nil {
+			client = client.WithContext(ctx)
+		}
 		if err != nil {
 			return errorResult(err.Error()), nil
 		}
@@ -1490,6 +1531,9 @@ func (h *Handlers) HandleCreateEpic(ctx context.Context, req mcp.CallToolRequest
 	}
 
 	client, err := jira.NewClient(cfg)
+	if err == nil {
+		client = client.WithContext(ctx)
+	}
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
@@ -1556,6 +1600,9 @@ func (h *Handlers) HandleFindSimilar(ctx context.Context, req mcp.CallToolReques
 	slog.Info("find-similar", "issue_key", issueKey, "text_len", len(text), "threshold", threshold)
 
 	client, err := jira.NewClient(cfg)
+	if err == nil {
+		client = client.WithContext(ctx)
+	}
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
@@ -1691,7 +1738,7 @@ func (h *Handlers) HandleConfluenceAnalytics(ctx context.Context, req mcp.CallTo
 
 	slog.Info("confluence-analytics", "page_id", pageID, "include_children", includeChildren)
 
-	confClient := confluence.NewClient(cfg)
+	confClient := confluence.NewClient(cfg).WithContext(ctx)
 
 	parent, err := confClient.GetPageAnalytics(pageID)
 	if err != nil {
@@ -1771,7 +1818,7 @@ func (h *Handlers) HandleConfluenceUpdate(ctx context.Context, req mcp.CallToolR
 		return errorResult("either page_id or title is required"), nil
 	}
 
-	confClient := confluence.NewClient(cfg)
+	confClient := confluence.NewClient(cfg).WithContext(ctx)
 
 	// Common struct to hold ID, title, version for both pages and blog posts
 	type contentInfo struct {
@@ -1895,7 +1942,7 @@ func (h *Handlers) HandleConfluenceGetPage(ctx context.Context, req mcp.CallTool
 		return errorResult("either page_id or title is required"), nil
 	}
 
-	confClient := confluence.NewClient(cfg)
+	confClient := confluence.NewClient(cfg).WithContext(ctx)
 
 	var contentID, contentTitle, contentSpaceID, body string
 	var contentVersion int
@@ -2015,7 +2062,7 @@ func (h *Handlers) HandleConfluenceSearch(ctx context.Context, req mcp.CallToolR
 		limit = 25
 	}
 
-	confClient := confluence.NewClient(cfg)
+	confClient := confluence.NewClient(cfg).WithContext(ctx)
 	results, err := confClient.SearchCQL(cql, limit)
 	if err != nil {
 		return errorResult(fmt.Sprintf("search: %v", err)), nil
@@ -2054,7 +2101,7 @@ func (h *Handlers) HandleConfluenceListPages(ctx context.Context, req mcp.CallTo
 		limit = 25
 	}
 
-	confClient := confluence.NewClient(cfg)
+	confClient := confluence.NewClient(cfg).WithContext(ctx)
 	results, err := confClient.GetPagesInSpace(spaceKey, limit)
 	if err != nil {
 		return errorResult(fmt.Sprintf("list pages: %v", err)), nil
@@ -2088,7 +2135,7 @@ func (h *Handlers) HandleConfluenceGetComments(ctx context.Context, req mcp.Call
 		return errorResult("page_id is required"), nil
 	}
 
-	confClient := confluence.NewClient(cfg)
+	confClient := confluence.NewClient(cfg).WithContext(ctx)
 	comments, err := confClient.GetPageComments(pageID)
 	if err != nil {
 		return errorResult(fmt.Sprintf("get comments: %v", err)), nil
@@ -2123,7 +2170,7 @@ func (h *Handlers) HandleConfluenceCreatePage(ctx context.Context, req mcp.CallT
 		return errorResult(errMsg), nil
 	}
 
-	confClient := confluence.NewClient(cfg)
+	confClient := confluence.NewClient(cfg).WithContext(ctx)
 	page, err := confClient.CreatePage(spaceID, parentID, title, body)
 	if err != nil {
 		return errorResult(fmt.Sprintf("create page: %v", err)), nil
@@ -2148,7 +2195,7 @@ func (h *Handlers) HandleConfluenceCreateBlog(ctx context.Context, req mcp.CallT
 		return errorResult(errMsg), nil
 	}
 
-	confClient := confluence.NewClient(cfg)
+	confClient := confluence.NewClient(cfg).WithContext(ctx)
 	post, err := confClient.CreateBlogPost(spaceID, title, body)
 	if err != nil {
 		return errorResult(fmt.Sprintf("create blog post: %v", err)), nil
@@ -2174,7 +2221,7 @@ func (h *Handlers) HandleConfluenceAddLabel(ctx context.Context, req mcp.CallToo
 		return errorResult("label is required"), nil
 	}
 
-	confClient := confluence.NewClient(cfg)
+	confClient := confluence.NewClient(cfg).WithContext(ctx)
 	if err := confClient.AddLabel(pageID, label); err != nil {
 		return errorResult(fmt.Sprintf("add label: %v", err)), nil
 	}

@@ -25,12 +25,13 @@ var (
 	flagMaxResults     int
 	flagExactCount     bool
 	queryTranslator    = llm.GenerateJQLWithProjects
-	queryProjectLoader = fetchProjectList
+	queryProjectLoader = fetchProjectListContext
 	querySearcher      = func(ctx context.Context, cfg *config.Config, query string, opts jira.SearchOptions) (jira.SearchResult, error) {
 		client, err := jira.NewClient(cfg)
 		if err != nil {
 			return jira.SearchResult{}, err
 		}
+		client = client.WithContext(ctx)
 		return client.SearchJQLResult(ctx, query, opts)
 	}
 )
@@ -101,9 +102,9 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	if flagDryRun {
 		projects = cachedProjectList(db)
 	} else {
-		projects = queryProjectLoader(cfg, db)
+		projects = queryProjectLoader(commandContext(cmd), cfg, db)
 	}
-	result, err := queryTranslator(cmd.Context(), cfg, naturalQuery, projects)
+	result, err := queryTranslator(llm.WithTranslationMetadata(commandContext(cmd), db), cfg, naturalQuery, projects)
 	spinner.Stop()
 	if err != nil {
 		return fmt.Errorf("failed to generate JQL: %w", err)
@@ -120,7 +121,7 @@ func finishQuery(cmd *cobra.Command, cfg *config.Config, result *llm.QueryResult
 		return nil
 	}
 	spinner := format.StatusPrinter("Searching JIRA...")
-	searchResult, err := search(cmd.Context(), cfg, result.JQL, jira.SearchOptions{Limit: max, PageSize: 100, ExactCount: exactCount, MaxPages: 100})
+	searchResult, err := search(commandContext(cmd), cfg, result.JQL, jira.SearchOptions{Limit: max, PageSize: 100, ExactCount: exactCount, MaxPages: 100})
 	spinner.Stop()
 	if db != nil && err == nil && searchResult.Complete && len(searchResult.Issues) > 0 {
 		if err := db.UpsertIssues(cfg.JiraProject, searchResult.Issues); err != nil {
@@ -157,4 +158,15 @@ func printTranslation(w io.Writer, defaultProject string, result *llm.QueryResul
 	}
 	fmt.Fprintf(w, "JQL: %s\n", result.JQL)
 	fmt.Fprintf(w, "Local validation: %s\n", validation)
+	if !result.MetadataFetchedAt.IsZero() {
+		freshness := "fresh"
+		if result.MetadataStale {
+			freshness = "stale"
+		}
+		scope := "site visibility only; project/work-type applicability unknown"
+		if result.MetadataApplicabilityKnown {
+			scope = "cached project/work-type applicability"
+		}
+		fmt.Fprintf(w, "Metadata: %s (%s; %s)\n", result.MetadataFetchedAt.Format(time.RFC3339), freshness, scope)
+	}
 }

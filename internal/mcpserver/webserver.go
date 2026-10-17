@@ -70,16 +70,14 @@ func NewWebServer(store *ResultStore, db *cache.Cache, port int, bindHost string
 		},
 		// routeTooltip renders a one-line, human-readable explanation of a
 		// query result's Route tier for the query view's badge title
-		// (hover tooltip) and caption, so a viewer can tell the three tiers
+		// (hover tooltip) and caption, so a viewer can tell the two routes
 		// apart without reading the code.
 		"routeTooltip": func(route string) string {
 			switch route {
 			case llm.RouteFastPath:
 				return llm.RouteFastPath + " — the deterministic parser handled this query with no LLM call."
 			case llm.RouteFallback:
-				return llm.RouteFallback + " — the parser could not handle it, so a strict, schema-scoped LLM generated the JQL."
-			case llm.RouteJSON:
-				return llm.RouteJSON + " — the deterministic pipeline failed, so the JSON LLM path generated the JQL (and any time window)."
+				return llm.RouteFallback + " — the parser could not handle it, so one LLM produced typed intent compiled locally to JQL."
 			default:
 				return ""
 			}

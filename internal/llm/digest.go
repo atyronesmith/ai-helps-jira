@@ -65,7 +65,7 @@ Respond ONLY with valid JSON (no markdown fences) with these keys:
 func GenerateDigest(ctx context.Context, cfg *config.Config, parent *jira.IssueDetail, links []jira.IssueLink, comments []jira.Comment) (*DigestContent, error) {
 	slog.Info("generating digest", "parent", parent.Key, "links", len(links), "comments", len(comments))
 
-	provider, err := NewProvider(cfg)
+	provider, err := NewProviderContext(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create LLM provider: %w", err)
 	}

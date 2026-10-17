@@ -50,6 +50,7 @@ func runSummarizeComments(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	client = client.WithContext(commandContext(cmd))
 
 	// Fetch issue details (cache-aware)
 	detail, ok := db.GetIssueDetail(issueKey, time.Time{})

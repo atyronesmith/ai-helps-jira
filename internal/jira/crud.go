@@ -2,6 +2,7 @@ package jira
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -283,7 +284,11 @@ func (c *Client) AttachFile(key, filePath string) (string, error) {
 	writer.Close()
 
 	reqURL := fmt.Sprintf("%s/rest/api/3/issue/%s/attachments", c.base, key)
-	req, err := http.NewRequest("POST", reqURL, &buf)
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, &buf)
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}

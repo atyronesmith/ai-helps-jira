@@ -88,6 +88,7 @@ func runWeeklyStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	client = client.WithContext(commandContext(cmd))
 
 	// Go's %q is Go quoting, not JQL quoting; jql.Quote is the canonical JQL
 	// string-literal quoter (see internal/jql.Quote and its test comparing
@@ -104,7 +105,7 @@ func runWeeklyStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	spinner := format.StatusPrinter("Searching JIRA...")
-	searchResult, err := client.SearchJQLResult(cmd.Context(), weeklyJQL, jira.SearchOptions{
+	searchResult, err := client.SearchJQLResult(commandContext(cmd), weeklyJQL, jira.SearchOptions{
 		Limit: 10000, PageSize: 100, MaxPages: 100, ExactCount: true,
 	})
 	spinner.Stop()
@@ -289,7 +290,7 @@ func runWeeklyStatus(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("--confluence-parent-id is required")
 		}
 
-		confClient := confluence.NewClient(cfg)
+		confClient := confluence.NewClient(cfg).WithContext(commandContext(cmd))
 		pageTitle := fmt.Sprintf("Weekly Status: %s to %s", startStr, endStr)
 		storageBody := confluence.WeeklyStatusToStorage(status.UserName, cfg.JiraServer, status.Projects)
 

@@ -31,7 +31,7 @@ func TestRunQueryDryRunUsesTokenlessConfigAndCachedProjectsOnly(t *testing.T) {
 		queryTranslator, querySearcher, queryProjectLoader = oldTranslator, oldSearch, oldProjectLoader
 	})
 	flagDryRun, flagProject, flagMaxResults, flagShowJQL = true, "", 10, false
-	queryProjectLoader = func(*config.Config, *cache.Cache) []jira.Project {
+	queryProjectLoader = func(context.Context, *config.Config, *cache.Cache) []jira.Project {
 		t.Fatal("dry-run invoked the project warm-up/fetch path")
 		return nil
 	}

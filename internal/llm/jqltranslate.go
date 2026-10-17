@@ -15,17 +15,15 @@ import (
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
 	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 	"github.com/atyronesmith/ai-helps-jira/internal/nl2jql"
+	"github.com/atyronesmith/ai-helps-jira/internal/translationerror"
 )
 
 // ErrInvalidGeneratedJQL is terminal: a generated query could not be parsed or
 // validated locally. Digest callers must not ask another prompt to reinterpret it.
 var ErrInvalidGeneratedJQL = errors.New("invalid generated JQL")
 
-// jqlFallbackMaxTokens bounds the LLM completion used by the nl2jql
-// FallbackEngine. The fallback returns a single-line JSON object wrapping the JQL, so a modest
-// budget is plenty; it stays below the JSON path's 1024 to keep a runaway
-// completion from bloating the response.
-const jqlFallbackMaxTokens = 512
+// jqlFallbackMaxTokens bounds the single typed intent completion.
+const jqlFallbackMaxTokens = 4096
 
 // jqlProviderAdapter adapts this package's Provider (a Complete call that takes a
 // token budget) to the narrow text-completion contract nl2jql.FallbackEngine
@@ -41,37 +39,25 @@ func (a jqlProviderAdapter) Generate(ctx context.Context, systemPrompt, userProm
 	return a.provider.Complete(ctx, systemPrompt, userPrompt, jqlFallbackMaxTokens)
 }
 
-// lazyJQLProvider is an nl2jql.Provider that defers construction of the
-// underlying LLM Provider until the fallback path actually needs it. The fast
-// path never touches the provider, so deferring construction means common
-// fast-path queries pay no provider-setup cost -- notably the Vertex Google
-// auth that NewProvider performs -- and that cost lands only on the queries
-// the deterministic parser rejects. Construction happens once, guarded by
-// sync.Once, so it is safe for concurrent use.
-//
-// That same guard also means a construction error is latched for the provider's
-// lifetime and never retried: if NewProvider fails on the first fallback, every
-// later fallback on this instance gets the cached error too. That is acceptable
-// because lazyJQLProvider is only the deterministic pipeline's last resort -- when
-// it errors, translateCascade falls through to generateJQLLLM, which builds its own
-// fresh provider, so a transient construction failure is not fatal to the query.
+// lazyJQLProvider creates a provider only after deterministic rejection.
+// Initialization uses the current caller context and never latches cancellation.
 type lazyJQLProvider struct {
-	cfg  *config.Config
-	once sync.Once
-	p    Provider
-	err  error
+	cfg *config.Config
 }
 
 // Generate satisfies nl2jql.Provider, building the underlying provider on
 // first use and surfacing its construction error to the caller.
 func (l *lazyJQLProvider) Generate(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
-	l.once.Do(func() {
-		l.p, l.err = NewProvider(l.cfg)
-	})
-	if l.err != nil {
-		return "", l.err
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
-	return l.p.Complete(ctx, systemPrompt, userPrompt, jqlFallbackMaxTokens)
+	// Construction belongs to this request: a cancelled auth attempt must not
+	// poison subsequent calls sharing the fallback engine.
+	p, err := NewProviderContext(ctx, l.cfg)
+	if err != nil {
+		return "", err
+	}
+	return p.Complete(ctx, systemPrompt, userPrompt, jqlFallbackMaxTokens)
 }
 
 // buildProjectMap seeds the normalizer's fuzzy project-name vocabulary. It is
@@ -262,8 +248,7 @@ func addProjectVariants(m map[string]string, key string) {
 }
 
 // buildSchema seeds the FallbackEngine's system prompt with the minimal tenant
-// vocabulary the LLM fallback needs. The FallbackEngine renders these keys
-// (sorted, deterministic) into its strict one-line-JQL prompt.
+// vocabulary the LLM fallback needs. The fallback renders these keys in deterministic order in its typed intent prompt.
 func buildSchema(cfg *config.Config) map[string]string {
 	schema := map[string]string{
 		"current user": cfg.Assignee(),
@@ -274,43 +259,32 @@ func buildSchema(cfg *config.Config) map[string]string {
 	return schema
 }
 
-// newTranslator wires the deterministic-first translation pipeline for a tenant
-// config: a default Normalizer and a FallbackEngine backed by the shared LLM
-// client. The fallback is mandatory because a deterministic rejection with no
-// fallback is unrecoverable. The provider is constructed lazily (see
-// lazyJQLProvider), so this never calls NewProvider: a missing LLM config does
-// not fail fast-path queries, and the provider is only built when a query
-// actually reaches the fallback, where the caller still falls back to generateJQLLLM.
+// newTranslator constructs a translator without tenant metadata.
 func newTranslator(cfg *config.Config) (*nl2jql.Translator, error) {
 	return newTranslatorWithProjects(cfg, nil)
 }
 
-// newTranslatorWithProjects is newTranslator layered with a fetched project list:
-// each project's key + display name (and lower-case variants) is folded into the
-// normalizer's fuzzy vocabulary so human names like "Support" resolve to "SUP"
-// without JIRA_PROJECT_ALIASES. A nil/empty projects slice yields the same map as
-// newTranslator.
-//
-// The FallbackEngine is backed by a lazyJQLProvider, so the (potentially
-// expensive) NewProvider -- notably Vertex Google auth -- runs only when a
-// query the deterministic parser rejects actually needs the LLM; that is the
-// payoff of the deterministic-first design, the common fast-path query pays no
-// provider-setup cost. This per-request constructor is what the free GenerateJQL*
-// functions use -- fine for the CLI, which lives one query. A long-lived caller
-// (the MCP server) instead holds a TranslatorCache, which memoizes the engine by
-// provider signature so the same provider-setup cost is paid at most once; the
-// ProjectMap still changes per request because the cache rebuilds the translator
-// from each request's fetched project list.
+// newTranslatorWithProjects folds cached project vocabulary into translation.
 func newTranslatorWithProjects(cfg *config.Config, projects []jira.Project) (*nl2jql.Translator, error) {
+	return newTranslatorWithMetadata(cfg, projects, TranslationMetadata{})
+}
+func newTranslatorWithMetadata(cfg *config.Config, projects []jira.Project, metadata TranslationMetadata) (*nl2jql.Translator, error) {
+	aliases, err := fieldAliases()
+	if err != nil {
+		return nil, err
+	}
 	fallback, err := nl2jql.NewFallbackEngine(&lazyJQLProvider{cfg: cfg})
 	if err != nil {
 		return nil, err
 	}
 	return nl2jql.NewTranslator(nl2jql.NewNormalizer(), fallback, nl2jql.Options{
-		ProjectMap: buildProjectMapWithProjects(cfg, projects),
-		Schema:     buildSchema(cfg),
-		Self:       cfg.Assignee(),
-		Logger:     slog.Default(),
+		ProjectMap:   buildProjectMapWithProjects(cfg, projects),
+		Schema:       schemaWithFields(cfg, metadata.Fields, aliases),
+		Fields:       metadata.Fields,
+		FieldAliases: aliases,
+		Project:      cfg.JiraProject,
+		Self:         cfg.Assignee(),
+		Logger:       slog.Default(),
 	})
 }
 
@@ -322,66 +296,32 @@ func GenerateJQL(ctx context.Context, cfg *config.Config, naturalQuery string) (
 	return GenerateJQLWithProjects(ctx, cfg, naturalQuery, nil)
 }
 
-// GenerateJQLWithProjects translates a natural-language query into JQL,
-// preferring the
-// deterministic nl2jql fast path and paying for an LLM call only when the parser
-// (and its strict LLM fallback) cannot handle the query.
-//
-// Routing, in order:
-//  1. nl2jql fast path — normalize + strict parse, no LLM. On success the time
-//     window is baked into the JQL itself, so Days stays 0 (Route: fast_path).
-//  2. nl2jql FallbackEngine — a strict, schema-scoped LLM call (one-line JQL),
-//     reached only when the parser rejects. Also yields Days 0 (Route: fallback).
-//  3. generateJQLLLM — the original JSON-prompt LLM path, the last-resort
-//     safety net and the only tier that still extracts a comment-window "Days"
-//     value, preserved for the digest call sites (Route: json_fallback).
-//
-// A context is threaded through so MCP cancellation and request timeouts
-// propagate into the LLM fallback tiers; call sites without a context of their
-// own (the CLI) pass context.Background().
+// GenerateJQLWithProjects uses deterministic intent or one bounded typed fallback.
 func GenerateJQLWithProjects(ctx context.Context, cfg *config.Config, naturalQuery string, projects []jira.Project) (*QueryResult, error) {
-	return translateCascade(ctx, cfg, naturalQuery, projects, newTranslatorWithProjects)
+	return translateCascade(ctx, cfg, naturalQuery, projects, func(cfg *config.Config, projects []jira.Project) (*nl2jql.Translator, error) {
+		return newTranslatorWithMetadata(cfg, projects, metadataFromContext(ctx))
+	})
 }
 
-// translateCascade runs the deterministic-first JQL pipeline with an injectable
-// translator constructor and, on any deterministic failure, the JSON-prompt LLM
-// last resort. The free GenerateJQLWithProjects passes newTranslatorWithProjects;
-// TranslatorCache.GenerateJQL passes its signature-cached translatorFor, so the
-// two share identical routing while differing only in whether the (expensive)
-// FallbackEngine is rebuilt per request or memoized by provider signature.
+// translateCascade compiles one translator result and enforces local scope.
 func translateCascade(ctx context.Context, cfg *config.Config, naturalQuery string, projects []jira.Project, build func(*config.Config, []jira.Project) (*nl2jql.Translator, error)) (*QueryResult, error) {
-	slog.Info("generating JQL", "query", naturalQuery, "projects", len(projects))
-
-	var parseError string
-	if translator, err := build(cfg, projects); err != nil {
-		slog.Warn("nl2jql translator unavailable; falling back to LLM JSON path", "error", err)
-	} else if res, err := translator.Translate(ctx, naturalQuery); err != nil {
-		parseError = res.ParseError
-		if errors.Is(err, nl2jql.ErrAmbiguousIntent) || errors.Is(err, ErrInvalidGeneratedJQL) {
-			return nil, err
-		}
-		slog.Warn("nl2jql translation failed; falling back to LLM JSON path", "error", err)
-	} else {
-		res.JQL, err = ensureProjectScope(res.JQL, cfg)
-		if err != nil {
-			return nil, err
-		}
-		slog.Info("generated JQL via nl2jql", "jql", res.JQL, "route", res.Route)
-		return &QueryResult{
-			Input:           res.Input,
-			NormalizedInput: res.NormalizedInput,
-			ParseError:      res.ParseError,
-			JQL:             res.JQL,
-			Route:           res.Route,
-			Mode:            res.Mode,
-		}, nil
+	if err := ctx.Err(); err != nil {
+		return nil, translationerror.New(translationerror.KindOf(err), err)
 	}
-
-	result, err := generateJQLLLM(ctx, cfg, naturalQuery)
+	translator, err := build(cfg, projects)
+	if err != nil {
+		return nil, translationerror.New(translationerror.Unsupported, err)
+	}
+	res, err := translator.Translate(ctx, naturalQuery)
 	if err != nil {
 		return nil, err
 	}
-	result.ParseError = parseError
+	res.JQL, err = ensureProjectScope(res.JQL, cfg)
+	if err != nil {
+		return nil, translationerror.New(translationerror.InvalidOutput, err)
+	}
+	result := &QueryResult{Input: res.Input, NormalizedInput: res.NormalizedInput, ParseError: res.ParseError, JQL: res.JQL, Route: res.Route, Mode: res.Mode}
+	stampMetadata(ctx, result)
 	return result, nil
 }
 
@@ -418,23 +358,7 @@ func projectForValidation(cfg *config.Config) string {
 	return cfg.JiraProject
 }
 
-// GenerateJQLForDigest is the digest-flavoured JQL translation. The digest handler
-// needs a comment-activity window (QueryResult.Days) that is intentionally kept
-// separate from the JQL, but the deterministic nl2jql pipeline returns JQL only.
-// We recover the window the way the Phase-2 plan recommends -- "option 2 for the
-// common case, fall back to option 1 until (2) is solid":
-//
-//  1. JQL always comes from the fast-first pipeline (GenerateJQL), so a window-less
-//     query such as "my open bugs in Support" yields the same JQL here as in
-//     jira_query instead of skipping the deterministic parser.
-//  2. option 2 (primary window): when ExtractDays reads "last N days/weeks/..."
-//     off the query it overrides whatever Days the pipeline produced, so the window
-//     never costs a completion.
-//  3. option 1 (fallback): when GenerateJQL errors we defer to the original LLM
-//     JSON path (generateJQLLLM), the only tier that still extracts a "days"
-//     field. When the regex found no window it supplies that window too; when
-//     the regex did find one we keep it and borrow only the JQL, so a
-//     detected-but-untranslatable window no longer hard-fails the digest.
+// GenerateJQLForDigest separates comment windows from issue search dates.
 func GenerateJQLForDigest(ctx context.Context, cfg *config.Config, naturalQuery string) (*QueryResult, error) {
 	return GenerateJQLForDigestWithProjects(ctx, cfg, naturalQuery, nil)
 }
@@ -442,73 +366,26 @@ func GenerateJQLForDigest(ctx context.Context, cfg *config.Config, naturalQuery 
 // GenerateJQLForDigestWithProjects is GenerateJQLForDigest layered with a fetched
 // project list, so human project names resolve via the normalizer's vocabulary.
 func GenerateJQLForDigestWithProjects(ctx context.Context, cfg *config.Config, naturalQuery string, projects []jira.Project) (*QueryResult, error) {
-	// Option 2 (primary): read the comment-activity window off the query with a
-	// cheap regex so it never costs a completion.
-	days := ExtractDays(naturalQuery)
-
-	// The JQL always comes from the fast-first pipeline, so a window-less query
-	// routes through the deterministic parser exactly like jira_query.
-	return digestCascade(ctx, cfg, naturalQuery, days, func() (*QueryResult, error) {
-		return GenerateJQLWithProjects(ctx, cfg, naturalQuery, projects)
-	})
-}
-
-// digestCascade layers the comment-activity window (option 2) onto a fast-first
-// JQL source and falls back to the JSON-prompt LLM last resort (option 1) when
-// that source errors, keeping the regex-derived window even then.
-// GenerateJQLForDigestWithProjects passes a closure over GenerateJQLWithProjects;
-// TranslatorCache.GenerateJQLForDigest passes one over its own cached GenerateJQL,
-// so the two share the same window logic.
-func digestCascade(ctx context.Context, cfg *config.Config, naturalQuery string, days int, fastFirst func() (*QueryResult, error)) (*QueryResult, error) {
-	res, err := fastFirst()
-	if err == nil {
-		// Override the window when the regex parsed one; otherwise keep the
-		// fast path's (0) window.
-		if days > 0 {
-			res.Days = days
-		}
-		return res, nil
-	}
-
-	// Option 1 (fallback): the fast path, the strict FallbackEngine, and its own
-	// JSON last resort all failed. generateJQLLLM is the sole tier that still
-	// extracts a "days" field, so it is always worth one last-resort retry.
-	// When the regex found no window the JSON path supplies it; when the regex
-	// did find one we keep that window and borrow only the JQL, so a
-	// detected-but-untranslatable window no longer hard-fails the digest.
-	if errors.Is(err, nl2jql.ErrAmbiguousIntent) || errors.Is(err, ErrInvalidGeneratedJQL) {
-		return nil, err
-	}
-	res, err = generateJQLLLM(ctx, cfg, naturalQuery)
+	query, days, err := splitDigestQuery(naturalQuery)
 	if err != nil {
 		return nil, err
 	}
-	if days > 0 {
-		res.Days = days
+	return digestCascade(ctx, cfg, naturalQuery, days, func() (*QueryResult, error) { return GenerateJQLWithProjects(ctx, cfg, query, projects) })
+}
+
+// digestCascade attaches a parsed comment window; failures are terminal.
+func digestCascade(ctx context.Context, cfg *config.Config, naturalQuery string, days int, fastFirst func() (*QueryResult, error)) (*QueryResult, error) {
+	res, err := fastFirst()
+	if err != nil {
+		return nil, err
 	}
+	res.Days = days
+	res.Input = naturalQuery
 	return res, nil
 }
 
-// TranslatorCache memoizes the expensive half of the nl2jql pipeline -- the
-// FallbackEngine and its lazily constructed LLM provider -- so a long-lived
-// caller (the MCP server) pays the provider-setup cost (notably the Vertex
-// Google auth in NewProvider) at most once per provider configuration instead
-// of on every query. The deterministic fast path still pays nothing: the
-// provider is built lazily and only when a query the parser rejects reaches the
-// fallback, and by then the engine is already cached for that configuration.
-//
-// The cache is keyed by provider signature (see providerSignature), a function
-// of exactly the inputs NewProvider reads -- the LLM_* / OLLAMA_* environment
-// plus the config's Vertex project and region. The project list is deliberately
-// NOT part of the key: it feeds only the normalizer's ProjectMap, which the
-// per-request translator rebuilds from the current request's projects, so a
-// shared engine stays correct as the fetched list changes. FallbackEngine is
-// immutable and safe for concurrent use, so sharing one copy is safe.
-//
-// The free GenerateJQL* functions build a fresh engine per request -- fine for
-// the CLI, which lives one query -- but a long-lived server should hold one
-// *TranslatorCache for its lifetime and route through its GenerateJQL /
-// GenerateJQLForDigest methods.
+// TranslatorCache shares immutable fallback engines by provider configuration.
+// Per-request metadata, identity, and project vocabulary are rebuilt each time.
 type TranslatorCache struct {
 	mu      sync.Mutex
 	engines map[string]*nl2jql.FallbackEngine
@@ -534,16 +411,19 @@ func NewTranslatorCache() *TranslatorCache {
 // FallbackEngine by provider signature instead of rebuilding it per request,
 // otherwise identical to GenerateJQLWithProjects.
 func (c *TranslatorCache) GenerateJQL(ctx context.Context, cfg *config.Config, naturalQuery string, projects []jira.Project) (*QueryResult, error) {
-	return translateCascade(ctx, cfg, naturalQuery, projects, c.translatorFor)
+	return translateCascade(ctx, cfg, naturalQuery, projects, func(cfg *config.Config, projects []jira.Project) (*nl2jql.Translator, error) {
+		return c.translatorForMetadata(cfg, projects, metadataFromContext(ctx))
+	})
 }
 
 // GenerateJQLForDigest is GenerateJQL's digest variant with the comment-activity
 // window, also memoizing the FallbackEngine by provider signature.
 func (c *TranslatorCache) GenerateJQLForDigest(ctx context.Context, cfg *config.Config, naturalQuery string, projects []jira.Project) (*QueryResult, error) {
-	days := ExtractDays(naturalQuery)
-	return digestCascade(ctx, cfg, naturalQuery, days, func() (*QueryResult, error) {
-		return c.GenerateJQL(ctx, cfg, naturalQuery, projects)
-	})
+	query, days, err := splitDigestQuery(naturalQuery)
+	if err != nil {
+		return nil, err
+	}
+	return digestCascade(ctx, cfg, naturalQuery, days, func() (*QueryResult, error) { return c.GenerateJQL(ctx, cfg, query, projects) })
 }
 
 // translatorFor builds a per-request Translator on top of the signature-cached
@@ -551,15 +431,25 @@ func (c *TranslatorCache) GenerateJQLForDigest(ctx context.Context, cfg *config.
 // projects and config, so the deterministic hot path always sees a fresh
 // vocabulary even though the (expensive) engine is shared.
 func (c *TranslatorCache) translatorFor(cfg *config.Config, projects []jira.Project) (*nl2jql.Translator, error) {
+	return c.translatorForMetadata(cfg, projects, TranslationMetadata{})
+}
+func (c *TranslatorCache) translatorForMetadata(cfg *config.Config, projects []jira.Project, metadata TranslationMetadata) (*nl2jql.Translator, error) {
+	aliases, err := fieldAliases()
+	if err != nil {
+		return nil, err
+	}
 	fallback, err := c.engine(cfg)
 	if err != nil {
 		return nil, err
 	}
 	return nl2jql.NewTranslator(nl2jql.NewNormalizer(), fallback, nl2jql.Options{
-		ProjectMap: buildProjectMapWithProjects(cfg, projects),
-		Schema:     buildSchema(cfg),
-		Self:       cfg.Assignee(),
-		Logger:     slog.Default(),
+		ProjectMap:   buildProjectMapWithProjects(cfg, projects),
+		Schema:       schemaWithFields(cfg, metadata.Fields, aliases),
+		Fields:       metadata.Fields,
+		FieldAliases: aliases,
+		Project:      cfg.JiraProject,
+		Self:         cfg.Assignee(),
+		Logger:       slog.Default(),
 	})
 }
 

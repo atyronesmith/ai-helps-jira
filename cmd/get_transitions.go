@@ -32,6 +32,7 @@ func runGetTransitions(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	client = client.WithContext(commandContext(cmd))
 
 	transitions, err := client.GetTransitions(args[0])
 	if err != nil {

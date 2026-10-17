@@ -63,7 +63,11 @@ func openScope(name string) (*Cache, error) {
 	if err := f.Close(); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	// Acquire the writer lock before a write transaction inspects schema or
+	// epoch state. Deferred read-to-write upgrades can return SQLITE_BUSY
+	// immediately when simultaneous first opens hold shared schema locks.
+	dsn := (&url.URL{Scheme: "file", Path: path}).String() + "?_txlock=immediate"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}

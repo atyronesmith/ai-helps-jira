@@ -94,6 +94,7 @@ func runEnrich(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	client = client.WithContext(commandContext(cmd))
 
 	spinner := format.StatusPrinter("Fetching issue...")
 	issue, err := client.GetIssue(issueKey)

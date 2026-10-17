@@ -143,6 +143,38 @@ jira-cli train-jql
 jira-cli train-jql report
 ```
 
+Supported core-field queries and dry runs need no Jira credentials or model. Unsupported
+queries use one typed LLM completion, compiled and validated locally, with a
+45-second deadline and no automatic retries. Invalid output and provider errors
+are terminal; the translator never switches prompts to retry the request.
+
+Tenant fields require a cached catalog in the configured Jira site/account scope:
+
+```sh
+jira-cli metadata refresh
+# Optional: replace the snapshot with fields for one verified project/work type.
+# Use your Jira numeric IDs and work-type display name; -p selects the project key.
+jira-cli -p PROJ metadata refresh --project-id 10000 --work-type-id 10001 --work-type-name Task
+jira-cli query --dry-run "my work items with story points > 3"
+```
+
+`JIRA_FIELD_ALIASES` accepts a JSON object such as
+`{"effort":"customfield_10010"}`. Exact IDs and configured aliases precede names
+and fuzzy matching; ambiguous names require clarification. A site-visible catalog
+does not establish project/work-type applicability. Scoped refresh uses Jira's
+experimental project-fields endpoint and fails without replacing the cache when
+that API is unavailable. It replaces the whole snapshot, so only the latest
+selected scope is retained. Fuzzy matching requires known applicability when a
+scope is requested. Dry runs, the trainer, and `jira_translate_query` read cached
+metadata and projects only; they never fetch Jira data or search issues. Snapshots
+older than 24 hours remain available offline and are labeled stale in translation
+inspection; refresh explicitly after tenant changes.
+
+Digest comment windows are separate from issue search dates: `my bugs in the last
+3 days` selects a rolling comment window, while `my bugs created in the last 3 days`
+filters issue creation dates. Vague durations, sprint/month approximations, and
+calendar comment windows require clarification instead of guessing a day count.
+
 Query results distinguish displayed rows from matching totals. List searches follow
 continuation tokens until the display limit or an explicit terminal page; a short
 page alone never proves completion. `--count` (or a question beginning with

@@ -57,6 +57,7 @@ func runCreateIssue(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	client = client.WithContext(commandContext(cmd))
 
 	var labels []string
 	if flagIssueLabels != "" {

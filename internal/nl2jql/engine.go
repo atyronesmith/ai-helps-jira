@@ -19,6 +19,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/atyronesmith/ai-helps-jira/internal/fieldmeta"
+	jqlast "github.com/atyronesmith/ai-helps-jira/internal/jql"
+	"github.com/atyronesmith/ai-helps-jira/internal/translationerror"
 )
 
 // Sentinel / internal errors. (ErrEmptyQuery is declared in fallback.go; it
@@ -45,15 +49,20 @@ type Translator struct {
 	// field/tenant vocabulary for the LLM.
 	schema map[string]string
 
-	self string
-	log  *slog.Logger
+	self     string
+	resolver *fieldmeta.Resolver
+	project  string
+	log      *slog.Logger
 }
 
 // Options carries deployment configuration for NewTranslator. Zero value is
 // valid for a pure fast/fallback setup without tenant vocabulary.
 type Options struct {
 	// Self is the configured effective-user JQL operand; empty means currentUser().
-	Self string
+	Self         string
+	Fields       []fieldmeta.Field
+	FieldAliases map[string]string
+	Project      string
 	// ProjectMap is handed to Normalizer.Normalize on every call.
 	ProjectMap map[string]string
 
@@ -82,6 +91,8 @@ func NewTranslator(normalizer *Normalizer, fallback *FallbackEngine, opts Option
 	return &Translator{
 		normalizer: normalizer,
 		self:       opts.Self,
+		resolver:   fieldmeta.New(opts.Fields, opts.FieldAliases),
+		project:    opts.Project,
 		fallback:   fallback,
 		// Defensive copies: the pipeline must not observe external mutation.
 		projectMap: copyStringMap(opts.ProjectMap),
@@ -92,19 +103,13 @@ func NewTranslator(normalizer *Normalizer, fallback *FallbackEngine, opts Option
 
 // Route labels identify which translation tier produced a Result, so logs and the
 // web dashboard can tell the tiers apart. nl2jql is the leaf package that owns
-// Result.Route and has no dependency on llm, so it declares the whole vocabulary
-// here as the single source of truth even though it stamps only the first two;
-// the llm package re-exports all three so consumers import the labels from one
+// Result.Route and has no dependency on llm, so it declares the route vocabulary here as the single source of truth;
+// the llm package re-exports these routes so consumers import the labels from one
 // place and the two packages cannot drift.
 const (
 	// RouteFastPath and RouteFallback are stamped by this engine's Translate.
 	RouteFastPath = "fast_path" // deterministic parser handled the query (no LLM call)
-	RouteFallback = "fallback"  // strict, schema-scoped LLM fallback generated the JQL
-
-	// RouteJSON is stamped by llm.generateJQLLLM (the JSON-prompt last resort), not
-	// by this deterministic engine. It lives here so the route vocabulary stays a
-	// single source of truth instead of splitting across two packages that could drift.
-	RouteJSON = "json_fallback"
+	RouteFallback = "fallback"  // typed LLM intent compiled locally to JQL
 )
 
 // Result is the outcome of a translation: the generated JQL and the Route label
@@ -149,7 +154,7 @@ func (t *Translator) Translate(ctx context.Context, query string) (Result, error
 	//    through untouched and are somebody else's problem.
 	// ------------------------------------------------------------------
 	if err := checkAmbiguity(q); err != nil {
-		return Result{Input: query, NormalizedInput: q}, err
+		return Result{Input: query, NormalizedInput: q}, translationerror.New(translationerror.Unsupported, err)
 	}
 	normalized := t.normalizer.Normalize(q, t.projectMap)
 
@@ -160,14 +165,21 @@ func (t *Translator) Translate(ctx context.Context, query string) (Result, error
 	var jql string
 	if parseErr == nil {
 		plan.Mode = queryMode(q)
-		tree, err := plan.Compile()
+		err := resolvePlanFields(plan, t.resolver, t.project)
+		var tree *jqlast.Query
+		if err == nil {
+			tree, err = plan.Compile()
+		}
+		if err != nil {
+			return Result{Input: query, NormalizedInput: normalized}, translationerror.New(translationerror.Unsupported, err)
+		}
 		parseErr = err
 		if err == nil {
 			jql = tree.Render()
 		}
 	}
 	if errors.Is(parseErr, ErrAmbiguousIntent) {
-		return Result{Input: query, NormalizedInput: normalized, ParseError: parseErr.Error()}, parseErr
+		return Result{Input: query, NormalizedInput: normalized, ParseError: parseErr.Error()}, translationerror.New(translationerror.Unsupported, parseErr)
 	}
 	if parseErr == nil {
 		log.Info("jql translation: fast path used (deterministic parser)",
@@ -193,7 +205,7 @@ func (t *Translator) Translate(ctx context.Context, query string) (Result, error
 		return Result{}, fmt.Errorf("%s%w: deterministic parse failed: %v", op, errMissingFallback, parseErr)
 	}
 
-	jql, err := t.fallback.Generate(ctx, normalized, t.schema)
+	jql, err := t.fallback.generate(ctx, normalized, t.schema, t.resolver, t.project, t.self)
 	if err != nil {
 		// Preserve causality: the caller can still see ErrUnmappable etc.
 		// via errors.Is on the wrapped error.
@@ -205,7 +217,7 @@ func (t *Translator) Translate(ctx context.Context, query string) (Result, error
 		slog.String("query", q),
 		slog.String("jql", jql),
 	)
-	return Result{Input: query, NormalizedInput: normalized, ParseError: parseErr.Error(), JQL: jql, Route: RouteFallback}, nil
+	return Result{Input: query, NormalizedInput: normalized, ParseError: parseErr.Error(), JQL: jql, Route: RouteFallback, Mode: queryMode(q)}, nil
 }
 
 // logger is nil-safe so even a zero-valued Translator degrades gracefully.

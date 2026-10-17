@@ -90,7 +90,7 @@ func TestClosedMonthAmbiguityDoesNotReachProvider(t *testing.T) {
 		"issues I closed in July or April last year", "issues I closed in June 2026 in the current project",
 	} {
 		t.Run(input, func(t *testing.T) {
-			p := &recordingProvider{jql: "status = Closed"}
+			p := &recordingProvider{jql: supportedStatusPlan}
 			tr := newRoutingTranslator(t, p)
 			_, err := tr.Translate(context.Background(), input)
 			if !errors.Is(err, ErrAmbiguousIntent) {

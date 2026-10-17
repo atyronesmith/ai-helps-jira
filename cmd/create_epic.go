@@ -78,6 +78,7 @@ func runCreateEpic(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	client = client.WithContext(commandContext(cmd))
 
 	spinner = format.StatusPrinter("Creating EPIC in JIRA...")
 	fullDescription := llm.BuildDescription(epic)

@@ -1,5 +1,19 @@
 # JQL Metadata Resolver: Article Analysis and Recommendation
 
+## Implementation status (2026-10-16)
+
+Phase 4 now implements the bounded version of this recommendation: a single typed
+model contract, local AST compilation, scoped SQLite catalogs, explicit
+`metadata refresh`, exact IDs/configured aliases/names, and conservative fuzzy
+resolution with ambiguity errors. Optional verified project/work-type refresh
+uses `/projects/fields`; site-only catalogs retain unknown applicability. The
+latest refresh replaces the catalog, including removals. Translation-only paths
+read snapshots without Jira requests. Stale snapshots stay usable offline with
+freshness diagnostics. No embedding index, background refresh, or automatic
+strict parse call was added. See [the reliability plan](project-reliability-implementation-plan.md#phase-4-one-bounded-fallback-and-tenant-metadata)
+for delivered contracts, verification, and remaining limitations. The analysis
+below records the original proposal and its rationale.
+
 ## Conclusion
 
 The metadata-grounding idea in Debi Mahapatra's article, [Building an AI-Powered JQL Generator Using AWS Bedrock, Claude and Vector Search](https://medium.com/@mahapatradebi17/building-an-ai-powered-jql-generator-using-aws-bedrock-claude-and-vector-search-a818dbf28d0c), is worth adopting in a narrower form. The article correctly identifies tenant-specific Jira fields and business vocabulary as a major source of natural-language-to-JQL errors. Its proposed implementation should not replace this repository's deterministic AST, validation, project-scope enforcement, or feedback harness.

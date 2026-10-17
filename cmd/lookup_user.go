@@ -32,6 +32,7 @@ func runLookupUser(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	client = client.WithContext(commandContext(cmd))
 
 	users, err := client.SearchUsers(args[0])
 	if err != nil {

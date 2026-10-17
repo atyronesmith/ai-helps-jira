@@ -89,7 +89,7 @@ func runDigest(cmd *cobra.Command, args []string) error {
 	defer db.Close()
 
 	// Discover issue keys — either literal keys or natural language query
-	issueKeys, queryKey, nlDays, err := discoverIssueKeys(cfg, db, args)
+	issueKeys, queryKey, nlDays, err := discoverIssueKeys(commandContext(cmd), cfg, db, args)
 	if err != nil {
 		return err
 	}
@@ -104,7 +104,7 @@ func runDigest(cmd *cobra.Command, args []string) error {
 
 	// Run digest for each discovered key
 	for _, key := range issueKeys {
-		if err := runIssueDigest(cfg, db, key, since); err != nil {
+		if err := runIssueDigest(commandContext(cmd), cfg, db, key, since); err != nil {
 			pterm.FgRed.Printfln("Error processing %s: %v", key, err)
 			slog.Error("digest error", "key", key, "error", err)
 		}
@@ -148,7 +148,7 @@ func resolveSince(db *cache.Cache, queryKey string, nlDays int, cmd *cobra.Comma
 // language query and translate it to JQL (deterministic parser first, LLM fallback).
 // Returns the keys, a stable query key for last-run tracking, and an optional
 // days value extracted from the natural language (0 means not specified).
-func discoverIssueKeys(cfg *config.Config, db *cache.Cache, args []string) ([]string, string, int, error) {
+func discoverIssueKeys(ctx context.Context, cfg *config.Config, db *cache.Cache, args []string) ([]string, string, int, error) {
 	if allIssueKeys(args) {
 		queryKey := "keys:" + strings.Join(args, ",")
 		return args, queryKey, 0, nil
@@ -166,8 +166,8 @@ func discoverIssueKeys(cfg *config.Config, db *cache.Cache, args []string) ([]st
 	// LLM fallback -- folding the tenant's cached project list so human names
 	// like "Support" resolve to "SUP".
 	spinner := format.StatusPrinter("Translating query to JQL...")
-	projects := fetchProjectList(cfg, db)
-	result, err := llm.GenerateJQLForDigestWithProjects(context.Background(), cfg, naturalQuery, projects)
+	projects := fetchProjectListContext(ctx, cfg, db)
+	result, err := llm.GenerateJQLForDigestWithProjects(llm.WithTranslationMetadata(ctx, db), cfg, naturalQuery, projects)
 	spinner.Stop()
 	if err != nil {
 		return nil, "", 0, fmt.Errorf("failed to generate JQL: %w", err)
@@ -190,6 +190,7 @@ func discoverIssueKeys(cfg *config.Config, db *cache.Cache, args []string) ([]st
 	if err != nil {
 		return nil, "", 0, err
 	}
+	client = client.WithContext(ctx)
 
 	spinner = format.StatusPrinter("Searching JIRA...")
 	issues, err := client.SearchJQL(result.JQL, 50)
@@ -369,7 +370,7 @@ func collectEpicsCached(db *cache.Cache, issueKey string, since time.Time,
 	return epicLinks, allComments, nil
 }
 
-func runIssueDigest(cfg *config.Config, db *cache.Cache, issueKey string, since time.Time) error {
+func runIssueDigest(ctx context.Context, cfg *config.Config, db *cache.Cache, issueKey string, since time.Time) error {
 	slog.Info("issue digest", "key", issueKey, "since", since)
 
 	var parent *jira.IssueDetail
@@ -397,6 +398,7 @@ func runIssueDigest(cfg *config.Config, db *cache.Cache, issueKey string, since 
 		if err != nil {
 			return err
 		}
+		client = client.WithContext(ctx)
 
 		// Fetch parent issue details
 		spinner := format.StatusPrinter(fmt.Sprintf("Fetching %s...", issueKey))
@@ -432,7 +434,7 @@ func runIssueDigest(cfg *config.Config, db *cache.Cache, issueKey string, since 
 
 	// Generate digest with LLM
 	spinner := format.StatusPrinter("Generating digest with Claude...")
-	digest, err := llm.GenerateDigest(context.Background(), cfg, parent, links, allComments)
+	digest, err := llm.GenerateDigest(ctx, cfg, parent, links, allComments)
 	spinner.Stop()
 	if err != nil {
 		return err

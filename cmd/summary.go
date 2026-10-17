@@ -73,11 +73,12 @@ func runSummary(cmd *cobra.Command, args []string) error {
 		pterm.FgLightWhite.Println("Connecting to JIRA...")
 	}
 	spinner := format.StatusPrinter("Loading summary...")
-	boards, openIssues, fetchedAt, err := summaryLoader(cmd.Context(), db, cfg, flagCacheOnly, func(ctx context.Context, invalidated []string) ([]jira.BoardInfo, []jira.Issue, error) {
+	boards, openIssues, fetchedAt, err := summaryLoader(commandContext(cmd), db, cfg, flagCacheOnly, func(ctx context.Context, invalidated []string) ([]jira.BoardInfo, []jira.Issue, error) {
 		client, err := jira.NewClient(cfg)
 		if err != nil {
 			return nil, nil, err
 		}
+		client = client.WithContext(ctx)
 		return client.FetchSummary(ctx, invalidated)
 	})
 	spinner.Stop()

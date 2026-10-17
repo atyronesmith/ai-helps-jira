@@ -3,12 +3,16 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/atyronesmith/ai-helps-jira/internal/translationerror"
 )
 
 func TestCleanJSON(t *testing.T) {
@@ -156,6 +160,49 @@ func TestOpenAIProvider_Unreachable(t *testing.T) {
 	}
 }
 
+func TestNewProviderContextRejectsPreCanceledContext(t *testing.T) {
+	t.Setenv("LLM_PROVIDER", "openai")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := NewProviderContext(ctx, nil)
+	if translationerror.KindOf(err) != translationerror.Cancellation {
+		t.Fatalf("kind = %q, err %v", translationerror.KindOf(err), err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error does not preserve context cause: %v", err)
+	}
+}
+
+func TestOpenAIProviderDoesNotFollowRedirect(t *testing.T) {
+	var redirected atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected.Add(1)
+		io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer target.Close()
+	start := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer start.Close()
+	p := &OpenAIProvider{baseURL: start.URL, model: "test", http: providerHTTPClient(time.Second)}
+	_, _ = p.Complete(context.Background(), "sys", "prompt", 10)
+	if got := redirected.Load(); got != 0 {
+		t.Fatalf("redirect target received %d requests", got)
+	}
+}
+
+func TestOpenAIProviderBoundsResponseBody(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, strings.Repeat("x", (1<<20)+10))
+	}))
+	defer ts.Close()
+	p := &OpenAIProvider{baseURL: ts.URL, model: "test", http: ts.Client()}
+	_, err := p.Complete(context.Background(), "sys", "prompt", 10)
+	if translationerror.KindOf(err) != translationerror.InvalidOutput {
+		t.Fatalf("kind = %q, err %v", translationerror.KindOf(err), err)
+	}
+}
+
 func TestOpenAIProvider_Timeout(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(50 * time.Millisecond)
@@ -172,5 +219,76 @@ func TestOpenAIProvider_Timeout(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "timed out") {
 		t.Errorf("error should mention timeout, got: %s", err.Error())
+	}
+}
+
+func TestNormalizeChatURL(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"https://api.example", "https://api.example/v1/chat/completions"},
+		{"https://api.example/", "https://api.example/v1/chat/completions"},
+		{"https://api.example/v1", "https://api.example/v1/chat/completions"},
+		{"https://api.example/v1/", "https://api.example/v1/chat/completions"},
+		{"https://api.example/proxy/v1", "https://api.example/proxy/v1/chat/completions"},
+	} {
+		got, err := normalizeChatURL(tc.input)
+		if err != nil || got != tc.want {
+			t.Errorf("normalizeChatURL(%q) = %q, %v; want %q", tc.input, got, err, tc.want)
+		}
+	}
+	for _, input := range []string{"ftp://api.example", "https://u:p@api.example", "https://api.example?x=y", "https://api.example?", "https://api.example#fragment", "https://api.example#", "/relative"} {
+		if _, err := normalizeChatURL(input); err == nil {
+			t.Errorf("normalizeChatURL(%q) accepted invalid URL", input)
+		}
+	}
+}
+
+func TestOpenAIProvider_OneRequestAndNoResponseSecrets(t *testing.T) {
+	requests := 0
+	const secret = "private-upstream-detail"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, secret)
+	}))
+	defer ts.Close()
+	p := &OpenAIProvider{baseURL: ts.URL, model: "test", http: ts.Client()}
+	_, err := p.Complete(context.Background(), "sys", "prompt", 10)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if requests != 1 {
+		t.Fatalf("got %d requests, want 1", requests)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("error leaked response body: %v", err)
+	}
+	if got := translationerror.KindOf(err); got != translationerror.Connectivity {
+		t.Errorf("kind = %q", got)
+	}
+}
+
+func TestOpenAIProvider_ClassifiesAuthAndCancellation(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, "sensitive response")
+	}))
+	defer ts.Close()
+	p := &OpenAIProvider{baseURL: ts.URL, model: "test", http: ts.Client()}
+	_, err := p.Complete(context.Background(), "sys", "prompt", 10)
+	if got := translationerror.KindOf(err); got != translationerror.Authentication {
+		t.Errorf("auth kind = %q, err %v", got, err)
+	}
+	if strings.Contains(err.Error(), "sensitive response") {
+		t.Fatal("authentication error leaked response body")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = p.Complete(ctx, "sys", "prompt", 10)
+	if got := translationerror.KindOf(err); got != translationerror.Cancellation {
+		t.Errorf("cancel kind = %q, err %v", got, err)
 	}
 }

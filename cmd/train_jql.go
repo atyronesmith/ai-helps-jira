@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -61,7 +60,7 @@ func runTrainJQL(cmd *cobra.Command, _ []string) error {
 	}
 	translate := func(input string) (*llm.QueryResult, error) {
 		projects := cachedProjectList(db)
-		return queryTranslator(context.Background(), cfg, input, projects)
+		return queryTranslator(llm.WithTranslationMetadata(commandContext(cmd), db), cfg, input, projects)
 	}
 	return runInteractiveTrainer(cmd.InOrStdin(), cmd.OutOrStdout(), feedbackPath(), cfg.JiraProject, binaryVersion, translate)
 }

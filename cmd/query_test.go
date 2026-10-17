@@ -68,7 +68,7 @@ func TestRunQuerySelectsExactCountAndPreservesOriginalInputAndContext(t *testing
 			cmd.SetContext(ctx)
 			var translatedInput string
 			var translationContext, searchContext context.Context
-			queryProjectLoader = func(*config.Config, *cache.Cache) []jira.Project { return nil }
+			queryProjectLoader = func(context.Context, *config.Config, *cache.Cache) []jira.Project { return nil }
 			queryTranslator = func(gotCtx context.Context, _ *config.Config, input string, _ []jira.Project) (*llm.QueryResult, error) {
 				translationContext, translatedInput = gotCtx, input
 				return &llm.QueryResult{Input: input, NormalizedInput: strings.ToLower(input), Route: llm.RouteFastPath, JQL: `project = "SUP" AND statusCategory != Done`}, nil
@@ -86,7 +86,7 @@ func TestRunQuerySelectsExactCountAndPreservesOriginalInputAndContext(t *testing
 			if translatedInput != tc.input {
 				t.Errorf("translator input = %q, want exact original %q", translatedInput, tc.input)
 			}
-			if translationContext != ctx || searchContext != ctx {
+			if translationContext.Value(ctxKey{}) != "request" || searchContext.Value(ctxKey{}) != "request" || translationContext.Done() != ctx.Done() || searchContext.Done() != ctx.Done() {
 				t.Error("command context was not passed to both translation and search")
 			}
 		})
@@ -184,7 +184,7 @@ func prepareRunQuery(t *testing.T) {
 		dry, show  bool
 		max        int
 		translator func(context.Context, *config.Config, string, []jira.Project) (*llm.QueryResult, error)
-		loader     func(*config.Config, *cache.Cache) []jira.Project
+		loader     func(context.Context, *config.Config, *cache.Cache) []jira.Project
 		searcher   querySearchFunc
 	}{flagDryRun, flagShowJQL, flagMaxResults, queryTranslator, queryProjectLoader, querySearcher}
 	flagDryRun, flagShowJQL, flagMaxResults = false, false, 50

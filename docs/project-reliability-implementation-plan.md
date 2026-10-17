@@ -1,7 +1,7 @@
 # Project Reliability Implementation Plan
 
-Status: Phases 0–3 implemented and locally verified on 2026-10-16.
-Phases 4–7 remain proposed. Hosted CI execution remains pending; live Jira
+Status: Phases 0–4 implemented and locally verified on 2026-10-16.
+Phases 5–7 remain proposed. Hosted CI execution remains pending; live Jira
 validation is unavailable without explicitly exported credentials and fixtures.
 Review date: 2026-10-16.
 
@@ -14,7 +14,7 @@ consistent behavior before expanding the feature roadmap.
 
 This plan captures the project review of the current working tree, including
 uncommitted work. Phase 0 implementation was explicitly requested on 2026-10-16.
-Phases 1–3 were subsequently authorized. Phases 4–7 still require authorization.
+Phases 1–4 were subsequently authorized. Phases 5–7 still require authorization.
 Jira mutations and deployments are outside this delivery.
 
 ## Keep
@@ -579,6 +579,148 @@ Required regressions: zero provider calls for supported queries; bounded calls
 for unsupported queries; cancellation stops work; both base-URL forms; missing
 and ambiguous custom fields; metadata isolation and stale refresh; no Jira
 search from a translation-only operation.
+
+### Phase 4 delivered contracts (2026-10-16)
+
+Implemented against committed Phase 3 `b39bed5`. Root retained contract,
+semantic, scope, and concurrency decisions, reviewed/integrated all diffs, and
+delegated bounded provider, HTTP-context, metadata, and regression work to Luna 6.
+The preexisting `Containerfile` modification, `test.sh`, and
+`docs/HARNESS-QWEN-REVERT.md` are preserved. No commit or deployment was made.
+
+- The strict/raw-JQL and legacy `{jql,days}` cascades are removed. Unsupported
+  deterministic input gets at most one versioned `ModelPlan` completion, then
+  local typed validation, field resolution, `QueryPlan` compilation into the
+  shared JQL AST, project scoping, and structural validation. Boolean groups,
+  typed operands, effective self/explicit ownership, history windows, modes,
+  and terminal multi-key sorting remain separate from executable strings.
+  Values are quoted locally; arbitrary functions/raw JQL, unknown properties,
+  duplicate JSON keys, wrong types/operators/arity, excessive nesting, and
+  trailing output are rejected. Contradictory same-branch status/ownership
+  constraints require clarification; OR alternatives remain alternatives.
+  Missing tenant fields fail explicitly rather
+  than inventing vocabulary; supported core fields remain credential-free.
+- Fallback uses a 45-second caller-bounded deadline, 4,096 output tokens,
+  32-KiB accepted model output, 16-KiB fallback input, 128-KiB system prompt,
+  128 intent nodes, depth 16, 16 sort fields, and 100 membership values. There
+  are zero automatic retries and no alternate prompt. Provider HTTP response
+  bodies are capped at 1 MiB, redirects are disabled, and Vertex SDK retries
+  are disabled. Provider initialization uses the current caller context instead
+  of retaining an earlier cancelled authentication context. Error categories
+  distinguish unsupported intent/configuration, invalid output, authentication,
+  connectivity, timeout, and cancellation; context causes remain inspectable.
+  Provider failures do not expose upstream response bodies.
+- Digest comment windows are parsed separately before search translation.
+  Exact rolling day/week durations set `Days` without adding issue-date filters;
+  explicit created/updated/resolved/due dates remain search predicates and never
+  become comment windows. Calendar comment windows, vague durations, multiple
+  comment windows, and sprint/month approximations require clarification. A
+  digest translation failure is terminal and never starts another completion.
+- Jira and Confluence clients expose immutable `WithContext` copies. CLI and
+  MCP callers bind their request context for reads, writes, pagination, detail
+  retrieval, and attachment uploads. Existing explicit-context search/summary
+  boundaries remain. OpenAI-compatible providers normalize base and `/v1` URL
+  forms, including trailing slashes, to one `/v1/chat/completions` endpoint.
+- SQLite catalogs live in the existing normalized site/authenticated-account
+  namespace. An additive transactional schema extension preserves format-1 data;
+  no historical database is opened or migrated. Catalog replacement (including
+  deletions or an empty catalog) and refresh time commit atomically; reads take
+  a consistent catalog/timestamp snapshot. Records retain IDs/stable IDs,
+  display names, descriptions, scalar/item types, searcher, aliases, project and
+  work-type applicability, and freshness. Failed refreshes preserve prior data.
+- `metadata refresh` explicitly reads Jira's permission-filtered `/field`
+  catalog. Optional paired `--project-id`, `--work-type-id`, and
+  `--work-type-name` select one project/work type. Jira's project/type identities
+  must agree with the requested labels before applicability is recorded. The
+  experimental `/projects/fields` path follows validated pagination under a
+  100-page/60-second policy; mismatched IDs, duplicates, missing terminal
+  metadata, stalled pages, and endpoint errors fail refresh without replacement.
+  None of these operations searches issues.
+- Resolution prioritizes canonical core fields/exact IDs, configured
+  `JIRA_FIELD_ALIASES`, exact names and Jira clause aliases, then conservative
+  edit distance within known applicability. Missing IDs are never fuzzily
+  repaired; close candidates and case-conflicting aliases fail as ambiguous.
+  Numeric deterministic Story Points queries and sorting resolve the cached
+  stable custom-field ID rather than relying on an assumed tenant name/type.
+  The original Phase 3 Boolean/owner/date parser behavior is retained.
+- Dry runs, the feedback trainer, and `jira_translate_query` read cached projects
+  and fields without Jira requests. MCP translation accepts credential-free
+  config. Business searches retain their existing best-effort project warm-up,
+  now using the caller context. Metadata is rebuilt for every request even when
+  fallback engines are shared. Cached snapshots older than 24 hours remain
+  usable offline; translation inspection exposes their age/stale flag and
+  whether applicability is known. Missing metadata explains how to refresh it.
+- Integrated review exposed a deferred SQLite schema read-to-write upgrade race
+  in concurrent first opens. Scoped write transactions now begin `IMMEDIATE`,
+  acquiring the writer lock before schema/epoch reads; read-only catalog
+  snapshots remain deferred. This preserves mutation fences and prevents the
+  observed immediate `SQLITE_BUSY` lock-upgrade failure.
+
+### Phase 4 verification results
+
+- **Passed:** `go build ./...`, `go vet ./...`, and final integrated
+  `go test -race -count=1 -timeout=120s ./...`. The full suite includes all
+  Phase 1–3 pagination, scope, mutation fence, reconciliation, and weekly-cache
+  regressions alongside new typed-plan and metadata behavior.
+- **Passed:** `go test ./internal/jira -run '^TestGeneratedJQLCorpus$' -count=1`,
+  actual typed fallback output/Boolean/owner/date/sort and hostile-literal cases,
+  zero provider calls for supported or recognized ambiguous intent, one-call
+  terminal failures (including digest), provider URL forms and error categories,
+  and request cancellation during Jira reads/writes/uploads and Confluence reads.
+- **Passed:** metadata exact/alias/fuzzy precedence, ambiguous/unknown fields,
+  type/applicability checks across requested scopes, verified refresh labels,
+  bounded pagination and failure cases, catalog removal/empty replacement,
+  atomic timestamp snapshots under concurrent refresh, site/account isolation,
+  stale offline translation, refreshed shared translator vocabulary, token-free
+  CLI/MCP inspection, exact original wording, and no Jira search from any
+  translation-only path.
+- **Passed:** `TestConcurrentFreshCacheInitialization` repeated 100 times after
+  the lock-acquisition fix. Earlier failed runs exposed the SQLite lock upgrade,
+  nil Cobra contexts, context-wrapper test expectations, outdated model fixtures,
+  and an unbounded mock cancellation wait; all were fixed before the final race
+  run and those failed/interrupted runs are not counted as passes.
+- **Passed:** local oracle protocol fixtures with
+  `go test -race -tags=oracle -count=1 ./internal/jqloracle`, and compile-only
+  `go test -tags=oracle ./... -run '^$'`. Neither establishes live tenant validity.
+- **Passed:** `make doc-lint`, changed-Go-file formatting, `git diff --check`,
+  and hash comparisons proving all three preexisting artifacts unchanged.
+  Local socket/cache sandbox restrictions required approved external execution
+  for the relevant tests/build checks. No production endpoint was used.
+
+**Live strict Jira oracle: SKIPPED, not passed.**
+`python3 scripts/run-jql-oracle.py` exited 2 because all seven exported credential
+and project/issue/sprint/release fixture variables were absent. No credential
+search, `.env` loading, production Jira request, or live model call was used to
+enable verification. Local API behavior is established with mocks only.
+
+### Remaining limitations
+
+- A typed/structurally valid model plan is not proof of semantic agreement with
+  every unsupported English request. Unsupported vocabulary still depends on
+  the configured model's interpretation. The fallback contract deliberately
+  excludes arbitrary Jira/plugin functions and arbitrary raw JQL. No live model
+  quality evaluation or embedding corpus demonstrated a need for embeddings.
+- Metadata refresh is explicit, with one replaceable catalog per site/account.
+  A scoped refresh retains only the latest selected project/work-type snapshot;
+  it does not merge multiple project/type contexts. Applicability validation
+  conservatively checks each referenced field against every requested project/type,
+  so some valid branch-specific cross-project queries require a narrower request.
+  The site-visible API cannot
+  prove applicability. Exact site-catalog matches remain usable with unknown
+  applicability, while fuzzy matches in a requested scope require known
+  applicability. The experimental scope endpoint may be unavailable to a tenant;
+  that failure preserves the old snapshot rather than pretending success.
+- Staleness is disclosed, not automatically repaired; translation never fetches
+  metadata or runs a Jira search. Live tenant field vocabulary, applicability,
+  history-boundary behavior, strict parser compatibility, Vertex authentication,
+  model adherence, and hosted CI are unverified here. Strict tenant validation
+  remains the separately configured oracle, not an automatic translation call.
+- Digest `Days` represents rolling time only. Calendar comment windows are
+  rejected until the digest interface can represent explicit start/end bounds.
+  Existing Jira timezone/calendar behavior from Phase 3 is unchanged. Input or
+  catalog prompts over the fallback budget fail explicitly rather than silently
+  truncating the request or catalog.
+
 
 ## Phase 5: Feedback that becomes regression coverage
 

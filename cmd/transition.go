@@ -36,6 +36,7 @@ func runTransition(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	client = client.WithContext(commandContext(cmd))
 
 	if err := client.TransitionIssue(args[0], args[1]); err != nil {
 		return err

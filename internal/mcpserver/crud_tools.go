@@ -230,6 +230,7 @@ func (h *Handlers) HandleGetIssue(ctx context.Context, req mcp.CallToolRequest) 
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	// Look up the issue's current updated timestamp so we don't serve a
 	// stale cached detail/comments after an edit, transition, or comment
@@ -368,6 +369,7 @@ func (h *Handlers) HandleCreateIssue(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	params := jira.CreateIssueParams{
 		ProjectKey:  getString(req, "project"),
@@ -405,6 +407,7 @@ func (h *Handlers) HandleEditIssue(ctx context.Context, req mcp.CallToolRequest)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	// Build fields map from provided arguments
 	fields := make(map[string]any)
@@ -466,6 +469,7 @@ func (h *Handlers) HandleGetTransitions(ctx context.Context, req mcp.CallToolReq
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	transitions, err := client.GetTransitions(key)
 	if err != nil {
@@ -501,6 +505,7 @@ func (h *Handlers) HandleTransition(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	if err := client.TransitionIssue(key, transitionID); err != nil {
 		return errorResult(err.Error()), nil
@@ -527,6 +532,7 @@ func (h *Handlers) HandleAddComment(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	comment, err := client.AddComment(key, body)
 	if err != nil {
@@ -552,6 +558,7 @@ func (h *Handlers) HandleLookupUser(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	users, err := client.SearchUsers(query)
 	if err != nil {
@@ -591,6 +598,7 @@ func (h *Handlers) HandleAddWorklog(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	wl, err := client.AddWorklog(key, timeSpent, getString(req, "comment"), getString(req, "started"))
 	if err != nil {
@@ -620,6 +628,7 @@ func (h *Handlers) HandleLinkIssues(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	if err := client.LinkIssues(inward, outward, linkType); err != nil {
 		return errorResult(err.Error()), nil
@@ -646,6 +655,7 @@ func (h *Handlers) HandleAttachFile(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	filename, err := client.AttachFile(key, filePath)
 	if err != nil {
@@ -672,6 +682,7 @@ func (h *Handlers) HandleWatchIssue(ctx context.Context, req mcp.CallToolRequest
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	if err := client.WatchIssue(key); err != nil {
 		return errorResult(err.Error()), nil
@@ -697,6 +708,7 @@ func (h *Handlers) HandleUnwatchIssue(ctx context.Context, req mcp.CallToolReque
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	if err := client.UnwatchIssue(key); err != nil {
 		return errorResult(err.Error()), nil
@@ -728,6 +740,7 @@ func (h *Handlers) HandleAddLabels(ctx context.Context, req mcp.CallToolRequest)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	if err := client.AddLabels(key, labels); err != nil {
 		return errorResult(err.Error()), nil
@@ -759,6 +772,7 @@ func (h *Handlers) HandleRemoveLabels(ctx context.Context, req mcp.CallToolReque
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	if err := client.RemoveLabels(key, labels); err != nil {
 		return errorResult(err.Error()), nil
@@ -778,6 +792,7 @@ func (h *Handlers) HandleListSprints(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	state := getString(req, "state")
 	boardID := int(getFloat(req, "board_id"))
@@ -844,6 +859,7 @@ func (h *Handlers) HandleVoteIssue(ctx context.Context, req mcp.CallToolRequest)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	if err := client.VoteIssue(key); err != nil {
 		return errorResult(err.Error()), nil
@@ -869,6 +885,7 @@ func (h *Handlers) HandleUnvoteIssue(ctx context.Context, req mcp.CallToolReques
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	client = client.WithContext(ctx)
 
 	if err := client.UnvoteIssue(key); err != nil {
 		return errorResult(err.Error()), nil
