@@ -195,7 +195,7 @@ func runInteractiveTrainerWithMetadata(in io.Reader, out io.Writer, path, defaul
 		if e := nlfeedback.Append(path, record); e != nil {
 			return e
 		}
-		stop, e := reviewAttempt(scanner, out, path, record, defaultProject, result != nil && err == nil)
+		stop, e := reviewAttempt(scanner, out, path, record, result != nil && err == nil)
 		if e != nil {
 			return e
 		}
@@ -217,7 +217,7 @@ func safeErrorCategory(err error) string {
 	}
 }
 
-func reviewAttempt(scanner *bufio.Scanner, out io.Writer, path string, record nlfeedback.Record, project string, success bool) (bool, error) {
+func reviewAttempt(scanner *bufio.Scanner, out io.Writer, path string, record nlfeedback.Record, success bool) (bool, error) {
 	for {
 		prompt := "Action [good/corrected/correction/reject/skip/quit]: "
 		if !success {
@@ -235,13 +235,16 @@ func reviewAttempt(scanner *bufio.Scanner, out io.Writer, path string, record nl
 			}
 			record.Verdict = nlfeedback.VerdictGood
 		case "corrected", "c":
-			fmt.Fprint(out, "Corrected JQL: ")
+			fmt.Fprint(out, "Corrected JQL (syntax only; never executed): ")
 			if !scanner.Scan() {
 				return false, scanner.Err()
 			}
 			corrected := scanner.Text()
-			if strings.TrimSpace(corrected) == "" || jql.Validate(corrected, jql.Options{DefaultProject: project}) != nil {
-				fmt.Fprintln(out, "Corrected JQL is invalid.")
+			// Corrections are private review data, not executable search input.
+			// Check syntax without imposing the execution boundary's project
+			// scope rule or silently adding scope to the user's correction.
+			if err := jql.Validate(corrected, jql.Options{}); err != nil {
+				fmt.Fprintf(out, "Corrected JQL is invalid: %v\n", err)
 				continue
 			}
 			record.Verdict, record.CorrectedJQL = nlfeedback.VerdictCorrected, corrected

@@ -6,6 +6,15 @@ or the review is skipped, quit, or interrupted by EOF. Neither collection nor
 replay executes a Jira search or mutation. Corrected JQL is parsed locally for
 review only; natural-language corrections are never sent back to a translator.
 
+Corrected JQL is checked for local syntax and a nonempty predicate, then saved
+exactly as entered. It may omit project scope because it remains review data;
+the configured default project is stored separately. This does not establish
+tenant validity or execution safety. Actual searches still enforce their project
+scope boundary. For example, `assignee = currentUser() AND statusCategory != Done
+ORDER BY updated DESC` can be recorded as a correction without adding a project
+predicate or executing it. Invalid corrections show the local validation reason
+and can be retried within the same attempt.
+
 ```sh
 jira-cli train-jql
 jira-cli train-jql report
