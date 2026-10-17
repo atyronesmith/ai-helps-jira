@@ -1,0 +1,117 @@
+# Translation feedback and replay
+
+`train-jql` collects private review data. Every submitted query is translated
+once, with the original wording preserved, and saved even when translation fails
+or the review is skipped, quit, or interrupted by EOF. Neither collection nor
+replay executes a Jira search or mutation. Corrected JQL is parsed locally for
+review only; natural-language corrections are never sent back to a translator.
+
+```sh
+jira-cli train-jql
+jira-cli train-jql report
+jira-cli train-jql --feedback-file /private/path/examples.jsonl
+jira-cli train-jql replay internal/nlfeedback/testdata/regressions.jsonl
+jira-cli train-jql --feedback-file /private/path/examples.jsonl replay
+```
+
+The default file is `~/.jira-cli/nl2jql-feedback.jsonl`. New directories use
+0700 and the corpus file uses 0600, including an existing file opened for append.
+Input, corrections, effective user overrides, cached tenant metadata, field
+aliases, and project names can contain private information. Custom paths are
+equally private. Collection refuses tracked or Git-trackable paths inside a
+worktree; choose an ignored, untracked path or a location outside Git. It does
+not modify Git exclusions. Only deliberately authored, sanitized fixtures belong
+in Git. Never copy private feedback into the checked-in fixtures automatically.
+
+Schema 2 records retain the original input, normalization and parse diagnostics,
+generated JQL, local validation label, route, mode, outcome, sanitized failure
+category, duration, provider-call count, translator version, configured
+provider/model identity, default project, effective user override, and clock and
+metadata snapshot. They exclude credentials, provider URLs, authenticated Jira
+account/site configuration, raw upstream error messages, and provider response
+bodies. Error categories are unsupported, invalid output, authentication,
+connectivity, timeout, cancellation, or unknown. Provider calls count actual
+completion invocations, including failed calls; initialization failures count
+zero. A configured provider/model label does not mean the provider was called.
+
+An attempt is appended before review. A completed review appends a full snapshot
+with the same ID; readers use the latest snapshot in first-attempt order. Reports
+and replay count each ID once. Schema 1 records remain readable, including their
+older validation strings, without rewriting them. They lack reproducibility
+data and require manual preparation before scored replay.
+
+## Preparing a reviewed replay
+
+Use the synthetic cases in
+[`internal/nlfeedback/testdata/regressions.jsonl`](../internal/nlfeedback/testdata/regressions.jsonl)
+as examples. After reviewing an attempt, prepare its `fixture` and add an explicit
+`replay` block. Preparation is a human review step, separate from collecting a
+correction. `generated_jql`, `corrected_jql`, and `correction` remain historical
+data and are never automatically used as expected answers or provider responses.
+
+```json
+{
+  "replay": {
+    "provider": {},
+    "expect": {
+      "jql": "issuetype = Bug AND statusCategory != Done AND project = PROJ",
+      "mode": "list",
+      "route": "fast_path",
+      "provider_calls": 0
+    }
+  }
+}
+```
+
+Successful expectations require complete JQL and a mode (`list`, `count`, or
+`recommendation`). Failure expectations use `error_category` instead of JQL and
+mode. `provider_calls` is zero or one; `route` and `normalized_input` are optional
+additional assertions. The `provider` object supplies either a `response` string
+containing the versioned typed intent JSON, or an `error_category` for a simulated
+failure. An absent provider response fails closed if fallback is needed. It
+never initializes a live provider. Responses must be manually sanitized; the
+collector does not save raw completions.
+
+`fixture.now` is an explicit timestamp with a UTC offset. The fixture also holds
+`metadata.fields`, `metadata.fetched_at`, `project_map`, and `field_aliases`.
+Collection captures a clock for each attempt and passes the same snapshot into
+the production translator. Replay uses the snapshot and recorded default
+project/effective user, bypassing environment, `.env`, mounted secrets, cache
+fetches, and provider factories. Metadata staleness is evaluated at the frozen
+time. Missing fixtures or unreviewed expectations never count as a pass.
+
+## Reading results
+
+Replay writes a JSON report and exits nonzero unless every attempt passes its
+reviewed expectations. Empty, missing, or malformed corpora also fail. CI runs
+the sanitized corpus through both behavioral tests and the replay command.
+
+- `acceptance_rate` is semantically correct successful translations divided by
+  **all attempts**. Expected rejections, failed calls, unreviewed examples, and
+  missing fixtures stay in that denominator.
+- `expectation_pass_rate` includes correctly expected failures. A corpus can pass
+  every assertion while its successful-translation acceptance is below 100%.
+- `deterministic_coverage` is successful deterministic translations divided by
+  all attempts, independent of whether the reviewed answer agrees.
+- Per-case and aggregate metrics cover semantic constraints, Boolean grouping,
+  ownership/history actors, issue dates/history bounds, explicit/default scope,
+  ordering, mode, local structural validity, and constraint completeness.
+  Each metric reports evaluated and passed counts; cases without semantic JQL
+  expectations are not evaluated for those dimensions.
+- Duration measures actual local execution time, not a frozen or simulated
+  provider latency. The report includes per-case duration, aggregate duration,
+  actual fixture-provider call counts, translation failures, and unscored counts.
+  Collection reports mean observed latency and review acceptance separately.
+
+The semantic gate compares complete parsed Boolean trees and ordered sort keys,
+allowing commutative AND/OR term ordering. It deliberately does not infer tenant
+synonyms, normalize all equivalent quoting, or prove arbitrary Boolean algebra.
+Dimension-specific predicate projections help diagnose differences; complete
+tree equality and mode agreement decide semantic acceptance. “Constraint
+completeness” means preserving every expected translation constraint, not Jira
+result completeness. No search is executed to measure result rows or counts.
+
+These fixtures establish local regression behavior, including rejection of
+valid-looking JQL that loses meaning. They do not measure a live model's quality
+or prove tenant field applicability, Jira timezone semantics, or live strict
+parser compatibility. Those require separately authorized evaluation/oracle work.

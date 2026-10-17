@@ -15,10 +15,11 @@ import (
 // TranslationMetadata is a snapshot of the permission-filtered tenant catalog.
 // Stale snapshots remain useful offline; freshness is disclosed in the result.
 type TranslationMetadata struct {
-	Fields    []fieldmeta.Field
-	FetchedAt time.Time
+	Fields    []fieldmeta.Field `json:"fields"`
+	FetchedAt time.Time         `json:"fetched_at"`
 }
 type metadataKey struct{}
+type translationFixtureKey struct{}
 
 func WithTranslationMetadata(ctx context.Context, c *cache.Cache) context.Context {
 	if ctx == nil {
@@ -64,7 +65,7 @@ func schemaWithFields(cfg *config.Config, fields []fieldmeta.Field, aliases map[
 	}
 	return schema
 }
-func stampMetadata(ctx context.Context, res *QueryResult) {
+func stampMetadataAt(ctx context.Context, res *QueryResult, now time.Time) {
 	m := metadataFromContext(ctx)
 	if !m.FetchedAt.IsZero() {
 		res.MetadataFetchedAt = m.FetchedAt
@@ -75,6 +76,6 @@ func stampMetadata(ctx context.Context, res *QueryResult) {
 				break
 			}
 		}
-		res.MetadataStale = time.Since(m.FetchedAt) > 24*time.Hour
+		res.MetadataStale = now.Sub(m.FetchedAt) > 24*time.Hour
 	}
 }

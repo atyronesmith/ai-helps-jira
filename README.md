@@ -141,12 +141,20 @@ jira-cli query --count "my open bugs" --max 10
 # Interactively review translations and save a private local feedback corpus
 jira-cli train-jql
 jira-cli train-jql report
+# Replay reviewed, sanitized fixtures without Jira credentials or a live model
+jira-cli train-jql replay internal/nlfeedback/testdata/regressions.jsonl
 ```
 
 Supported core-field queries and dry runs need no Jira credentials or model. Unsupported
 queries use one typed LLM completion, compiled and validated locally, with a
 45-second deadline and no automatic retries. Invalid output and provider errors
 are terminal; the translator never switches prompts to retry the request.
+
+The trainer saves failures, skips, and corrections in a private local corpus.
+Replay uses the production translator with a frozen clock, catalog, aliases,
+and canned provider responses, and exits nonzero for regressions or missing
+reviewed expectations. See [feedback and replay](docs/translation-feedback.md)
+for the record format, privacy rules, and metric definitions.
 
 Tenant fields require a cached catalog in the configured Jira site/account scope:
 

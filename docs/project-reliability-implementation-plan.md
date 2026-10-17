@@ -1,7 +1,7 @@
 # Project Reliability Implementation Plan
 
-Status: Phases 0–4 implemented and locally verified on 2026-10-16.
-Phases 5–7 remain proposed. Hosted CI execution remains pending; live Jira
+Status: Phases 0–5 implemented and locally verified on 2026-10-16.
+Phases 6–7 remain proposed. Hosted CI execution remains pending; live Jira
 validation is unavailable without explicitly exported credentials and fixtures.
 Review date: 2026-10-16.
 
@@ -14,7 +14,7 @@ consistent behavior before expanding the feature roadmap.
 
 This plan captures the project review of the current working tree, including
 uncommitted work. Phase 0 implementation was explicitly requested on 2026-10-16.
-Phases 1–4 were subsequently authorized. Phases 5–7 still require authorization.
+Phases 1–5 were subsequently authorized. Phases 6–7 still require authorization.
 Jira mutations and deployments are outside this delivery.
 
 ## Keep
@@ -740,6 +740,127 @@ and CI configuration.
 
 Acceptance: a previously failed or corrected example is replayable, a semantic
 regression fails the suite, and private feedback/credentials stay out of Git.
+
+### Phase 5 delivered contracts (2026-10-16)
+
+Implemented against committed Phase 4 `8966968`. Root retained semantic and
+architectural decisions, implemented the replay evaluator and curated corpus,
+and reviewed/integrated Luna 6's bounded collection, observability, fixture,
+and private-path work. The initial working tree contained only untracked
+`test.sh` and `docs/HARNESS-QWEN-REVERT.md`; both are preserved. No commit,
+deployment, production Jira search, or mutation is part of this delivery.
+
+- Every translation attempt is saved before review, including failures, skips,
+  review quits, and EOF during review. Original input and corrections retain
+  their wording. Review snapshots share an attempt ID; readers, reports, and
+  replay count the latest full snapshot once. A failed attempt cannot be marked
+  good. Corrected JQL is validated locally and never executed; correction text
+  never becomes a translator prompt or an expected answer automatically.
+- Schema 2 adds bounded error categories (including unknown), success/failure
+  outcome, partial translation diagnostics, route/mode, local validation label,
+  translator version, configured provider/model identity, effective-user/default
+  project configuration, duration, actual completion calls, and frozen clock,
+  cached metadata, and aliases. Schema 1 remains readable without rewriting it.
+  No upstream error text, response body, provider URL, authentication token,
+  authenticated Jira account/site, or credential-bearing config is collected.
+  Effective user overrides and tenant vocabulary remain private review data.
+- Production translation now returns partial diagnostics on errors and counts
+  actual provider completions per request, including failures, with concurrent
+  counters isolated across shared engines. Initialization failures count zero.
+  Phase 4's one-call/no-retry fallback, cancellation, typed compilation,
+  metadata resolution, and scope validation remain in place.
+- `train-jql replay [corpus.jsonl]` reads private feedback or a curated corpus,
+  uses the same translation, typed fallback, field resolution, and local scope
+  boundary, and replaces ambient clock/catalog/maps/aliases and the provider
+  with explicit fixtures. It bypasses `.env`, mounted secrets, cache refreshes,
+  provider factories, and all Jira operations. Missing provider output fails
+  closed; no live provider mode is supplied. Missing fixtures and unreviewed
+  attempts remain unscored failures in the full denominator.
+- Explicit reviewed expectations compare complete parsed Boolean trees and
+  ordered sort keys, allowing commutative AND/OR term order, plus query mode.
+  Separate diagnostic metrics cover Boolean grouping, ownership/history actor,
+  dates/history windows, project/direct-identity scope, ordering, local validity,
+  constraint completeness, routing, normalized input, and provider calls.
+  Constraint completeness describes translation constraints, never search rows.
+- JSON reports expose all attempts, failures, unscored cases, semantic success,
+  successful deterministic coverage, actual provider calls, and per-case/total
+  latency. Acceptance is semantic translation success divided by all attempts;
+  expected failures can pass their assertions without becoming successful
+  translations. Collection reports accepted good successes over all attempts.
+- Sixteen deliberately synthetic JSONL cases cover corrected Boolean, owner,
+  date and scope errors; a previously failed weekday example; calendar history
+  and actor semantics; tenant fields; ordering/mode; recognized ambiguity;
+  and typed fallback successes/failures. Incorrect historical JQL stays as review
+  data, and negative tests prove that it fails the semantic gate. Ordinary CI
+  runs the corpus as tests and through the command without credentials or models.
+- Private output retains 0700 directory/0600 file permissions. Git ignores
+  feedback-named JSONL files; collection additionally refuses tracked or
+  unignored custom paths in Git worktrees, including symlink destinations. It
+  never changes Git exclusions. Curated fixtures are authored separately.
+  [Feedback and replay](translation-feedback.md) documents preparation, format,
+  metric denominators, privacy, and the limits of the evaluator.
+
+### Phase 5 verification results
+
+- **Passed:** final `go build ./...`, `go vet ./...`, and
+  `go test -race -count=1 -timeout=120s ./...`, including unchanged Phase 1–4
+  search/cache/mutation/translation behavior. The new focused collection,
+  CLI replay, semantic-negative, fixture, concurrent-call-counter, schema-1,
+  private permissions/path, and review-EOF/quit regressions also passed.
+- **Passed:** `go test ./internal/jira -run '^TestGeneratedJQLCorpus$' -count=1`
+  and `go test -race -tags=oracle -count=1 ./internal/jqloracle`. The latter
+  exercises local oracle protocol fixtures only.
+- **Passed:** actual `go run . train-jql replay
+  internal/nlfeedback/testdata/regressions.jsonl` exited zero. All 16 reviewed
+  expectations passed: 10 semantically correct successful translations and six
+  expected translation failures. Nine successes were deterministic; three
+  fixture-provider calls occurred (one success, two failures). Reported
+  successful-translation acceptance was 10/16 (62.5%), deterministic successful
+  coverage 9/16 (56.25%), and expectation pass rate 16/16 (100%). These are
+  synthetic corpus measurements, not estimates of live-model quality. The
+  standalone run measured about 4.4 ms total local translation time; timing
+  varies and is not an acceptance threshold.
+- **Passed:** deliberately incorrect historical JQL and valid-but-wrong model
+  plans fail semantic/constraint assertions. CLI regressions verify nonzero
+  replay failure for wrong scope/meaning, missing fixtures/expectations, and
+  missing/empty corpora. Failed and unreviewed records stay in statistics;
+  hostile correction strings are never interpreted or executed.
+- **Passed:** `make doc-lint`, changed-Go-file formatting, `git diff --check`,
+  a redacted Gitleaks scan of all 24 changed/new implementation, fixture, and
+  documentation files, and unchanged SHA-256 hashes for both preexisting
+  harness artifacts. No private feedback or credential file was read, added,
+  or copied into the sanitized fixtures. No commit or deployment was made.
+- Initial mock-listener checks hit sandbox restrictions and an in-progress
+  fixture lacked applicability data. The fixture was corrected and final
+  approved integrated reruns passed; the earlier failures are not counted as
+  passes. Checks used mock services only.
+
+**Live strict Jira oracle: SKIPPED, not passed.**
+`python3 scripts/run-jql-oracle.py` exited 2 because all seven required exported
+credential/fixture variables were absent. No credentials were discovered or
+`.env` loaded to enable it. Hosted CI and live model/tenant behavior remain
+unverified; the workflow was updated but no hosted run was triggered.
+
+### Phase 5 remaining limitations
+
+- This is a local regression evaluator, not a live-model quality benchmark.
+  Provider responses/errors are manually reviewed fixtures. Their invocation
+  counts are exact, but elapsed times measure local replay execution rather than
+  real provider/network latency. Collection records live observed attempt latency.
+- Semantic equality is conservative parsed-tree equality with commutative term
+  ordering, not a proof of arbitrary Boolean equivalence or tenant synonyms.
+  Dimension projections are diagnostic; full-tree equality and mode are the
+  semantic gate. Equivalent quoting or differently distributed expressions may
+  need reviewed expectation updates rather than being accepted automatically.
+- Feedback is private and may contain user identifiers, tenant vocabulary, and
+  sensitive wording even though credential-bearing configuration and raw errors
+  are excluded. Promotion requires deliberate sanitization and reviewed
+  expectations/provider fixtures; corrections never self-promote. Legacy records
+  need manual reproducibility fixtures before they can be scored.
+- No replay executes JQL, so tenant timezone/calendar evaluation, live field
+  applicability, history-event matching, and strict Jira validation remain
+  separate oracle concerns. Hosted CI and live-model/tenant quality remain
+  unverified here. No embedding need has been established by this small corpus.
 
 ## Phase 6: Diagnostic dashboard and result lifecycle
 

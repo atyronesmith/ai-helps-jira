@@ -12,3 +12,5 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+# Trainer output is private. Curated regression fixtures are authored separately.
+*feedback*.jsonl

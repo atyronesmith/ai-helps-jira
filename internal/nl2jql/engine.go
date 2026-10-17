@@ -209,7 +209,7 @@ func (t *Translator) Translate(ctx context.Context, query string) (Result, error
 	if err != nil {
 		// Preserve causality: the caller can still see ErrUnmappable etc.
 		// via errors.Is on the wrapped error.
-		return Result{Input: query, NormalizedInput: normalized, ParseError: parseErr.Error()}, fmt.Errorf("%sfallback engine failed: %w", op, err)
+		return Result{Input: query, NormalizedInput: normalized, ParseError: parseErr.Error(), Route: RouteFallback}, fmt.Errorf("%sfallback engine failed: %w", op, err)
 	}
 
 	log.Info("jql translation: fallback path used (LLM)",

@@ -85,6 +85,7 @@ jira-cli query --dry-run "show me all critical bugs from last week"
 jira-cli query --count "my open bugs" --max 10
 jira-cli train-jql
 jira-cli train-jql report
+jira-cli train-jql replay internal/nlfeedback/testdata/regressions.jsonl
 ```
 
 **How it works:**
@@ -104,8 +105,11 @@ until then. Missing metadata and interruptions cannot become exact row counts.
 The approximate-count endpoint is not used. See README for policy details.
 
 `train-jql` uses the same production translation path but never executes the
-generated or corrected JQL. Reviews are appended to the private local corpus at
-`~/.jira-cli/nl2jql-feedback.jsonl` by default.
+generated or corrected JQL. Failures, skipped reviews, and corrections are
+appended to the private local corpus at `~/.jira-cli/nl2jql-feedback.jsonl` by
+default. Fixture replay runs the same translator with frozen inputs and no live
+provider. It checks semantic constraints and includes failed/unreviewed attempts
+in its denominator. See [feedback and replay](translation-feedback.md).
 
 **JIRA API:**
 - `POST /rest/api/3/search/jql` — existing `searchIssues()` method

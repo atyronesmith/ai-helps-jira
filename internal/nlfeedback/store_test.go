@@ -107,6 +107,8 @@ func TestAppendRejectsInvalidRecords(t *testing.T) {
 		{name: "missing route", modify: func(r *Record) { r.Route = "" }},
 		{name: "unknown verdict", modify: func(r *Record) { r.Verdict = Verdict("unsure") }},
 		{name: "unsupported schema", modify: func(r *Record) { r.SchemaVersion = CurrentSchemaVersion + 1 }},
+		{name: "negative provider calls", modify: func(r *Record) { r.ProviderCalls = -1 }},
+		{name: "negative duration", modify: func(r *Record) { r.DurationNanos = -1 }},
 		{name: "corrected without correction", modify: func(r *Record) { r.Verdict = VerdictCorrected }},
 	}
 	for _, test := range tests {
@@ -177,6 +179,65 @@ func TestSummarizeCountsRoutesAndVerdicts(t *testing.T) {
 	}
 	if got.ByVerdict[VerdictGood] != 1 || got.ByVerdict[VerdictCorrected] != 1 || got.ByVerdict[VerdictRejected] != 1 {
 		t.Errorf("verdict summary = %+v", got)
+	}
+}
+
+func TestReadSchemaOneAndLatestSnapshotCompatibility(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.jsonl")
+	legacy := `{"schema_version":1,"id":"legacy","recorded_at":"2026-01-01T00:00:00Z","input":"old","route":"parser","verdict":"good","validation":"legacy validator detail"}`
+	first := validRecord("attempt")
+	first.ID = "same"
+	first.Outcome = "failure"
+	first.Verdict = VerdictSkipped
+	last := first
+	last.Verdict = VerdictCorrected
+	last.Correction = "meaning"
+	for _, r := range []Record{first, last} {
+		if err := Append(path, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(legacy + "\n")
+	_ = f.Close()
+	got, err := Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Verdict != VerdictCorrected || got[1].SchemaVersion != 1 {
+		t.Fatalf("legacy/revision read: %+v", got)
+	}
+	if got[1].Validation != "legacy validator detail" {
+		t.Fatalf("schema 1 validation was not preserved: %+v", got[1])
+	}
+	summary := Summarize(got)
+	if summary.AcceptedSuccesses != 1 {
+		t.Fatalf("schema 1 success not counted: %+v", summary)
+	}
+}
+
+func TestSummaryUsesAllAttemptDenominatorAndDeduplicatesSnapshots(t *testing.T) {
+	fail := validRecord("failure")
+	fail.ID = "one"
+	fail.Outcome = "failure"
+	fail.Verdict = VerdictSkipped
+	fail.ProviderCalls = 2
+	fail.DurationNanos = 100
+	good := validRecord("success")
+	good.ID = "two"
+	good.Outcome = "success"
+	good.Verdict = VerdictGood
+	good.Route = "fast_path"
+	good.DurationNanos = 300
+	revised := fail
+	revised.Verdict = VerdictCorrected
+	revised.Correction = "fix"
+	s := Summarize([]Record{fail, good, revised})
+	if s.Total != 2 || s.Failures != 1 || s.AcceptedSuccesses != 1 || s.DeterministicSuccesses != 1 || s.ProviderCalls != 2 || s.TotalDurationNanos != 400 || s.AcceptanceRate != 0.5 {
+		t.Fatalf("summary=%+v", s)
 	}
 }
 

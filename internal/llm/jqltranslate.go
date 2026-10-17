@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/cache"
@@ -36,6 +37,7 @@ type jqlProviderAdapter struct {
 
 // Generate satisfies nl2jql.Provider.
 func (a jqlProviderAdapter) Generate(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
+	countProviderCall(ctx)
 	return a.provider.Complete(ctx, systemPrompt, userPrompt, jqlFallbackMaxTokens)
 }
 
@@ -57,7 +59,17 @@ func (l *lazyJQLProvider) Generate(ctx context.Context, systemPrompt, userPrompt
 	if err != nil {
 		return "", err
 	}
+	countProviderCall(ctx)
 	return p.Complete(ctx, systemPrompt, userPrompt, jqlFallbackMaxTokens)
+}
+
+type providerCallCounterKey struct{}
+type providerCallCounter struct{ calls atomic.Int64 }
+
+func countProviderCall(ctx context.Context) {
+	if c, ok := ctx.Value(providerCallCounterKey{}).(*providerCallCounter); ok {
+		c.calls.Add(1)
+	}
 }
 
 // buildProjectMap seeds the normalizer's fuzzy project-name vocabulary. It is
@@ -277,14 +289,14 @@ func newTranslatorWithMetadata(cfg *config.Config, projects []jira.Project, meta
 	if err != nil {
 		return nil, err
 	}
-	return nl2jql.NewTranslator(nl2jql.NewNormalizer(), fallback, nl2jql.Options{
-		ProjectMap:   buildProjectMapWithProjects(cfg, projects),
-		Schema:       schemaWithFields(cfg, metadata.Fields, aliases),
-		Fields:       metadata.Fields,
-		FieldAliases: aliases,
-		Project:      cfg.JiraProject,
-		Self:         cfg.Assignee(),
-		Logger:       slog.Default(),
+	return translatorWithInputs(cfg, fallback, nl2jql.NewNormalizer(), metadata, buildProjectMapWithProjects(cfg, projects), aliases, slog.Default())
+}
+
+func translatorWithInputs(cfg *config.Config, fallback *nl2jql.FallbackEngine, normalizer *nl2jql.Normalizer, metadata TranslationMetadata, projectMap, aliases map[string]string, logger *slog.Logger) (*nl2jql.Translator, error) {
+	return nl2jql.NewTranslator(normalizer, fallback, nl2jql.Options{
+		ProjectMap: projectMap, Schema: schemaWithFields(cfg, metadata.Fields, aliases),
+		Fields: metadata.Fields, FieldAliases: aliases,
+		Project: cfg.JiraProject, Self: cfg.Assignee(), Logger: logger,
 	})
 }
 
@@ -299,29 +311,78 @@ func GenerateJQL(ctx context.Context, cfg *config.Config, naturalQuery string) (
 // GenerateJQLWithProjects uses deterministic intent or one bounded typed fallback.
 func GenerateJQLWithProjects(ctx context.Context, cfg *config.Config, naturalQuery string, projects []jira.Project) (*QueryResult, error) {
 	return translateCascade(ctx, cfg, naturalQuery, projects, func(cfg *config.Config, projects []jira.Project) (*nl2jql.Translator, error) {
-		return newTranslatorWithMetadata(cfg, projects, metadataFromContext(ctx))
+		return buildTranslatorForContext(ctx, cfg, projects, metadataFromContext(ctx), &lazyJQLProvider{cfg: cfg})
 	})
+}
+
+func buildTranslatorForContext(ctx context.Context, cfg *config.Config, projects []jira.Project, metadata TranslationMetadata, provider nl2jql.Provider) (*nl2jql.Translator, error) {
+	if fixture, ok := fixtureFromContext(ctx); ok {
+		if fixture.Now.IsZero() {
+			return nil, errors.New("translation fixture clock is empty")
+		}
+		normalizer := nl2jql.NewNormalizer()
+		normalizer.Now = func() time.Time { return fixture.Now }
+		fallback, err := nl2jql.NewFallbackEngine(provider)
+		if err != nil {
+			return nil, err
+		}
+		return translatorWithInputs(cfg, fallback, normalizer, fixture.Metadata, fixture.ProjectMap, fixture.FieldAliases, slog.Default())
+	}
+	aliases, err := fieldAliases()
+	if err != nil {
+		return nil, err
+	}
+	fallback, err := nl2jql.NewFallbackEngine(provider)
+	if err != nil {
+		return nil, err
+	}
+	return translatorWithInputs(cfg, fallback, nl2jql.NewNormalizer(), metadata, buildProjectMapWithProjects(cfg, projects), aliases, slog.Default())
 }
 
 // translateCascade compiles one translator result and enforces local scope.
 func translateCascade(ctx context.Context, cfg *config.Config, naturalQuery string, projects []jira.Project, build func(*config.Config, []jira.Project) (*nl2jql.Translator, error)) (*QueryResult, error) {
+	started := time.Now()
+	counter := &providerCallCounter{}
+	ctx = context.WithValue(ctx, providerCallCounterKey{}, counter)
+	finish := func(res *QueryResult) {
+		if res != nil {
+			res.ProviderCalls = int(counter.calls.Load())
+			res.DurationNanos = time.Since(started).Nanoseconds()
+			now := time.Now()
+			if fixture, ok := fixtureFromContext(ctx); ok {
+				now = fixture.Now
+			}
+			stampMetadataAt(ctx, res, now)
+		}
+	}
 	if err := ctx.Err(); err != nil {
-		return nil, translationerror.New(translationerror.KindOf(err), err)
+		res := &QueryResult{Input: naturalQuery}
+		finish(res)
+		return res, translationerror.New(translationerror.KindOf(err), err)
 	}
 	translator, err := build(cfg, projects)
 	if err != nil {
-		return nil, translationerror.New(translationerror.Unsupported, err)
+		res := &QueryResult{Input: naturalQuery}
+		finish(res)
+		return res, translationerror.New(translationerror.Unsupported, err)
 	}
 	res, err := translator.Translate(ctx, naturalQuery)
+	if res.Input == "" {
+		res.Input = naturalQuery
+	}
 	if err != nil {
-		return nil, err
+		result := &QueryResult{Input: res.Input, NormalizedInput: res.NormalizedInput, ParseError: res.ParseError, Route: res.Route, Mode: res.Mode}
+		finish(result)
+		return result, err
 	}
 	res.JQL, err = ensureProjectScope(res.JQL, cfg)
 	if err != nil {
-		return nil, translationerror.New(translationerror.InvalidOutput, err)
+		result := &QueryResult{Input: res.Input, NormalizedInput: res.NormalizedInput, ParseError: res.ParseError, Route: res.Route, Mode: res.Mode}
+		finish(result)
+		return result, translationerror.New(translationerror.InvalidOutput, err)
 	}
 	result := &QueryResult{Input: res.Input, NormalizedInput: res.NormalizedInput, ParseError: res.ParseError, JQL: res.JQL, Route: res.Route, Mode: res.Mode}
-	stampMetadata(ctx, result)
+	finish(result)
 	return result, nil
 }
 
@@ -412,7 +473,7 @@ func NewTranslatorCache() *TranslatorCache {
 // otherwise identical to GenerateJQLWithProjects.
 func (c *TranslatorCache) GenerateJQL(ctx context.Context, cfg *config.Config, naturalQuery string, projects []jira.Project) (*QueryResult, error) {
 	return translateCascade(ctx, cfg, naturalQuery, projects, func(cfg *config.Config, projects []jira.Project) (*nl2jql.Translator, error) {
-		return c.translatorForMetadata(cfg, projects, metadataFromContext(ctx))
+		return c.translatorForContext(ctx, cfg, projects, metadataFromContext(ctx))
 	})
 }
 
@@ -442,15 +503,22 @@ func (c *TranslatorCache) translatorForMetadata(cfg *config.Config, projects []j
 	if err != nil {
 		return nil, err
 	}
-	return nl2jql.NewTranslator(nl2jql.NewNormalizer(), fallback, nl2jql.Options{
-		ProjectMap:   buildProjectMapWithProjects(cfg, projects),
-		Schema:       schemaWithFields(cfg, metadata.Fields, aliases),
-		Fields:       metadata.Fields,
-		FieldAliases: aliases,
-		Project:      cfg.JiraProject,
-		Self:         cfg.Assignee(),
-		Logger:       slog.Default(),
-	})
+	return translatorWithInputs(cfg, fallback, nl2jql.NewNormalizer(), metadata, buildProjectMapWithProjects(cfg, projects), aliases, slog.Default())
+}
+func (c *TranslatorCache) translatorForContext(ctx context.Context, cfg *config.Config, projects []jira.Project, metadata TranslationMetadata) (*nl2jql.Translator, error) {
+	if fixture, ok := fixtureFromContext(ctx); ok {
+		if fixture.Now.IsZero() {
+			return nil, errors.New("translation fixture clock is empty")
+		}
+		fallback, err := c.engine(cfg)
+		if err != nil {
+			return nil, err
+		}
+		normalizer := nl2jql.NewNormalizer()
+		normalizer.Now = func() time.Time { return fixture.Now }
+		return translatorWithInputs(cfg, fallback, normalizer, fixture.Metadata, fixture.ProjectMap, fixture.FieldAliases, slog.Default())
+	}
+	return c.translatorForMetadata(cfg, projects, metadata)
 }
 
 // engine returns the FallbackEngine memoized for cfg's provider signature,

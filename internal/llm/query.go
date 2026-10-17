@@ -17,6 +17,8 @@ type QueryResult struct {
 	Input                      string           `json:"input,omitempty"`
 	NormalizedInput            string           `json:"normalized_input,omitempty"`
 	ParseError                 string           `json:"parse_error,omitempty"`
+	ProviderCalls              int              `json:"provider_calls"`
+	DurationNanos              int64            `json:"duration_nanos"`
 }
 
 const (

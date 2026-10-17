@@ -38,6 +38,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test -race -count=1 ./...
+      - name: Replay sanitized translation corpus (no Jira or live model)
+        run: go run . train-jql replay internal/nlfeedback/testdata/regressions.jsonl
       - run: go test -race -tags=oracle -count=1 ./internal/jqloracle
       - name: Test oracle runner
         run: python3 -m unittest discover -s scripts -p 'test_run_jql_oracle.py' -v

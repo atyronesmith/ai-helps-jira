@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
 	"github.com/atyronesmith/ai-helps-jira/internal/nlfeedback"
+	"github.com/atyronesmith/ai-helps-jira/internal/translationerror"
 )
 
 func TestRunQueryDryRunUsesTokenlessConfigAndCachedProjectsOnly(t *testing.T) {
@@ -159,10 +162,10 @@ func TestInteractiveTrainerRecordsVerdictsAndSkips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 3 {
-		t.Fatalf("records = %d, want 3", len(records))
+	if len(records) != 4 {
+		t.Fatalf("records = %d, want 4 including skipped attempt", len(records))
 	}
-	want := []nlfeedback.Verdict{nlfeedback.VerdictGood, nlfeedback.VerdictCorrected, nlfeedback.VerdictRejected}
+	want := []nlfeedback.Verdict{nlfeedback.VerdictGood, nlfeedback.VerdictCorrected, nlfeedback.VerdictRejected, nlfeedback.VerdictSkipped}
 	for i := range want {
 		if records[i].Verdict != want[i] {
 			t.Errorf("record %d verdict = %q, want %q", i, records[i].Verdict, want[i])
@@ -204,9 +207,125 @@ func TestInteractiveTrainerNaturalLanguageCorrectionAndEOF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 0 {
-		t.Fatalf("EOF after query created partial record: %+v", records)
+	if len(records) != 1 || records[0].Verdict != nlfeedback.VerdictSkipped {
+		t.Fatalf("EOF after query did not preserve skipped attempt: %+v", records)
 	}
+}
+
+func TestInteractiveTrainerFailurePrivacyAndRevisions(t *testing.T) {
+	path := t.TempDir() + "/feedback.jsonl"
+	secret := "provider body with token=SECRET"
+	var output bytes.Buffer
+	input := "  exact query  \ncorrection\n  intended exact  \nquit\n"
+	err := runInteractiveTrainer(strings.NewReader(input), &output, path, "SUP", "v", func(string) (*llm.QueryResult, error) { return nil, errors.New(secret) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := nlfeedback.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("logical records=%d, want 1: %+v", len(records), records)
+	}
+	r := records[0]
+	if r.Input != "  exact query  " || r.Correction != "  intended exact  " || r.Outcome != "failure" || r.ErrorCategory != "unknown" || r.Verdict != nlfeedback.VerdictCorrected {
+		t.Fatalf("unexpected failure record: %+v", r)
+	}
+	if strings.Contains(string(mustRead(t, path)), "SECRET") || strings.Contains(string(mustRead(t, path)), secret) {
+		t.Fatal("provider error leaked into feedback corpus")
+	}
+}
+
+func TestInteractiveTrainerFailureCategoriesAndNilResult(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"classified", translationerror.New(translationerror.Timeout, errors.New("private response body")), "timeout"},
+		{"unknown", errors.New("malicious provider body"), "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := t.TempDir() + "/f.jsonl"
+			input := "query\nskip\nquit\n"
+			if err := runInteractiveTrainer(strings.NewReader(input), &bytes.Buffer{}, path, "", "v", func(string) (*llm.QueryResult, error) { return nil, tc.err }); err != nil {
+				t.Fatal(err)
+			}
+			records, err := nlfeedback.Read(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(records) != 1 || records[0].ErrorCategory != tc.want || records[0].Validation != "not_generated" || records[0].GeneratedJQL != "" {
+				t.Fatalf("unexpected failure: %+v", records)
+			}
+			raw := string(mustRead(t, path))
+			if strings.Contains(raw, "private response body") || strings.Contains(raw, "malicious provider body") {
+				t.Fatal("raw provider error persisted")
+			}
+		})
+	}
+	path := t.TempDir() + "/nil.jsonl"
+	if err := runInteractiveTrainer(strings.NewReader("query\nskip\nquit\n"), &bytes.Buffer{}, path, "", "v", func(string) (*llm.QueryResult, error) { return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	r, err := nlfeedback.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r) != 1 || r[0].Outcome != "failure" || r[0].ErrorCategory != "unknown" {
+		t.Fatalf("nil result record: %+v", r)
+	}
+}
+
+func TestInteractiveTrainerPersistsEOFAndFailureQuit(t *testing.T) {
+	translator := func(string) (*llm.QueryResult, error) {
+		return &llm.QueryResult{Input: "raw", Route: llm.RouteFastPath, JQL: `project = "SUP" AND status = Open`}, nil
+	}
+	for _, input := range []string{" query \n", " query \ncorrected\nproject = \"SUP\" AND status = Closed\n", " query \ncorrected\nproject = \"SUP\" AND status = Closed\n\n"} {
+		path := t.TempDir() + "/f.jsonl"
+		if err := runInteractiveTrainer(strings.NewReader(input), &bytes.Buffer{}, path, "SUP", "v", translator); err != nil {
+			t.Fatal(err)
+		}
+		records, err := nlfeedback.Read(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records) != 1 {
+			t.Fatalf("EOF attempt not retained: %+v", records)
+		}
+		if records[0].Input != " query " {
+			t.Fatalf("input trimmed: %q", records[0].Input)
+		}
+		if strings.Contains(input, "corrected") && records[0].CorrectedJQL == "" {
+			t.Fatalf("valid in-progress JQL lost: %+v", records[0])
+		}
+	}
+	path := t.TempDir() + "/failure.jsonl"
+	calls := 0
+	err := runInteractiveTrainer(strings.NewReader("failed\nquit\nafter quit\ngood\n"), &bytes.Buffer{}, path, "", "v", func(string) (*llm.QueryResult, error) {
+		calls++
+		return &llm.QueryResult{Route: "", NormalizedInput: "partial", ParseError: "local parse", ProviderCalls: 3}, translationerror.New(translationerror.Kind("secret-category"), errors.New("private"))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := nlfeedback.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || len(records) != 1 || records[0].Route != "not_generated" || records[0].NormalizedInput != "partial" || records[0].ParseError != "local parse" || records[0].ProviderCalls != 3 || records[0].ErrorCategory != "unknown" {
+		t.Fatalf("partial failure or quit handling wrong: calls=%d records=%+v", calls, records)
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, e := os.ReadFile(path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	return b
 }
 
 func TestInteractiveTrainerInvalidCorrectedJQLCanRetryWithCorrection(t *testing.T) {
