@@ -4,10 +4,14 @@
 
 {{define "content"}}
 <h1>Results and attempts</h1>
-{{if .Results}}
-<div style="margin-bottom: 0.5em;">
-    <button id="bulk-delete-btn" class="outline secondary" style="display:none;" onclick="bulkDelete()">Delete Selected</button>
+<div class="dashboard-controls">
+    <button id="refresh-now" class="outline">Refresh now</button>
+    <label for="auto-refresh"><input type="checkbox" id="auto-refresh"> Auto-refresh results (15s)</label>
+    <button id="bulk-delete-btn" class="outline secondary" style="display:none;">Delete Selected</button>
 </div>
+<p id="dashboard-update" role="status" aria-live="polite"></p>
+<div id="dashboard-results">
+{{if .Results}}
 <table>
     <thead>
         <tr>
@@ -31,40 +35,9 @@
 {{else}}
 <p>No results yet. Use Claude Code to call a jira-cli tool and results will appear here.</p>
 {{end}}
+</div>
 {{end}}
 
 {{define "scripts"}}
-<script>
-const selectAll = document.getElementById('select-all');
-const bulkBtn = document.getElementById('bulk-delete-btn');
-const checks = document.querySelectorAll('.row-check');
-
-function updateBulkBtn() {
-    const any = [...checks].some(c => c.checked);
-    if (bulkBtn) bulkBtn.style.display = any ? '' : 'none';
-}
-
-if (selectAll) {
-    selectAll.addEventListener('change', function() {
-        checks.forEach(c => { c.checked = this.checked; });
-        updateBulkBtn();
-    });
-}
-checks.forEach(c => c.addEventListener('change', updateBulkBtn));
-
-async function bulkDelete() {
-    const selected = [...document.querySelectorAll('.row-check:checked')];
-    if (selected.length === 0) return;
-    if (!confirm('Delete ' + selected.length + ' result(s)?')) return;
-    for (const cb of selected) {
-        const id = cb.dataset.id;
-        const resp = await fetch('/api/result/' + id, { method: 'DELETE' });
-        if (resp.ok) {
-            document.getElementById('row-' + id).remove();
-        }
-    }
-    if (bulkBtn) bulkBtn.style.display = 'none';
-    if (selectAll) selectAll.checked = false;
-}
-</script>
+<script src="/static/js/dashboard.js" defer></script>
 {{end}}

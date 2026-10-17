@@ -220,6 +220,15 @@ display JQL; query views distinguish exact execution text from display changes,
 with original/normalized input, validation, duration, and search completeness.
 Bulk select and delete affects only the selected history owner.
 
+Use **Refresh now** to update the results list, or enable **Auto-refresh results
+(15s)** for periodic updates. Auto-refresh defaults to off and remembers your
+choice in this browser when browser storage is available. Automatic updates
+pause while the tab is hidden. Refresh preserves selected rows that still exist
+and shows an error without clearing the current list if the server is unavailable.
+These controls reload locally stored history; they do not rerun searches, fetch
+fresh Jira issue data, or call a model. Existing result detail pages remain saved
+snapshots. The header's passive status polling runs independently.
+
 History is private durable SQLite storage under `~/.jira-cli/results-v1/`.
 `--history-instance NAME` selects a stable owner (default `default`); use different
 names for independent local servers. Matching names share results and retention.
