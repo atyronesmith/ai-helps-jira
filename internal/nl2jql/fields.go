@@ -96,6 +96,19 @@ func resolvePlanFields(p *QueryPlan, r *fieldmeta.Resolver, project string) erro
 		if err != nil {
 			return err
 		}
+		if strings.EqualFold(unquoteField(p.Sort[n].Field), "Story Points") {
+			for _, project := range projects {
+				for _, kind := range types {
+					meta, err := r.Resolve("Story Points", project, kind)
+					if err != nil {
+						return err
+					}
+					if meta.Type != "number" && meta.Type != "integer" {
+						return fmt.Errorf("%w: Story Points ordering requires numeric metadata", fieldmeta.ErrMissingMetadata)
+					}
+				}
+			}
+		}
 		p.Sort[n].Field = field
 	}
 	return nil

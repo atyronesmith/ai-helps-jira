@@ -257,7 +257,7 @@ func TestGenerateJQLFastPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateJQL: %v", err)
 	}
-	want := `project = Support AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser()`
+	want := `project = Support AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser() ORDER BY updated DESC`
 	if res.JQL != want {
 		t.Errorf("JQL = %q, want %q", res.JQL, want)
 	}
@@ -331,10 +331,10 @@ func TestGenerateJQLPhase3DateAndBooleanSemantics(t *testing.T) {
 		want  string
 		mode  nl2jql.QueryMode
 	}{
-		{"due this week has bounded dates without implicit owner or sort", "List jiras that are due this week?", `due >= startOfWeek() AND due < startOfWeek("+1") AND project = PROJ`, nl2jql.ModeList},
+		{"due this week has bounded dates and default sort", "List jiras that are due this week?", `due >= startOfWeek() AND due < startOfWeek("+1") AND project = PROJ ORDER BY updated DESC`, nl2jql.ModeList},
 		{"closed history uses CHANGED with exclusive month boundary", "How many jiras did I close in June 2026?", `status CHANGED TO Closed BY currentUser() DURING ("2026-06-01 00:00", "2026-07-01 00:00") BEFORE "2026-07-01 00:00" AND project = PROJ`, nl2jql.ModeCount},
-		{"grouped mixed-field alternatives preserve Boolean grouping", "my (open bugs or done tasks)", `assignee = currentUser() AND (issuetype = Bug AND statusCategory != Done OR issuetype = Task AND status = Done) AND project = PROJ`, nl2jql.ModeList},
-		{"same-field status alternatives remain OR", "my open or done bugs", `issuetype = Bug AND (statusCategory != Done OR status = Done) AND assignee = currentUser() AND project = PROJ`, nl2jql.ModeList},
+		{"grouped mixed-field alternatives preserve Boolean grouping", "my (open bugs or done tasks)", `assignee = currentUser() AND (issuetype = Bug AND statusCategory != Done OR issuetype = Task AND status = Done) AND project = PROJ ORDER BY updated DESC`, nl2jql.ModeList},
+		{"same-field status alternatives remain OR", "my open or done bugs", `issuetype = Bug AND (statusCategory != Done OR status = Done) AND assignee = currentUser() AND project = PROJ ORDER BY updated DESC`, nl2jql.ModeList},
 		{"multiple sort keys survive rendering", "my bugs ordered by priority descending, created ascending", `issuetype = Bug AND assignee = currentUser() AND project = PROJ ORDER BY priority DESC, created ASC`, nl2jql.ModeList},
 	}
 	for _, tc := range cases {
@@ -436,7 +436,7 @@ func TestGenerateJQLInvalidOrderByUsesFallback(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
-		_, _ = io.WriteString(w, openAIJSON(modelStatusOpen))
+		_, _ = io.WriteString(w, openAIJSON(`{"version":1,"outcome":"unsupported"}`))
 	}))
 	defer srv.Close()
 	withOpenAIEnv(t, srv.URL)
@@ -447,8 +447,8 @@ func TestGenerateJQLInvalidOrderByUsesFallback(t *testing.T) {
 	} {
 		t.Run(query, func(t *testing.T) {
 			res, err := GenerateJQL(context.Background(), &config.Config{JiraProject: "PROJ"}, query)
-			if err != nil {
-				t.Fatalf("GenerateJQL: %v", err)
+			if translationerror.KindOf(err) != translationerror.Unsupported || res.JQL != "" {
+				t.Fatalf("result=%+v err=%v; want unsupported with no executable JQL", res, err)
 			}
 			if res.Route != RouteFallback {
 				t.Errorf("route = %q, want %q", res.Route, RouteFallback)
@@ -477,8 +477,8 @@ func TestGenerateJQLFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateJQL: %v", err)
 	}
-	if res.JQL != "status = Open AND project = SUP" {
-		t.Errorf("JQL = %q, want status = Open AND project = SUP", res.JQL)
+	if res.JQL != "status = Open AND project = SUP ORDER BY updated DESC" {
+		t.Errorf("JQL = %q, want status = Open AND project = SUP ORDER BY updated DESC", res.JQL)
 	}
 	if res.Days != 0 {
 		t.Errorf("Days = %d, want 0 (FallbackEngine emits no comment window)", res.Days)
@@ -1027,7 +1027,7 @@ func TestGenerateJQLWithProjectsResolvesHumanName(t *testing.T) {
 		t.Fatalf("GenerateJQLWithProjects: %v", err)
 	}
 	// With the list, "Support" canonicalizes to its key "SUP" on the fast path.
-	want := `project = SUP AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser()`
+	want := `project = SUP AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser() ORDER BY updated DESC`
 	if res.JQL != want {
 		t.Errorf("JQL = %q, want %q", res.JQL, want)
 	}
@@ -1057,7 +1057,7 @@ func TestGenerateJQLWithProjects_NilListKeepsHumanNameLiteral(t *testing.T) {
 		t.Errorf("route = %q, want fast_path", res.Route)
 	}
 	// No list/alias => "Support" is not canonicalized to "SUP".
-	want := `project = Support AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser()`
+	want := `project = Support AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser() ORDER BY updated DESC`
 	if res.JQL != want {
 		t.Errorf("JQL = %q, want %q (the name must stay literal without a list)", res.JQL, want)
 	}
@@ -1078,7 +1078,7 @@ func TestGenerateJQLForDigestWithProjectsResolvesHumanName(t *testing.T) {
 	}
 	// With the list, "Support" canonicalizes to its key "SUP" on the fast path,
 	// and a window-less query bakes no separate comment window.
-	want := `project = SUP AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser()`
+	want := `project = SUP AND issuetype = Bug AND statusCategory != Done AND assignee = currentUser() ORDER BY updated DESC`
 	if res.JQL != want {
 		t.Errorf("JQL = %q, want %q", res.JQL, want)
 	}

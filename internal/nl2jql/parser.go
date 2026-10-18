@@ -16,6 +16,7 @@ import (
 	"github.com/alecthomas/participle/v2"
 	"github.com/alecthomas/participle/v2/lexer"
 
+	"github.com/atyronesmith/ai-helps-jira/internal/fieldmeta"
 	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 )
 
@@ -30,7 +31,7 @@ var fillerWords = []string{
 	"show", "find", "list", "get", "give", "fetch", "bring", "see",
 	"need", "want", "please", "thank", "thanks", "how", "many",
 	"count", "all", "every", "any", "the", "a", "an", "only", "just",
-	"currently", "still",
+	"currently", "still", "where",
 	"issue", "issues", "ticket", "tickets", "item", "items", "jira", "jiras",
 	"of", "for", "to",
 	"that", "those", "these", "it", "them", "us", "you",
@@ -72,6 +73,12 @@ var jqlLexer = lexer.MustStateful(lexer.Rules{
 		{Name: "DateFunction", Pattern: `(?i)(?:startOfDay|startOfWeek|startOfMonth|endOfDay|endOfWeek|endOfMonth|now)\((?:"[+-]?[0-9]+")?\)`},
 		{Name: "DateLiteral", Pattern: `"[0-9]{4}-[0-9]{2}-[0-9]{2}"`},
 		{Name: "RelativeDate", Pattern: `-[0-9]+[dw]\b`},
+		{Name: "ContainsWords", Pattern: `(?i)\b(?:that\s+)?contain\s+the\s+words\b`},
+		{Name: "ChildOfEpic", Pattern: `(?i)\b(?:that\s+are\s+)?child\s+tasks\s+of\s+an\s+epic\b`},
+		// The optional conjunction belongs to the ordering frame only here;
+		// ordinary Boolean connectors remain separate tokens elsewhere.
+		{Name: "OrderFrame", Pattern: `(?i)(?:\band\s+(?:ordered|sorted|order)\s+by\b|\b(?:ordered|sorted|order)\s+by\b|\bin\s+order\s+of\s+when\b|\bby\b)`},
+		{Name: "PriorityEither", Pattern: `(?i)\bpriority\s+is\s+either\b`},
 		{Name: "And", Pattern: `(?i)\band\b`},
 		{Name: "Or", Pattern: `(?i)\bor\b`},
 		{Name: "Not", Pattern: `(?i)\bnot\b`},
@@ -97,12 +104,15 @@ var jqlLexer = lexer.MustStateful(lexer.Rules{
 		{Name: "Highest", Pattern: `(?i)\bhighest\b`},
 		{Name: "Lowest", Pattern: `(?i)\blowest\b`},
 		{Name: "Critical", Pattern: `(?i)\bcritical\b`},
+		{Name: "Major", Pattern: `(?i)\bmajor\b`},
+		{Name: "Minor", Pattern: `(?i)\bminor\b`},
 		{Name: "High", Pattern: `(?i)\bhigh\b`},
 		{Name: "Medium", Pattern: `(?i)\bmedium\b`},
 		{Name: "Low", Pattern: `(?i)\blow\b`},
 		{Name: "PriorityField", Pattern: `(?i)\bpriority\b`},
 		{Name: "StoryPoints", Pattern: `(?i)\bstory[\s_-]+points?\b`},
-		{Name: "OrderFrame", Pattern: `(?i)\b(?:ordered|sorted|order)\s+by\b`},
+		{Name: "Then", Pattern: `(?i)\bthen\b`},
+		{Name: "ChronologicalDirection", Pattern: `(?i)\b(?:from\s+)?(?:oldest\s+to\s+newest|newest\s+to\s+oldest)\b`},
 		{Name: "Direction", Pattern: `(?i)\b(?:ascending|asc|descending|desc)\b`},
 
 		// Status vocabulary.
@@ -155,18 +165,21 @@ type Query struct {
 
 // Clause maps to exactly one JQL predicate (or zero, for Noise).
 type Clause struct {
-	Group       *Query          `parser:"LParen @@ RParen"`
-	Negation    *Clause         `parser:"| Not @@"`
-	Connector   string          `parser:"| @And | @Or"`
-	Date        *DateComparison `parser:"| @@"`
-	Ownership   *Ownership      `parser:"| @@"`
-	IssueType   *IssueType      `parser:"| @@"`
-	Status      *Status         `parser:"| @@"`
-	Priority    *Priority       `parser:"| @@"`
-	StoryPoints *StoryPoints    `parser:"| @@"`
-	OrderBy     *OrderBy        `parser:"| @@"`
-	Project     *Project        `parser:"| @@"`
-	Noise       *Noise          `parser:"| @@"`
+	Group         *Query          `parser:"LParen @@ RParen"`
+	Negation      *Clause         `parser:"| Not @@"`
+	Connector     string          `parser:"| @And | @Or"`
+	Date          *DateComparison `parser:"| @@"`
+	Ownership     *Ownership      `parser:"| @@"`
+	IssueType     *IssueType      `parser:"| @@"`
+	Status        *Status         `parser:"| @@"`
+	Priority      *Priority       `parser:"| @@"`
+	StoryPoints   *StoryPoints    `parser:"| @@"`
+	OrderBy       *OrderBy        `parser:"| @@"`
+	Chronological string          `parser:"| @ChronologicalDirection"`
+	TextSearch    *TextSearch     `parser:"| @@"`
+	ChildOfEpic   bool            `parser:"| @ChildOfEpic"`
+	Project       *Project        `parser:"| @@"`
+	Noise         *Noise          `parser:"| @@"`
 }
 
 // DateComparison binds a supported date field to a typed bound. Calendar
@@ -211,24 +224,38 @@ type Status struct {
 	Raw string `parser:"@Open | @Done | @Closed | @InProgress"`
 }
 
-// Priority accepts both "priority Critical" and "Critical priority".
+// Priority accepts field/value pairs, bare values, and one value following the
+// scoped "priority is either" frame. A following OR and second value remain
+// ordinary same-field alternatives, which compile to IN.
 type Priority struct {
-	Tokens []string `parser:"( @Highest | @Lowest | @Critical | @High | @Medium | @Low ) @PriorityField | @PriorityField ( @Highest | @Lowest | @Critical | @High | @Medium | @Low )"`
+	Either bool     `parser:"( @PriorityEither )?"`
+	Tokens []string `parser:"( ( @Highest | @Lowest | @Critical | @Major | @Minor | @High | @Medium | @Low ) @PriorityField | @PriorityField ( @Highest | @Lowest | @Critical | @Major | @Minor | @High | @Medium | @Low ) | ( @Highest | @Lowest | @Critical | @Major | @Minor | @High | @Medium | @Low ) )"`
 }
 
 // OrderBy captures one field and an optional direction. An omitted direction
-// defaults to ASC during rendering. Field aliases are resolved through
-// orderFieldJQL below; arbitrary field names are rejected.
+// defaults to DESC for numeric/duration fields, priority, and updated, otherwise
+// ASC. Field aliases resolve through orderFieldJQL; arbitrary names are rejected.
 type OrderBy struct {
 	Frame     string      `parser:"@OrderFrame"`
 	Field     []string    `parser:"( @Word | @Filler | @PriorityField | @StoryPoints | @DateField )+"`
-	Direction string      `parser:"( @Direction )?"`
-	More      []*SortTerm `parser:"( Comma @@ )*"`
+	Direction string      `parser:"( @Direction | @ChronologicalDirection )?"`
+	More      []*SortTerm `parser:"( ( Comma Then? | Then ) @@ )*"`
 }
 
 type SortTerm struct {
 	Field     []string `parser:"( @Word | @Filler | @PriorityField | @StoryPoints | @DateField )+"`
-	Direction string   `parser:"( @Direction )?"`
+	Direction string   `parser:"( @Direction | @ChronologicalDirection )?"`
+}
+
+// TextSearch captures a required list of literal terms after a recognized
+// contains-the-words frame. OR and commas only separate terms inside this list.
+type TextSearch struct {
+	Frame string            `parser:"@ContainsWords"`
+	Terms []*TextSearchTerm `parser:"@@ ( ( Comma Or? | Or ) @@ )*"`
+}
+
+type TextSearchTerm struct {
+	Value string `parser:"@Email | @Word | @Filler | @DateField | @DateFunction | @DateLiteral | @RelativeDate | @InProgress | @AssignedTo | @My | @Me | @Not | @Highest | @Lowest | @Critical | @Major | @Minor | @High | @Medium | @Low | @PriorityField | @StoryPoints | @Then | @ChronologicalDirection | @Direction | @Open | @Closed | @Done | @Bugs | @Epics | @Tasks | @Stories | @In"`
 }
 
 // Project -> project = <Key>.
@@ -272,6 +299,8 @@ var statusJQL = map[string]string{
 
 var priorityJQL = map[string]string{
 	"critical": "Critical",
+	"major":    "Major",
+	"minor":    "Minor",
 	"highest":  "Highest",
 	"high":     "High",
 	"medium":   "Medium",
@@ -283,43 +312,53 @@ var priorityJQL = map[string]string{
 // fields and the explicitly supported Story Points/Rank aliases; arbitrary
 // tenant-specific custom field names are excluded.
 var orderFieldJQL = map[string]string{
-	"story points":    `"Story Points"`,
-	"priority":        "priority",
-	"created":         "created",
-	"creation date":   "created",
-	"date created":    "created",
-	"updated":         "updated",
-	"updated date":    "updated",
-	"update date":     "updated",
-	"last updated":    "updated",
-	"due":             "due",
-	"due date":        "due",
-	"deadline":        "due",
-	"resolved":        "resolved",
-	"resolution date": "resolved",
-	"status":          "status",
-	"assignee":        "assignee",
-	"reporter":        "reporter",
-	"key":             "key",
-	"issue key":       "key",
-	"work item key":   "key",
-	"jira key":        "key",
-	"summary":         "summary",
-	"title":           "summary",
-	"issuetype":       "issuetype",
-	"issue type":      "issuetype",
-	"work item type":  "issuetype",
-	"type":            "issuetype",
-	"rank":            "Rank",
-	"ranking":         "Rank",
-	"component":       "component",
-	"components":      "component",
-	"fix version":     "fixVersion",
-	"release":         "fixVersion",
-	"version":         "fixVersion",
-	"labels":          "labels",
-	"label":           "labels",
-	"project":         "project",
+	"story points":       `"Story Points"`,
+	"summary text":       "summary",
+	"original estimate":  "originalEstimate",
+	"originalestimate":   "originalEstimate",
+	"logged time":        "timespent",
+	"time spent":         "timespent",
+	"timespent":          "timespent",
+	"remaining":          "remainingEstimate",
+	"remaining estimate": "remainingEstimate",
+	"amount remaining":   "remainingEstimate",
+	"remainingestimate":  "remainingEstimate",
+	"priority":           "priority",
+	"created":            "created",
+	"creation date":      "created",
+	"date created":       "created",
+	"updated":            "updated",
+	"updated date":       "updated",
+	"update date":        "updated",
+	"last updated":       "updated",
+	"due":                "due",
+	"due date":           "due",
+	"deadline":           "due",
+	"resolved":           "resolved",
+	"resolution date":    "resolved",
+	"status":             "status",
+	"assignee":           "assignee",
+	"reporter":           "reporter",
+	"key":                "key",
+	"issue key":          "key",
+	"work item key":      "key",
+	"jira key":           "key",
+	"summary":            "summary",
+	"title":              "summary",
+	"issuetype":          "issuetype",
+	"issue type":         "issuetype",
+	"work item type":     "issuetype",
+	"type":               "issuetype",
+	"rank":               "Rank",
+	"ranking":            "Rank",
+	"component":          "component",
+	"components":         "component",
+	"fix version":        "fixVersion",
+	"release":            "fixVersion",
+	"version":            "fixVersion",
+	"labels":             "labels",
+	"label":              "labels",
+	"project":            "project",
 }
 
 func (o *OrderBy) sort() (jql.Sort, error) {
@@ -328,10 +367,27 @@ func (o *OrderBy) sort() (jql.Sort, error) {
 	if !ok {
 		return jql.Sort{}, fmt.Errorf("nl2jql: unsupported ORDER BY field %q", field)
 	}
-	direction := strings.ToLower(o.Direction)
+	direction := strings.ToLower(strings.Join(strings.Fields(o.Direction), " "))
 	switch direction {
 	case "":
 		direction = "ASC"
+		if jqlField == "priority" || jqlField == "updated" {
+			direction = "DESC"
+		} else if field == "story points" {
+			direction = "DESC"
+		} else if meta, found := fieldmeta.Core(jqlField); found && (meta.Type == "number" || meta.Type == "integer" || meta.Type == "duration") {
+			direction = "DESC"
+		}
+	case "oldest to newest", "from oldest to newest", "newest to oldest", "from newest to oldest":
+		meta, found := fieldmeta.Core(jqlField)
+		if !found || meta.Type != "date" {
+			return jql.Sort{}, fmt.Errorf("%w: chronological ordering requires a date field", ErrAmbiguousIntent)
+		}
+		if strings.Contains(direction, "oldest to newest") {
+			direction = "ASC"
+		} else {
+			direction = "DESC"
+		}
 	case "ascending", "asc":
 		direction = "ASC"
 	case "descending", "desc":

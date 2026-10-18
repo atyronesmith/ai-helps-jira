@@ -13,6 +13,9 @@ func TestParseRenderParseAST(t *testing.T) {
 		`"Story Points" > .5 AND "Story Points" < -0.25`,
 		`status WAS Closed BY (alice, bob) DURING ("2026-01-01", "2026-02-01")`,
 		`labels IN (one, "two words") AND labels NOT IN (three)`,
+		`issuetype IN standardIssueTypes() AND issuetype NOT IN subtaskIssueTypes()`,
+		`assignee IN membersOf("engineering")`,
+		`issue IN nestedFunction(otherFunction("value"), "second")`,
 		`resolution IS EMPTY AND resolution IS NOT NULL`,
 		`"Story Points" >= 5 AND cf[123] = currentUser("account id")`,
 		`created >= startOfDay("+2d") AND updated < endOfWeek()`,
@@ -50,6 +53,9 @@ func TestParseRejectsMalformedSyntax(t *testing.T) {
 		`status = Open ORDER BY updated ASC AND priority = High`,
 		`status = Open ORDER BY updated SIDEWAYS`,
 		`project IN ()`, `project IN (TEST, )`, `assignee = currentUser(`,
+		`issuetype IN Bug`, `issuetype NOT IN subtaskIssueTypes(`,
+		`issuetype IN subtaskIssueTypes() extra`,
+		`issuetype IN subtaskIssueTypes() ORDER BY updated AND status = Open`,
 		`status WAS Open BY a BY b`,
 		`status WAS Open DURING ("2026-01-01")`,
 		`status WAS IN Open`,
@@ -75,6 +81,8 @@ func TestScopeASTSemantics(t *testing.T) {
 		{`project = TEST AND status = Open OR priority = High`, false},
 		{`"project" = TEST AND status = Open`, true},
 		{`"project" = TEST OR status = Open`, false},
+		{`project = TEST AND issuetype NOT IN subtaskIssueTypes()`, true},
+		{`project = TEST OR issuetype NOT IN subtaskIssueTypes()`, false},
 	} {
 		q, err := Parse(tc.query)
 		if err != nil {
@@ -83,6 +91,21 @@ func TestScopeASTSemantics(t *testing.T) {
 		}
 		if got := q.HasProjectScope(); got != tc.want {
 			t.Errorf("%q scope=%v want %v", tc.query, got, tc.want)
+		}
+	}
+}
+
+func TestMembershipFunctionDoesNotGrantIdentityScopeExemption(t *testing.T) {
+	for _, raw := range []string{`key IN linkedIssues("PROJ-1")`, `id IN linkedIssues("PROJ-1")`} {
+		q, err := Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if q.DirectIdentityOnly() {
+			t.Fatalf("function query incorrectly treated as direct identity: %s", raw)
+		}
+		if err := Validate(raw, Options{DefaultProject: "PROJ"}); err == nil {
+			t.Fatalf("unscoped function query accepted: %s", raw)
 		}
 	}
 }

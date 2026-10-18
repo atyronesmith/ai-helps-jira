@@ -50,8 +50,9 @@ type syntaxComparison struct {
 	Value *syntaxOperand `parser:"@@"`
 }
 type syntaxMembership struct {
-	Not  bool        `parser:"@\"NOT\"?"`
-	List *syntaxList `parser:"\"IN\" @@"`
+	Not      bool            `parser:"@\"NOT\"?"`
+	Function *syntaxFunction `parser:"\"IN\" ( @@"`
+	List     *syntaxList     `parser:"| @@ )"`
 }
 type syntaxIs struct {
 	Not   bool   `parser:"\"IS\" @\"NOT\"?"`
@@ -168,16 +169,25 @@ func lowerUnary(n *syntaxUnary) (Expr, error) {
 }
 func (v *syntaxOperand) render() string {
 	if v.Function != nil {
-		args := []string{}
-		for _, a := range v.Function.Args {
-			args = append(args, a.render())
-		}
-		return v.Function.Name + "(" + strings.Join(args, ", ") + ")"
+		return v.Function.render()
 	}
 	if v.List != nil {
 		return v.List.render()
 	}
 	return v.Scalar
+}
+func (v *syntaxFunction) render() string {
+	args := []string{}
+	for _, a := range v.Args {
+		args = append(args, a.render())
+	}
+	return v.Name + "(" + strings.Join(args, ", ") + ")"
+}
+func (v *syntaxMembership) render() string {
+	if v.Function != nil {
+		return v.Function.render()
+	}
+	return v.List.render()
 }
 func (v *syntaxList) render() string {
 	args := []string{}
@@ -222,7 +232,7 @@ func (c *syntaxClause) render() (string, error) {
 		}
 		suffix = c.Compare.Op + " " + c.Compare.Value.render()
 	case c.Membership != nil:
-		suffix = "IN " + c.Membership.List.render()
+		suffix = "IN " + c.Membership.render()
 		if c.Membership.Not {
 			suffix = "NOT " + suffix
 		}
@@ -290,7 +300,7 @@ func parseClause(raw string) (string, string, string, error) {
 		if c.Membership.Not {
 			op = "NOT IN"
 		}
-		return field, op, c.Membership.List.render(), nil
+		return field, op, c.Membership.render(), nil
 	case c.Is != nil:
 		return field, "IS", c.Is.Value, nil
 	case c.Was != nil:

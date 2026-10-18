@@ -37,7 +37,7 @@ const systemPromptTemplate = `Translate the whole request into typed query inten
 Use outcome unsupported for intent you cannot represent; ambiguous when clarification is needed. In either case omit filter and sort. Never drop a constraint.
 mode: list, count, recommendation. filter kinds: and/or (children array), not (one child), comparison (field, operator, value or values for IN/NOT IN), owner (value kind self or string), history (status, actor kind self/string, start/end ISO dates for closing transitions).
 Operators: = != > >= < <= ~ !~ IN NOT IN IS IS NOT. IS operands have kind empty. Values: {kind:string,text:...}, {kind:number,text:...}, {kind:boolean,text:true/false}, {kind:self}, {kind:relative_days,days:positive integer}, {kind:calendar_date,text:YYYY-MM-DD}, {kind:calendar_function,text:now/startOfDay/startOfWeek/startOfMonth/endOfDay/endOfWeek/endOfMonth,offset:integer}.
-No raw JQL, function calls or quoting in text values. sort: [{field:...,direction:ASC/DESC}]. Preserve Boolean groups and sorting exactly. Do not invent ordering.
+No raw JQL, function calls or quoting in text values. sort: [{field:...,direction:ASC/DESC}]. Preserve Boolean groups and sorting exactly. Do not invent ordering. When a requested sort omits direction, priority, updated, numeric and duration fields default to DESC; summary/title and other date fields default to ASC. Explicit directions override these defaults.
 Use self for my/me/mine including history actors; the caller supplies the effective identity.
 Requests for open, unresolved, active, unfinished, or not-done work mean statusCategory != Done. Never substitute an issuetype != ... predicate for a requested status filter.
 Relative last/past N days/weeks use inclusive lower bounds through now; calendar periods use inclusive start and exclusive next start. Do not approximate months or sprints with day counts. Search dates must name an issue date field. Comment windows are handled separately by the caller.
@@ -109,6 +109,9 @@ func (e *FallbackEngine) generate(ctx context.Context, query string, schema map[
 		if errors.Is(err, fieldmeta.ErrMissingMetadata) || errors.Is(err, fieldmeta.ErrAmbiguousField) || errors.Is(err, fieldmeta.ErrInapplicableField) || errors.Is(err, ErrAmbiguousIntent) {
 			return "", translationerror.New(translationerror.Unsupported, err)
 		}
+		return "", err
+	}
+	if err := verifyFallbackRequest(query, plan, resolver, project, self); err != nil {
 		return "", err
 	}
 	tree, err := plan.Compile()

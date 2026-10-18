@@ -243,12 +243,22 @@ func ParsePlan(input, self string, now time.Time) (*QueryPlan, error) {
 	if err := checkAmbiguity(input); err != nil {
 		return nil, err
 	}
-	if plan, ok, err := parseHistoryPlan(input, self, now); ok || err != nil {
-		return plan, err
+	if !textWordsFrame.MatchString(input) {
+		if plan, ok, err := parseHistoryPlan(input, self, now); ok || err != nil {
+			return plan, err
+		}
 	}
 	ast, err := jqlParser.ParseString("", strings.Join(strings.Fields(input), " "))
 	if err != nil {
+		if textWordsFrame.MatchString(input) {
+			return nil, fmt.Errorf("%w: use a complete comma/OR word list followed by optional ordering", ErrAmbiguousIntent)
+		}
 		return nil, fmt.Errorf("nl2jql: cannot parse %q: %w", input, err)
+	}
+	if textWordsFrame.MatchString(input) {
+		if err := validateTextWordQueries(ast); err != nil {
+			return nil, err
+		}
 	}
 	plan, err := ast.Plan(self, now)
 	if err == nil {
@@ -275,6 +285,15 @@ func (q *Query) plan(self string, now time.Time, nested bool) (*QueryPlan, error
 	var add func(*Clause) (*Intent, string, error)
 	add = func(c *Clause) (*Intent, string, error) {
 		switch {
+		case c.TextSearch != nil:
+			predicate, err := textOrPredicate(c.TextSearch)
+			return predicate, "", err
+		case c.ChildOfEpic:
+			return joinIntent(IntentAll,
+				comparison("parent", "IS NOT", "EMPTY"),
+				comparison("issuetype", "NOT IN", "subtaskIssueTypes()")), "", nil
+		case c.Chronological != "":
+			return nil, "", fmt.Errorf("%w: chronological ordering needs a named date field", ErrAmbiguousIntent)
 		case c.Group != nil:
 			sub, err := c.Group.plan(self, now, true)
 			if err != nil {
@@ -286,6 +305,9 @@ func (q *Query) plan(self string, now time.Time, nested bool) (*QueryPlan, error
 			plan.Dates = append(plan.Dates, sub.Dates...)
 			return sub.Filter, "", nil
 		case c.Negation != nil:
+			if c.Negation.Priority != nil && c.Negation.Priority.Either {
+				return nil, "", fmt.Errorf("%w: group the priority alternatives before negating them", ErrAmbiguousIntent)
+			}
 			i, _, err := add(c.Negation)
 			if err != nil {
 				return nil, "", err
@@ -349,9 +371,14 @@ func (q *Query) plan(self string, now time.Time, nested bool) (*QueryPlan, error
 		}
 		return comparison(p.Field, "=", p.Value), p.Field, nil
 	}
-	for _, c := range q.Clauses {
+	for index, c := range q.Clauses {
 		if c == nil || c.Noise != nil {
 			continue
+		}
+		if c.Priority != nil && c.Priority.Either {
+			if index+2 >= len(q.Clauses) || q.Clauses[index+1] == nil || !strings.EqualFold(q.Clauses[index+1].Connector, "or") || q.Clauses[index+2] == nil || q.Clauses[index+2].Priority == nil {
+				return nil, fmt.Errorf("%w: either priority needs another priority joined by OR", ErrAmbiguousIntent)
+			}
 		}
 		if c.Connector != "" {
 			if pending != "" || len(items) == 0 {

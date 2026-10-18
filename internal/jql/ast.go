@@ -222,7 +222,7 @@ func identityOnly(e Expr) bool {
 }
 func scalarOrList(s string) bool {
 	n, err := syntaxParser.ParseString("", "key IN "+s)
-	if err == nil && n.Where != nil && n.Where.First.First.Atom != nil && n.Where.First.First.Atom.Membership != nil {
+	if err == nil && n.Where != nil && n.Where.First.First.Atom != nil && n.Where.First.First.Atom.Membership != nil && n.Where.First.First.Atom.Membership.List != nil {
 		for _, v := range n.Where.First.First.Atom.Membership.List.Values {
 			if v.Function != nil || v.List != nil || !validScalar(v.Scalar) {
 				return false

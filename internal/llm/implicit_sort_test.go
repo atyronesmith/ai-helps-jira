@@ -19,7 +19,7 @@ func TestCreationSortWithoutDirectionPreservesScopedOwnership(t *testing.T) {
 		{"list my open issues ordered by date created", "created", "ASC"},
 		{"my open issues ordered by creation date", "created", "ASC"},
 		{"my open issues ordered by created", "created", "ASC"},
-		{"list all my open jiras ordered by updated date", "updated", "ASC"},
+		{"list all my open jiras ordered by updated date", "updated", "DESC"},
 		{"list all my open jiras ordered by updated date descending", "updated", "DESC"},
 	}
 	for _, user := range []string{"", "reviewer"} {

@@ -245,6 +245,15 @@ var ambiguousNegation = regexp.MustCompile(`(?i)\bnot\s+(?:done|closed|resolved|
 var ambiguousTense = regexp.MustCompile(`(?i)\b(?:was|were|previously|had)\b`)
 
 func checkAmbiguity(q string) error {
+	if _, err := repairSearchKeywords(q); err != nil {
+		return err
+	}
+	if len(textWordsFrame.FindAllStringIndex(q, -1)) > 1 {
+		return fmt.Errorf("%w: use one explicit text-word list", ErrAmbiguousIntent)
+	}
+	if start, end, ok := textLiteralSpan(q); ok {
+		q = q[:start] + strings.Repeat(" ", end-start) + q[end:]
+	}
 	for _, match := range relRangeRe.FindAllStringSubmatch(q, -1) {
 		count, err := strconv.Atoi(match[relRangeRe.SubexpIndex("count")])
 		if err != nil || count <= 0 || count > 100000 {

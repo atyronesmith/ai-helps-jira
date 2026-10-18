@@ -193,6 +193,8 @@ func Core(name string) (Field, bool) {
 		name = "issuetype"
 	case "component":
 		name = "components"
+	case "timeoriginalestimate":
+		name = "originalEstimate"
 	case "issuekey":
 		name = "key"
 	}
@@ -216,6 +218,7 @@ func JQLName(f Field) string {
 var coreFields = []Field{
 	{ID: "summary", Name: "Summary", Type: "string"},
 	{ID: "description", Name: "Description", Type: "string"},
+	{ID: "text", Name: "Text", Type: "string"},
 	{ID: "status", Name: "Status", Type: "option"},
 	{ID: "statusCategory", Name: "Status Category", Type: "option"},
 	{ID: "project", Name: "Project", Type: "project"},
@@ -233,6 +236,9 @@ var coreFields = []Field{
 	{ID: "duedate", Name: "Due Date", Type: "date"},
 	{ID: "votes", Name: "Votes", Type: "number"},
 	{ID: "watches", Name: "Watchers", Type: "number"},
+	{ID: "originalEstimate", Name: "Original Estimate", Type: "duration"},
+	{ID: "remainingEstimate", Name: "Remaining Estimate", Type: "duration"},
+	{ID: "timespent", Name: "Time Spent", Type: "duration"},
 	{ID: "resolutiondate", Name: "Resolution Date", Type: "date"},
 	{ID: "parent", Name: "Parent", Type: "string"},
 	{ID: "id", Name: "ID", Type: "number"},

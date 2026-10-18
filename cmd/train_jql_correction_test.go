@@ -129,7 +129,7 @@ func TestTrainerUpdatedDateReviewUsesProductionTranslationWithoutProvider(t *tes
 		t.Fatalf("records=%+v err=%v", records, err)
 	}
 	record := records[0]
-	const generated = "statusCategory != Done AND assignee = currentUser() AND project = PROJ ORDER BY updated ASC"
+	const generated = "statusCategory != Done AND assignee = currentUser() AND project = PROJ ORDER BY updated DESC"
 	if provider.calls != 0 || record.ProviderCalls != 0 || record.GeneratedJQL != generated || record.Route != llm.RouteFastPath || record.Outcome != "success" || record.CorrectedJQL != corrected || record.Verdict != nlfeedback.VerdictCorrected || record.Replay != nil {
 		t.Fatalf("training review changed meaning or executed correction: %+v calls=%d", record, provider.calls)
 	}

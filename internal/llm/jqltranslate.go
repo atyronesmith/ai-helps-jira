@@ -375,7 +375,7 @@ func translateCascade(ctx context.Context, cfg *config.Config, naturalQuery stri
 		finish(result)
 		return result, err
 	}
-	res.JQL, err = ensureProjectScope(res.JQL, cfg)
+	res.JQL, err = finalizeSearchJQL(res.JQL, cfg, res.Mode)
 	if err != nil {
 		result := &QueryResult{Input: res.Input, NormalizedInput: res.NormalizedInput, ParseError: res.ParseError, Route: res.Route, Mode: res.Mode}
 		finish(result)
@@ -392,6 +392,12 @@ func translateCascade(ctx context.Context, cfg *config.Config, naturalQuery stri
 // are rejected rather than narrowed to a contradictory default. Sorting remains
 // terminal and the execution-boundary validation contract also applies here.
 func ensureProjectScope(rawJQL string, cfg *config.Config) (string, error) {
+	return finalizeSearchJQL(rawJQL, cfg, "")
+}
+
+// Application defaults apply to natural-language result lists. Lower-level
+// predicate composition and count translations retain their explicit ordering.
+func finalizeSearchJQL(rawJQL string, cfg *config.Config, mode nl2jql.QueryMode) (string, error) {
 	if strings.TrimSpace(rawJQL) == "" {
 		return "", fmt.Errorf("%w %q: JQL is blank", ErrInvalidGeneratedJQL, rawJQL)
 	}
@@ -404,6 +410,9 @@ func ensureProjectScope(rawJQL string, cfg *config.Config) (string, error) {
 			return "", fmt.Errorf("%w %q: explicit project predicates do not positively scope every branch; clarify the project choices", ErrInvalidGeneratedJQL, rawJQL)
 		}
 		q.AndClause(jql.Compare("project", "=", jql.QuoteIdent(cfg.JiraProject)))
+	}
+	if (mode == nl2jql.ModeList || mode == nl2jql.ModeRecommendation) && len(q.OrderBy) == 0 {
+		q.OrderBy = []jql.Sort{{Field: "updated", Direction: "DESC"}}
 	}
 	rendered := q.Render()
 	if err := jql.Validate(rendered, jql.Options{DefaultProject: projectForValidation(cfg)}); err != nil {

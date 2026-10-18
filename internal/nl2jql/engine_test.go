@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/fieldmeta"
+	"github.com/atyronesmith/ai-helps-jira/internal/translationerror"
 )
 
 // recordingProvider counts fallback invocations and captures the exact user
@@ -265,11 +266,11 @@ func TestInvalidOrderByQueriesFallBack(t *testing.T) {
 		"my issues ordered by priority upwards",
 	} {
 		t.Run(query, func(t *testing.T) {
-			provider := &recordingProvider{jql: supportedStatusPlan}
+			provider := &recordingProvider{jql: `{"version":1,"outcome":"unsupported"}`}
 			tr := newRoutingTranslator(t, provider)
 			result, err := tr.Translate(context.Background(), query)
-			if err != nil {
-				t.Fatalf("Translate: %v", err)
+			if translationerror.KindOf(err) != translationerror.Unsupported || result.JQL != "" {
+				t.Fatalf("Translate result=%+v err=%v; want unsupported with empty JQL", result, err)
 			}
 			if result.Route != RouteFallback {
 				t.Errorf("route = %q, want %q", result.Route, RouteFallback)
@@ -290,14 +291,17 @@ func TestInvalidOrderByQueriesFallBack(t *testing.T) {
 func TestMalformedStoryPointsComparisonFallsBack(t *testing.T) {
 	for _, query := range []string{"my work items with story points >", "my work items with story points > -3", "my work items with story points > many"} {
 		t.Run(query, func(t *testing.T) {
-			provider := &recordingProvider{jql: supportedStatusPlan}
+			provider := &recordingProvider{jql: `{"version":1,"outcome":"unsupported"}`}
 			tr := newRoutingTranslator(t, provider)
 			result, err := tr.Translate(context.Background(), query)
-			if err != nil {
-				t.Fatalf("Translate: %v", err)
+			if translationerror.KindOf(err) != translationerror.Unsupported || result.JQL != "" {
+				t.Fatalf("Translate result=%+v err=%v; want unsupported with empty JQL", result, err)
 			}
 			if result.Route != RouteFallback {
 				t.Errorf("route = %q, want %q", result.Route, RouteFallback)
+			}
+			if result.ParseError == "" || result.Input != query || result.NormalizedInput != query {
+				t.Errorf("diagnostics=%+v; want parse error and original normalized input", result)
 			}
 			if got := atomic.LoadInt32(&provider.calls); got != 1 {
 				t.Errorf("provider called %d times, want 1", got)
@@ -308,15 +312,18 @@ func TestMalformedStoryPointsComparisonFallsBack(t *testing.T) {
 
 func TestRecommendationNormalizationIsNarrow(t *testing.T) {
 	const query = "Which of my open jiras should I work on next sprint?"
-	provider := &recordingProvider{jql: supportedStatusPlan}
+	provider := &recordingProvider{jql: `{"version":1,"outcome":"unsupported"}`}
 	tr := newRoutingTranslator(t, provider)
 
 	result, err := tr.Translate(context.Background(), query)
-	if err != nil {
-		t.Fatalf("Translate: %v", err)
+	if translationerror.KindOf(err) != translationerror.Unsupported || result.JQL != "" {
+		t.Fatalf("Translate result=%+v err=%v; want unsupported with empty JQL", result, err)
 	}
 	if result.Route != RouteFallback {
 		t.Errorf("route = %q, want %q", result.Route, RouteFallback)
+	}
+	if result.ParseError == "" || result.Input != query || result.NormalizedInput != query {
+		t.Errorf("diagnostics=%+v; want parse error and original normalized input", result)
 	}
 	if got := atomic.LoadInt32(&provider.calls); got != 1 {
 		t.Errorf("provider called %d times, want 1", got)
@@ -405,12 +412,16 @@ func TestTranslateExplicitEmailAndCompoundOpenPhrase(t *testing.T) {
 // diagnostics intact; supported date bounds alone no longer require a provider.
 func TestFallbackReceivesNormalizedInput(t *testing.T) {
 	t.Parallel()
-	p := &recordingProvider{jql: supportedStatusPlan}
+	p := &recordingProvider{jql: `{"version":1,"outcome":"unsupported"}`}
 	tr := newRoutingTranslator(t, p)
 
-	_, err := tr.Translate(context.Background(), "my open bugs in SUP created in the last 3 days with custom constraint")
-	if err != nil {
-		t.Fatalf("Translate: %v", err)
+	query := "my open bugs in SUP created in the last 3 days with custom constraint"
+	result, err := tr.Translate(context.Background(), query)
+	if translationerror.KindOf(err) != translationerror.Unsupported || result.JQL != "" {
+		t.Fatalf("Translate result=%+v err=%v; want unsupported with empty JQL", result, err)
+	}
+	if result.Route != RouteFallback || p.calls != 1 || result.Input != query || result.NormalizedInput != "my open bugs in SUP created >= -3d AND created <= now() with custom constraint" || result.ParseError == "" {
+		t.Errorf("result=%+v provider calls=%d; want fallback diagnostics and one call", result, p.calls)
 	}
 	want := "my open bugs in SUP created >= -3d AND created <= now() with custom constraint"
 	if p.lastInput != want {

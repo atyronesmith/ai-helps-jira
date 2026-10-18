@@ -26,7 +26,7 @@ func (p *missingOwnerSortProvider) Generate(context.Context, string, string) (st
 func TestQueryCreationSortExecutesOwnerOpenScopeAndAscendingOrder(t *testing.T) {
 	for _, tc := range []struct{ input, field, direction string }{
 		{"my open issues ordered by date created", "created", "ASC"},
-		{"list all my open jiras ordered by updated date", "updated", "ASC"},
+		{"list all my open jiras ordered by updated date", "updated", "DESC"},
 		{"list all my open jiras ordered by updated date desc", "updated", "DESC"},
 	} {
 		t.Run(tc.input, func(t *testing.T) {

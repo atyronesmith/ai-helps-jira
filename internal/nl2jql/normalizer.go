@@ -72,6 +72,18 @@ func (n *Normalizer) clock() func() time.Time {
 func (n *Normalizer) Normalize(input string, projectMap map[string]string) string {
 	// Collapse whitespace runs: every downstream regex assumes single spaces.
 	s := strings.Join(strings.Fields(input), " ")
+	if start, end, ok := textLiteralSpan(s); ok {
+		return n.normalizeSyntax(s[:start], projectMap) + s[start:end] + n.normalizeSyntax(s[end:], projectMap)
+	}
+	return n.normalizeSyntax(s, projectMap)
+}
+
+func (n *Normalizer) normalizeSyntax(s string, projectMap map[string]string) string {
+	// Ambiguous repairs are rejected by checkAmbiguity at the translation
+	// boundary. Keep Normalize's existing non-error contract for other callers.
+	if repaired, err := repairSearchKeywords(s); err == nil {
+		s = repaired
+	}
 	s = normalizeRecommendationQuestion(s)
 
 	// Dates first: "in the last 3 days" must be consumed before the project

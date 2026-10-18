@@ -29,10 +29,10 @@ func TestSanitizedRegressionCorpus(t *testing.T) {
 			t.Errorf("%s: checks=%v problem=%s translation=%+v category=%s", result.ID, result.Checks, result.Problem, result.Translation, result.ErrorCategory)
 		}
 	}
-	if report.Total != 20 || report.Passed != 20 || report.TranslationFailures != 6 || report.SemanticCorrect != 14 || report.ProviderCalls != 3 || report.Deterministic != 13 {
+	if report.Total != 68 || report.Passed != 68 || report.TranslationFailures != 16 || report.SemanticCorrect != 52 || report.ProviderCalls != 6 || report.Deterministic != 50 {
 		t.Errorf("unexpected corpus metrics: %+v", report)
 	}
-	if report.AcceptanceRate != 14.0/20 || report.ExpectationPassRate != 1 || report.DeterministicCoverage != 13.0/20 || report.DurationNanos <= 0 {
+	if report.AcceptanceRate != 52.0/68 || report.ExpectationPassRate != 1 || report.DeterministicCoverage != 50.0/68 || report.DurationNanos <= 0 {
 		t.Errorf("invalid rates/latency: %+v", report)
 	}
 	// A second replay has the same outcomes regardless of real elapsed time.
@@ -67,15 +67,15 @@ func TestPreviouslyIncorrectTranslationsFailSemanticGate(t *testing.T) {
 }
 
 func TestReplayRejectsStructurallyValidWrongProviderMeaning(t *testing.T) {
-	// The fallback plan is valid and scoped but asks for ALL triage issues,
-	// dropping 'my'. Structural validity alone must not count as acceptance.
+	// The model plan asks for ALL triage issues, dropping 'my'. The production
+	// guard must reject it before a structurally valid query can be returned.
 	r := replayRecord()
 	r.Input = "my triage queue please"
 	r.Replay.Provider.Response = `{"version":1,"outcome":"supported","mode":"list","filter":{"kind":"comparison","field":"labels","operator":"=","value":{"kind":"string","text":"triage"}},"sort":[]}`
 	r.Replay.Expect = Expectation{JQL: `labels = triage AND assignee = currentUser() AND project = PROJ`, Mode: "list", Route: llm.RouteFallback, ProviderCalls: 1}
 	report := Replay(context.Background(), []Record{r})
 	got := report.Results[0]
-	if got.Passed || got.Checks["semantic"] || got.Checks["ownership"] || !got.Checks["structural_validity"] || report.AcceptanceRate != 0 || report.ProviderCalls != 1 {
+	if got.Passed || got.Checks["semantic"] || got.Checks["ownership"] || got.ErrorCategory != "invalid_output" || report.AcceptanceRate != 0 || report.ProviderCalls != 1 {
 		t.Fatalf("wrong but valid model output was accepted: %+v", report)
 	}
 }
@@ -166,7 +166,7 @@ func replayRecord() Record {
 	return Record{
 		ID: "example", Input: "open bugs", DefaultProject: "PROJ",
 		Fixture: &llm.TranslationFixture{Now: time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)},
-		Replay:  &ReplaySpec{Expect: Expectation{JQL: `issuetype = Bug AND statusCategory != Done AND project = PROJ`, Mode: "list", Route: llm.RouteFastPath}},
+		Replay:  &ReplaySpec{Expect: Expectation{JQL: `issuetype = Bug AND statusCategory != Done AND project = PROJ ORDER BY updated DESC`, Mode: "list", Route: llm.RouteFastPath}},
 	}
 }
 
