@@ -21,6 +21,10 @@ import (
 	"github.com/atyronesmith/ai-helps-jira/internal/translationerror"
 )
 
+// ErrIncompleteCompletion identifies output that was cut off at the provider's
+// configured output limit. It is safe to inspect with errors.Is.
+var ErrIncompleteCompletion = errors.New("LLM completion reached its output limit")
+
 // Provider abstracts LLM completion so different backends can be used.
 type Provider interface {
 	Complete(ctx context.Context, system, prompt string, maxTokens int) (string, error)
@@ -190,14 +194,21 @@ func (p *VertexProvider) Complete(ctx context.Context, system, prompt string, ma
 		return "", translationerror.New(translationerror.Connectivity, errors.New("Vertex LLM provider unreachable"))
 	}
 
+	if resp.StopReason == anthropic.StopReasonMaxTokens {
+		return "", translationerror.New(translationerror.InvalidOutput, ErrIncompleteCompletion)
+	}
+	if resp.StopReason != "" && resp.StopReason != anthropic.StopReasonEndTurn && resp.StopReason != anthropic.StopReasonStopSequence {
+		return "", translationerror.New(translationerror.InvalidOutput, errors.New("Vertex completion did not finish normally"))
+	}
+
 	slog.Info("vertex response", "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens)
 
 	for _, block := range resp.Content {
-		if block.Type == "text" {
+		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
 			return "{" + block.Text, nil
 		}
 	}
-	return "", translationerror.New(translationerror.InvalidOutput, errors.New("no text in Vertex response"))
+	return "", translationerror.New(translationerror.InvalidOutput, errors.New("no usable text in Vertex response"))
 }
 
 // openAIRequest is the OpenAI chat completions request format.
@@ -226,6 +237,7 @@ type openAIResponse struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens     int `json:"prompt_tokens"`
@@ -322,9 +334,18 @@ func (p *OpenAIProvider) Complete(ctx context.Context, system, prompt string, ma
 	if len(result.Choices) == 0 {
 		return "", translationerror.New(translationerror.InvalidOutput, errors.New("no choices in LLM response"))
 	}
+	choice := result.Choices[0]
+	if reason := strings.TrimSpace(choice.FinishReason); reason == "length" {
+		return "", translationerror.New(translationerror.InvalidOutput, ErrIncompleteCompletion)
+	} else if reason != "" && reason != "stop" {
+		return "", translationerror.New(translationerror.InvalidOutput, errors.New("LLM completion did not finish normally"))
+	}
+	if strings.TrimSpace(choice.Message.Content) == "" {
+		return "", translationerror.New(translationerror.InvalidOutput, errors.New("LLM returned empty content"))
+	}
 
 	slog.Info("openai response", "prompt_tokens", result.Usage.PromptTokens, "completion_tokens", result.Usage.CompletionTokens)
-	return result.Choices[0].Message.Content, nil
+	return choice.Message.Content, nil
 }
 
 func truncateStr(s string, n int) string {
