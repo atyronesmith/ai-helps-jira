@@ -183,8 +183,8 @@ func summaryToolDef() mcp.Tool {
 
 func queryToolDef() mcp.Tool {
 	return mcp.NewTool("jira_query",
-		mcp.WithDescription("Search JIRA using natural language. Translates to JQL (deterministic parser first, LLM fallback for complex queries), executes, and returns candidate issues with a rich HTML view. For recommendation or prioritization requests, this tool retrieves candidates but does not recommend: inspect each issue with jira_get_issue when the candidate count is reasonably bounded, then reason over the issue content. If there are too many, shortlist by returned priority, status, and summary, disclose the shortlist, and inspect those issues with jira_get_issue."),
-		mcp.WithString("natural_query", mcp.Required(), mcp.Description("Pass the user's exact original wording verbatim (e.g. 'Which of my open jiras should I work on next?'). Keep phrases like 'my open Jiras' unchanged; do not look up or replace 'me'/'my' with a username or email. For recommendations, use these results as candidates and inspect them with jira_get_issue; the host assistant makes the recommendation. If translation errors, return the MCP error; do not bypass it with REST or shell.")),
+		mcp.WithDescription("Search JIRA using natural language. Call jira_query directly for filtering and sorting. Jira executes the requested ORDER BY; no extra timestamp lookup or client-side sorting is needed. Example original wording: 'list my open issues ordered by date created'. For these Jira business requests: Do not seek credentials or bypass Jira MCP with shell, curl, or direct REST calls, even before a tool call. If the Jira MCP tools are unavailable, report the connection/tool availability problem. Translates to JQL (deterministic parser first, LLM fallback for complex queries), executes, and returns candidate issues with a rich HTML view. For recommendation or prioritization requests, this tool retrieves candidates but does not recommend: inspect each issue with jira_get_issue when the candidate count is reasonably bounded, then reason over the issue content. If there are too many, shortlist by returned priority, status, and summary, disclose the shortlist, and inspect those issues with jira_get_issue."),
+		mcp.WithString("natural_query", mcp.Required(), mcp.Description("Pass the user's exact original wording verbatim (for example, 'list my open issues ordered by date created' or 'Which of my open jiras should I work on next?'). Keep phrases like 'my open Jiras' unchanged; do not look up or replace 'me'/'my' with a username or email. Use jira_query for sorting too: Jira executes requested ORDER BY, so no extra timestamp lookup or client-side sorting is needed. For recommendations, use these results as candidates and inspect them with jira_get_issue; the host assistant makes the recommendation. If translation errors, return the MCP error; do not bypass it with REST or shell. Do not seek credentials or bypass Jira MCP using shell, curl, or direct REST calls, even before a tool call. If Jira MCP tools are unavailable, report the connection/tool availability problem.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
 		mcp.WithNumber("max_results", mcp.Description("Maximum issues to return in the displayed preview. Default 50; must be a positive integer.")),
@@ -195,8 +195,8 @@ func queryToolDef() mcp.Tool {
 
 func translateQueryToolDef() mcp.Tool {
 	return mcp.NewTool("jira_translate_query",
-		mcp.WithDescription("Translate the user's original natural-language Jira request to JQL and run local structural validation. Does not search Jira or save issue results."),
-		mcp.WithString("natural_query", mcp.Required(), mcp.Description("Pass the user's exact original wording verbatim. Do not pretranslate it to JQL.")),
+		mcp.WithDescription("Translate the user's original natural-language Jira request to JQL and run local structural validation. Stores a private diagnostic attempt. Does not search Jira or save issue results."),
+		mcp.WithString("natural_query", mcp.Required(), mcp.Description("Pass the user's exact original wording verbatim, preserving spelling, casing, and spacing. The server owns normalization and typo repair; do not pretranslate it to JQL or repair typos.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
 		readOnlyAnnotations(),
@@ -688,33 +688,83 @@ func isRecommendationQuery(query string) bool {
 // executing it or writing issue results to the cache/store.
 type translationOnlyContextKey struct{}
 
-func (h *Handlers) HandleTranslateQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *Handlers) HandleTranslateQuery(ctx context.Context, req mcp.CallToolRequest) (toolResult *mcp.CallToolResult, toolErr error) {
+	started := time.Now()
+	slog.Info("translation started", "tool", "jira_translate_query", "route", "pending", "category", "", "duration_ms", int64(0), "structural_validation", "not_checked")
+	var completionCategory string
+	completionRoute := "pending"
+	completionValidation := "not_checked"
+	defer func() {
+		outcome := "success"
+		if toolErr != nil || (toolResult != nil && toolResult.IsError) {
+			outcome = "failure"
+			if toolErr != nil {
+				completionCategory = diagnosticErrorCategory(toolErr)
+			}
+			if completionCategory == "" {
+				completionCategory = "translation_failure"
+			}
+		}
+		if trace := attemptTrace(ctx); trace != nil {
+			if trace.ErrorCategory != "" {
+				completionCategory = trace.ErrorCategory
+			}
+			if trace.Route == llm.RouteFastPath || trace.Route == llm.RouteFallback {
+				completionRoute = trace.Route
+			} else if trace.Route != "" {
+				completionRoute = "other"
+			}
+			if trace.Validation == "local_valid" {
+				completionValidation = "valid"
+			} else if trace.Validation == "local_invalid" {
+				completionValidation = "invalid"
+			}
+		}
+		slog.Info("translation completed", "tool", "jira_translate_query", "route", completionRoute, "category", completionCategory, "duration_ms", time.Since(started).Milliseconds(), "structural_validation", completionValidation, "outcome", outcome)
+	}()
 	naturalQuery := getString(req, "natural_query")
 	if strings.TrimSpace(naturalQuery) == "" {
+		completionCategory = "invalid_input"
 		return errorResult("natural_query is required; pass the user's original wording"), nil
 	}
 	if looksLikeJQL(naturalQuery) {
+		completionCategory = "invalid_input"
 		return errorResult("natural_query looks like JQL; pass the user's original natural-language wording verbatim so it can be translated"), nil
 	}
 
 	cfg, err := config.LoadTranslation(getString(req, "user"), getString(req, "project"))
 	if err != nil {
+		completionCategory = "configuration"
 		return errorResult(err.Error()), nil
 	}
 	result, err := h.translate(context.WithValue(ctx, translationOnlyContextKey{}, true), cfg, naturalQuery)
 	h.observeTranslation(ctx, cfg, result, err)
+	if result != nil {
+		if result.Route == llm.RouteFastPath || result.Route == llm.RouteFallback {
+			completionRoute = result.Route
+		} else if result.Route != "" {
+			completionRoute = "other"
+		}
+	}
 	if err != nil {
+		completionCategory = diagnosticErrorCategory(err)
 		return errorResult(fmt.Sprintf("JQL generation failed: %v", err)), nil
 	}
 
 	type validationResult struct {
 		Valid bool   `json:"valid"`
+		Scope string `json:"scope"`
 		Error string `json:"error,omitempty"`
 	}
-	validation := validationResult{Valid: true}
+	validation := validationResult{Valid: true, Scope: "local_structure"}
 	if err := jql.Validate(result.JQL, jql.Options{DefaultProject: cfg.JiraProject}); err != nil {
 		validation.Valid = false
 		validation.Error = err.Error()
+	}
+	if validation.Valid {
+		completionValidation = "valid"
+	} else {
+		completionValidation = "invalid"
 	}
 	response := struct {
 		MetadataFetchedAt          time.Time        `json:"metadata_fetched_at,omitzero"`

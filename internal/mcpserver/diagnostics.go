@@ -152,8 +152,8 @@ func diagnosticErrorCategory(err error) string {
 }
 
 // withDiagnostics records call outcomes separately from any rich report produced
-// by a tool. Query owns its detailed lifecycle. Translation-only
-// successes retain their existing no-result-storage contract.
+// by a tool. Query owns its detailed lifecycle. Translation-only attempts keep
+// translation evidence without becoming query results.
 func (h *Handlers) withDiagnostics(name string, next server.ToolHandlerFunc) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		started := time.Now().UTC()
@@ -176,26 +176,24 @@ func (h *Handlers) withDiagnostics(name string, next server.ToolHandlerFunc) ser
 			failed = true
 		}
 		if name != "jira_query" && h.store != nil {
-			if failed || name != "jira_translate_query" {
-				outcome, category := "success", ""
-				if failed {
-					outcome, category = "failure", "tool_error"
-					if err != nil {
-						category = diagnosticErrorCategory(err)
-					}
-					if failure.category != "" {
-						category = failure.category
-					}
+			outcome, category := "success", ""
+			if failed {
+				outcome, category = "failure", "tool_error"
+				if err != nil {
+					category = diagnosticErrorCategory(err)
 				}
-				completed := time.Now().UTC()
-				if trace != nil {
-					trace.Outcome, trace.CompletedAt, trace.Duration = outcome, completed, completed.Sub(started)
-					if trace.ErrorCategory != "" {
-						category = trace.ErrorCategory
-					}
+				if failure.category != "" {
+					category = failure.category
 				}
-				h.store.Save(ResultAttempt, name, &AttemptResultData{Tool: name, Outcome: outcome, ErrorCategory: category, StartedAt: started, CompletedAt: completed, Duration: completed.Sub(started), Trace: trace})
 			}
+			completed := time.Now().UTC()
+			if trace != nil {
+				trace.Outcome, trace.CompletedAt, trace.Duration = outcome, completed, completed.Sub(started)
+				if trace.ErrorCategory != "" {
+					category = trace.ErrorCategory
+				}
+			}
+			h.store.Save(ResultAttempt, name, &AttemptResultData{Tool: name, Outcome: outcome, ErrorCategory: category, StartedAt: started, CompletedAt: completed, Duration: completed.Sub(started), Trace: trace})
 		}
 		if h.store != nil {
 			h.dependencies.observe("history", h.store.PersistenceError())

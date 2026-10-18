@@ -52,6 +52,10 @@ func TestMCPServerDiscovery(t *testing.T) {
 		"call jira_get_issue for each candidate",
 		"disclose that shortlist",
 		"host assistant should reason",
+		"Call jira_query directly for filtering and sorting",
+		"Jira executes the requested ORDER BY",
+		"no extra timestamp lookup or client-side sorting",
+		"If the Jira MCP tools are unavailable, report the connection/tool availability problem",
 	} {
 		if !strings.Contains(initResult.Instructions, required) {
 			t.Errorf("server instructions missing %q: %q", required, initResult.Instructions)
@@ -116,7 +120,16 @@ func TestMCPServerDiscovery(t *testing.T) {
 		}
 	}
 	for name, required := range map[string][]string{
-		"jira_query":     {"does not recommend", "jira_get_issue"},
+		"jira_query": {
+			"does not recommend", "jira_get_issue",
+			"list my open issues ordered by date created",
+			"Call jira_query directly for filtering and sorting",
+			"Jira executes the requested ORDER BY",
+			"no extra timestamp lookup or client-side sorting",
+			"If the Jira MCP tools are unavailable, report the connection/tool availability problem",
+			"Do not seek credentials",
+			"even before a tool call",
+		},
 		"jira_get_issue": {"inspect jira_query candidates", "shortlisted issue"},
 	} {
 		tool := discovered[name]
