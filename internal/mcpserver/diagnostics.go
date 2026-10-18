@@ -27,6 +27,12 @@ type DependencyObservation struct {
 
 type attemptTraceKey struct{}
 
+// Per-call classifications preserve typed failures when an MCP handler returns
+// a tool-error result. The value is owned by one synchronous dispatch and never
+// retains upstream error text in history.
+type attemptFailureKey struct{}
+type attemptFailure struct{ category string }
+
 func attemptTrace(ctx context.Context) *QueryResultData {
 	trace, _ := ctx.Value(attemptTraceKey{}).(*QueryResultData)
 	return trace
@@ -151,6 +157,8 @@ func diagnosticErrorCategory(err error) string {
 func (h *Handlers) withDiagnostics(name string, next server.ToolHandlerFunc) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		started := time.Now().UTC()
+		failure := &attemptFailure{}
+		ctx = context.WithValue(ctx, attemptFailureKey{}, failure)
 		var trace *QueryResultData
 		if name == "jira_digest" || name == "jira_translate_query" {
 			input := getString(req, "natural_query")
@@ -174,6 +182,9 @@ func (h *Handlers) withDiagnostics(name string, next server.ToolHandlerFunc) ser
 					outcome, category = "failure", "tool_error"
 					if err != nil {
 						category = diagnosticErrorCategory(err)
+					}
+					if failure.category != "" {
+						category = failure.category
 					}
 				}
 				completed := time.Now().UTC()

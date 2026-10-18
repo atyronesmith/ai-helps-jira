@@ -27,8 +27,10 @@ var (
 
 var weeklyStatusCmd = &cobra.Command{
 	Use:   "weekly-status",
-	Short: "Generate a weekly status report from JIRA activity",
-	Long: `Query JIRA for your work during a date range, fetch issue details and
+	Short: "Generate an experimental weekly status report from JIRA activity",
+	Long: `EXPERIMENTAL: Review generated claims against the source Jira activity.
+
+Query JIRA for your work during a date range, fetch issue details and
 comments, and generate a narrative status report using an LLM.
 
 Examples:
@@ -131,7 +133,7 @@ func runWeeklyStatus(cmd *cobra.Command, args []string) error {
 		if flagVerbose >= 2 {
 			pterm.FgLightCyan.Printfln("cache: found entry, cached_at=%s", cachedAt.Format(time.RFC3339))
 		}
-		if err := json.Unmarshal([]byte(cachedJSON), &status); err == nil {
+		if status, err = llm.ParseWeeklyStatus(cachedJSON); err == nil {
 			if flagVerbose >= 2 {
 				pterm.FgLightGreen.Println("cache: HIT (current issue set fingerprint matches)")
 			}
@@ -247,7 +249,7 @@ func runWeeklyStatus(cmd *cobra.Command, args []string) error {
 		}
 
 		spinner = format.StatusPrinter("Generating status report...")
-		status, err = llm.GenerateWeeklyStatus(cfg, items, startStr, endStr)
+		status, err = llm.GenerateWeeklyStatusContext(commandContext(cmd), cfg, items, startStr, endStr)
 		spinner.Stop()
 		if err != nil {
 			return fmt.Errorf("LLM generation failed: %w", err)

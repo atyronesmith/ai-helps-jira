@@ -68,6 +68,7 @@ type weeklyCLIHarness struct {
 	completions atomic.Int32
 	failDetail  atomic.Bool
 	failComment atomic.Bool
+	llmOutput   string
 	server      *httptest.Server
 }
 
@@ -115,7 +116,38 @@ func newWeeklyCLIHarness(t *testing.T) *weeklyCLIHarness {
 			}})
 		case r.URL.Path == "/v1/chat/completions":
 			h.completions.Add(1)
-			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": `{"user_name":"Test User","projects":[{"project_name":"Test","issue_key":"TEST-1","bullets":["Updated work"],"commentary":"Progress made."}]}`}}}})
+			var request struct {
+				Messages []struct{ Role, Content string }
+			}
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			var payload struct {
+				Items []struct {
+					Key       string `json:"key"`
+					ParentKey string `json:"parent_key"`
+				} `json:"items"`
+			}
+			if len(request.Messages) > 1 {
+				_ = json.Unmarshal([]byte(request.Messages[1].Content), &payload)
+			}
+			output := h.llmOutput
+			if output == "" {
+				projects := make([]map[string]any, 0, len(payload.Items))
+				seen := make(map[string]bool)
+				for _, item := range payload.Items {
+					key := item.Key
+					if item.ParentKey != "" {
+						key = item.ParentKey
+					}
+					if seen[key] {
+						continue
+					}
+					seen[key] = true
+					projects = append(projects, map[string]any{"project_name": "Test", "issue_key": key, "bullets": []string{"Updated work"}, "commentary": "Progress made."})
+				}
+				body, _ := json.Marshal(map[string]any{"user_name": "Test User", "projects": projects})
+				output = string(body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": output}}}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -278,5 +310,28 @@ func TestRunWeeklyStatusDetailOrCommentFailureDoesNotCacheReport(t *testing.T) {
 				t.Fatalf("weekly cache contains %d reports after %s failure", got, failAt)
 			}
 		})
+	}
+}
+
+func TestRunWeeklyStatusInvalidGenerationDoesNotCacheOrExposeOutput(t *testing.T) {
+	h := newWeeklyCLIHarness(t)
+	setupWeeklyCLI(t, h, "")
+	h.setRows("TEST-2")
+	h.llmOutput = `SYNTHETIC-PRIVATE-MARKER`
+	err := runWeeklyCLI(t)
+	if err == nil {
+		t.Fatal("expected invalid generated report to fail")
+	}
+	if strings.Contains(err.Error(), "SYNTHETIC-PRIVATE-MARKER") {
+		t.Fatalf("provider output leaked in error: %v", err)
+	}
+	cfg := &config.Config{JiraServer: h.server.URL, JiraEmail: "test@example.com", JiraAPIToken: "fake-token", JiraProject: "TEST"}
+	db, openErr := cache.OpenForConfig(cfg)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	defer db.Close()
+	if got := db.Stats().WeeklyCache; got != 0 {
+		t.Fatalf("weekly cache contains %d reports after invalid generation", got)
 	}
 }

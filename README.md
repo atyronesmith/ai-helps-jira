@@ -10,7 +10,7 @@ Inspired by the [official Atlassian MCP server](https://github.com/atlassian/mcp
 - **Natural Language Search** — Describe what you want in plain English; a deterministic parser translates it to JQL (an LLM handles complex queries it cannot), and the search runs.
 - **Digest Reports** — Walk issue hierarchy (Initiative → Feature → Epic), fetch recent comments, and generate executive progress digests with AI.
 - **Ticket Enrichment** — Fill in sparse tickets with AI-generated descriptions, acceptance criteria, labels, and priority suggestions.
-- **Weekly Status** — Generate formatted weekly status reports from JIRA activity, optionally post to Confluence.
+- **Weekly Status (experimental)** — Generate formatted weekly status reports from JIRA activity, optionally post to Confluence.
 - **Comment Summarizer** — Summarize long comment threads into key decisions, action items, and open questions.
 - **Backlog Health Check** — Rule-based analysis (stale tickets, missing descriptions, orphaned issues, unassigned active, missing labels) with optional LLM executive summary.
 - **JIRA CRUD** — Create, edit, transition, comment on, link issues, look up users, and attach files — all from CLI or MCP.
@@ -241,14 +241,14 @@ jira-cli create-epic
 jira-cli create-epic -d "Build user onboarding flow" --no-interactive
 ```
 
-### Weekly Status
+### Weekly Status (experimental)
 
 ```sh
 # Generate weekly status (defaults to last 7 days)
 jira-cli weekly-status
 
 # Custom date range
-jira-cli weekly-status --start 2026-03-01 --end 2026-03-31
+jira-cli weekly-status --start-date 2026-03-01 --end-date 2026-03-31
 
 # Post to Confluence
 jira-cli weekly-status --confluence
@@ -256,6 +256,13 @@ jira-cli weekly-status --confluence
 # With verbose cache diagnostics
 jira-cli -vv weekly-status
 ```
+
+Weekly report generation honors cancellation and has a 90-second generation
+deadline. Incomplete, oversized, malformed, repetitive, or missing-group output
+fails before caching or Confluence publication; errors omit raw model output.
+Large activity sets may require a narrower reporting period. Narratives remain
+AI-generated: structural checks and evidence-focused instructions cannot prove
+every factual claim, so review the report against its Jira sources.
 
 ### Comment Summarizer
 
@@ -391,7 +398,7 @@ For a more detailed setup guide (including troubleshooting), see [docs/HOWTO-AI-
 | `jira_query` | Natural language search; deterministic parser first, LLM fallback for complex queries |
 | `jira_digest` | Executive digest for Features/Initiatives; natural-language issues translated to JQL (deterministic parser first, LLM fallback) |
 | `jira_enrich` | AI-generated enrichment for sparse tickets |
-| `jira_weekly_status` | Weekly status report with optional Confluence posting |
+| `jira_weekly_status` | Experimental weekly status draft with optional Confluence posting |
 | `jira_create_epic` | LLM-assisted EPIC creation |
 | `jira_summarize_comments` | AI summary of issue comment threads |
 | `jira_backlog_health` | Backlog health analysis with findings and recommendations |

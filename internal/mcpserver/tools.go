@@ -228,7 +228,7 @@ func enrichToolDef() mcp.Tool {
 
 func weeklyStatusToolDef() mcp.Tool {
 	return mcp.NewTool("jira_weekly_status",
-		mcp.WithDescription("Generate a formatted weekly status report from JIRA activity. Queries user's work for a date range, fetches issue details and comments, uses AI to produce narrative status bullets grouped by project/epic. Optionally posts to Confluence."),
+		mcp.WithDescription("EXPERIMENTAL: Generate a formatted weekly status draft from JIRA activity. Queries user's work for a date range, fetches issue details and comments, uses AI to produce narrative status bullets grouped by project/epic. Returns a complete validated report or an error; an error is not a usable partial report. Narrative claims still need review against the Jira evidence. User and project are optional overrides of configured defaults. Optionally posts to Confluence only when confluence=true; defaults to false."),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
 		mcp.WithString("start_date", mcp.Description("Start of reporting period (YYYY-MM-DD). Defaults to 7 days ago.")),
@@ -1140,9 +1140,9 @@ func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolReque
 	var status *llm.WeeklyStatusContent
 
 	if cachedJSON, _, ok := db.GetWeeklyCache(cacheKey); ok {
-		if err := json.Unmarshal([]byte(cachedJSON), &status); err != nil {
-			slog.Warn("failed to unmarshal cached result, will regenerate", "error", err)
-			status = nil
+		status, err = llm.ParseWeeklyStatus(cachedJSON)
+		if err != nil {
+			slog.Warn("invalid cached weekly result, will regenerate")
 		}
 	}
 
@@ -1223,8 +1223,12 @@ func (h *Handlers) HandleWeeklyStatus(ctx context.Context, req mcp.CallToolReque
 			return textResult("No issues with activity found in the specified date range."), nil
 		}
 
-		status, err = llm.GenerateWeeklyStatus(cfg, items, startStr, endStr)
+		status, err = llm.GenerateWeeklyStatusContext(ctx, cfg, items, startStr, endStr)
+		h.dependencies.observe("provider", err)
 		if err != nil {
+			if failure, ok := ctx.Value(attemptFailureKey{}).(*attemptFailure); ok {
+				failure.category = diagnosticErrorCategory(err)
+			}
 			return errorResult(fmt.Sprintf("LLM generation failed: %v", err)), nil
 		}
 

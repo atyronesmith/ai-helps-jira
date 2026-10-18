@@ -22,6 +22,7 @@ type weeklyIssueFingerprint struct {
 }
 
 type weeklyFingerprint struct {
+	Version int                      `json:"version"`
 	Scope   string                   `json:"scope"`
 	Owner   string                   `json:"owner"`
 	Project string                   `json:"project"`
@@ -59,7 +60,9 @@ func WeeklyCacheKey(cfg *config.Config, start, end string, issues []jira.Issue) 
 		return string(left) < string(right)
 	})
 	payload, _ := json.Marshal(weeklyFingerprint{
-		Scope: scope, Owner: owner, Project: project, Start: start, End: end, Issues: rows,
+		// Reports produced before bounded generation/source validation must not
+		// bypass the new checks through a cache hit. Old rows expire normally.
+		Version: 2, Scope: scope, Owner: owner, Project: project, Start: start, End: end, Issues: rows,
 	})
 	digest := sha256.Sum256(payload)
 	return hex.EncodeToString(digest[:])

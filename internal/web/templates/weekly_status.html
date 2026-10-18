@@ -1,10 +1,11 @@
 {{template "layout" .}}
 
-{{define "title"}}Weekly Status: {{.Data.StartDate}} to {{.Data.EndDate}}{{end}}
+{{define "title"}}Experimental Weekly Status: {{.Data.StartDate}} to {{.Data.EndDate}}{{end}}
 
 {{define "content"}}
 <hgroup>
-    <h1>Weekly Status Report</h1>
+    <h1>Weekly Status Report — Experimental</h1>
+    <p>Review generated claims against the source Jira activity.</p>
     <p class="timestamp">{{.Data.UserName}} | {{.Data.StartDate}} to {{.Data.EndDate}} | Generated {{formatTime .Data.GeneratedAt}}</p>
 </hgroup>
 
