@@ -107,6 +107,75 @@ time. Missing fixtures or unreviewed expectations never count as a pass.
 
 ## Reading results
 
+Reviewed ordering examples also become sanitized replay fixtures. The phrases
+“ordered by last updated” and “in order of when last updated” default to
+`updated DESC`; an explicit ascending direction overrides that default. The
+reviewed default now applies to all updated-date aliases. Bare priority
+adjectives such as “my Critical work items” retain their priority predicate.
+These examples do not imply an open-status filter. For recognized core date
+fields, “from oldest to newest” means `ASC`, and “from newest to oldest” means
+`DESC`. The direction applies to the named field, including created, updated,
+due, and resolution dates. Chronological wording on a non-date field, or wording
+that omits the date field, requires clarification instead of a model guess.
+
+Numeric and duration ordering defaults to `DESC`, including Story Points,
+original work estimate (`originalEstimate`), logged work time (`timespent`), and
+the amount of work remaining (`remainingEstimate`). Explicit `ASC` overrides
+the default. Story Points requires applicable cached numeric field metadata;
+time-tracking fields are built-in duration fields (see
+[Jira's field reference](https://support.atlassian.com/jira-software-cloud/docs/jql-fields/)). All reviewed “my open”
+examples use `assignee = currentUser()` (or the configured effective user) and
+`statusCategory != Done`, regardless of which field orders the results. Normal
+execution still requires project scope.
+
+Keywords and ordering aliases are case-insensitive. Conservative keyword repair
+accepts a unique single insertion, deletion, substitution, or adjacent letter
+swap in a search command, predicate keyword, or ordering phrase. It preserves
+quoted text, explicit assignee names, project identifiers, and original input;
+diagnostics show the repaired normalized input separately. Repairs with
+different possible meanings require clarification without a model call. This
+is a bounded grammar vocabulary, not a general-purpose spelling corrector.
+
+The reported `thare are priority` wording has a narrow relative-clause repair
+after an issue noun, yielding `that are priority`; it does not rewrite project
+names, assignee names, quoted values, or literal text-search terms. Clients must
+still pass the original spelling, casing, and spacing verbatim.
+
+Fallback plans must preserve recognizable leading self-ownership in every
+Boolean branch and any explicit ordering that the deterministic grammar can
+resolve. Missing ownership or changed ordering fails as `invalid_output` instead
+of returning a broader query. These bounded guards do not verify every semantic
+constraint in arbitrary unsupported language. `validation.scope=local_structure`
+labels the translation tool's structural validation separately from meaning.
+Translation-only successes and failures are retained as private attempt
+diagnostics, with generated JQL and no executed JQL; they never search Jira.
+
+Priority choices include Major and Minor. “Where the priority is either major
+or minor” retains `priority IN (Major, Minor)` alongside the requested owner
+and open-work filters. Priority filters do not add a priority sort key. “Order
+by updated” sorts only by updated, while “order by priority, then updated”
+preserves that sequence.
+Priority and updated default to descending, with explicit ascending honored.
+
+Natural-language list and recommendation queries without explicit sorting now
+use `ORDER BY updated DESC` at the shared application translation boundary.
+Explicit sort keys remain the complete requested ordering; count translations
+have no implicit sort. Lower-level predicate composition and raw-JQL scope
+validation do not add application ordering defaults.
+
+Summary text and title both order by `summary ASC` unless explicitly overridden.
+The reviewed “contain the words” form builds a bounded comma/OR list into one
+`text ~ "first OR second OR third"` predicate. Search terms bypass keyword,
+date, and project-name repair, retaining their case and spelling. Lucene
+literals and the surrounding JQL string are escaped separately; malformed or
+empty recognized lists require clarification without a model call.
+
+“Child tasks of an epic” follows the user-supplied structural definition:
+`parent IS NOT EMPTY AND issuetype NOT IN subtaskIssueTypes()`. This excludes
+subtasks and requires a parent; it does not verify the parent's issue type.
+Tenant hierarchy variations and live Jira text-search behavior remain
+unverified. Translation does not fetch parent records or tenant metadata.
+
 Replay writes a JSON report and exits nonzero unless every attempt passes its
 reviewed expectations. Empty, missing, or malformed corpora also fail. CI runs
 the sanitized corpus through both behavioral tests and the replay command.

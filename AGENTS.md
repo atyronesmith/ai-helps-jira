@@ -212,6 +212,10 @@ make container-stop  # Stop and remove the container
 
 ## Implementation Plans
 
+- [Current status](docs/STATUS.md), [session log](docs/SESSION-LOG.md), and
+  [documentation index](docs/README.md) — exit handoff, latest verification,
+  remaining limitations, and preserved local files. Inspect staged and unstaged
+  changes before resuming work.
 - [Project reliability plan](docs/project-reliability-implementation-plan.md) —
   phases, acceptance criteria, known correctness gaps, and Phase 0 regression-gate
   results. Phase 1 implements complete query searches/count metadata; Phase 2 implements scoped caches, atomic summary reconciliation, mutation fences, and weekly fingerprints. Phase 3 implements typed intent and structural JQL construction with local verification; live Jira validation remains pending. Phase 4 implements one typed fallback, classified terminal failures, caller contexts, normalized provider URLs, and explicitly refreshed tenant metadata. Phase 5 adds private attempt feedback, reproducible corpus replay, and semantic regression gates. Phase 6 adds durable result/attempt history, exact execution diagnostics, retention controls, and passive readiness observations. Phase 7 remains planned.

@@ -672,6 +672,13 @@ can leave readiness unknown. Polling does not call Jira or a model. See the
 
 Uses JIRA Cloud REST API v3 (`/rest/api/3/`) for search, issue CRUD, comments, transitions, and linking. Uses Agile REST API v1.0 (`/rest/agile/1.0/`) for boards and sprints. Authentication via email + API token (Basic Auth).
 
+## Documentation
+
+See the [documentation index](docs/README.md),
+[current project status](docs/STATUS.md), and
+[development session log](docs/SESSION-LOG.md) for the latest handoff and
+verification state.
+
 ## Development
 
 ```sh

@@ -1,9 +1,11 @@
 # Project Reliability Implementation Plan
 
-Status: Phases 0–6 implemented and locally verified on 2026-10-16.
+Status: Phases 0–6 implemented; latest follow-ups locally verified on 2026-10-17
+and committed in dependency order, undeployed. See [current status](STATUS.md) and
+[session log](SESSION-LOG.md) for the exit handoff.
 Phase 7 remains proposed. Hosted CI execution remains pending; live Jira
 validation is unavailable without explicitly exported credentials and fixtures.
-Review date: 2026-10-16.
+Review date: 2026-10-17.
 
 ## Intent
 
@@ -862,6 +864,191 @@ unverified; the workflow was updated but no hosted run was triggered.
   separate oracle concerns. Hosted CI and live-model/tenant quality remain
   unverified here. No embedding need has been established by this small corpus.
 
+### Guided ordering examples and verification (2026-10-17)
+
+- The user is reviewing ordering language by field type. The first three
+  examples use “last updated” with descending order, including “in order of
+  when last updated” and a bare Critical priority. These preserve ownership and
+  requested priority without adding an open-status filter. Explicit directions
+  override the defaults. A later reviewed example sets all updated-date aliases
+  to descending by default.
+- Chronological directions now use recognized core date-field types:
+  oldest to newest means ascending, newest to oldest means descending. A
+  standalone chronological phrase still needs its date field identified.
+  Numeric/duration examples now default to descending: Story Points, original
+  work estimate, logged work time, and the amount of work remaining. Explicit
+  ascending overrides these defaults. The user confirmed `statusCategory !=
+  Done` consistently for open work. Story Points requires applicable numeric
+  cached metadata; time-tracking fields use built-in duration types. Other
+  tenant custom-field support retains the conservative resolver boundary.
+- Existing case-insensitive keyword matching has additional reviewed coverage.
+  Bounded one-edit keyword repair handles missing/extra/swapped letters and
+  substitutions, preserving identifiers, quoted values, original input, and
+  separate normalized diagnostics. Competing corrections require clarification
+  instead of fallback guessing. The updated sanitized corpus contains 64
+  reviewed expectations, all verified by offline replay.
+- Priority alternatives now include Major and Minor and the phrase “where the
+  priority is either major or minor.” The user clarified that priority ordering
+  must be requested explicitly. “Order by priority, then updated” preserves
+  both keys in that order; ordering only by updated never inserts priority.
+  Priority and updated default to descending, with ascending overrides retained.
+  `and order by` is ordering framing, not a dangling Boolean conjunction.
+- The shared production translation boundary now supplies `updated DESC` when
+  natural-language list/recommendation results have no explicit sort. Explicit
+  sorts remain unchanged; count mode and lower-level predicate/scope composition
+  do not receive this application default. Existing replay list expectations
+  reflect the reviewed default without rewriting historical correction data.
+- Summary text/title aliases, bounded literal text-word OR lists, open epics,
+  and the supplied parented non-subtask definition are implemented. Text terms
+  bypass keyword/date/project normalization and are escaped for both Lucene
+  and JQL. Recognized malformed lists require clarification without fallback.
+  The parent predicate does not establish that the parent is an Epic; live
+  hierarchy and Jira full-text evaluation remain unverified. No parent lookup
+  or metadata request is performed during translation.
+- A reported Qwen-host transcript used shell commands and credential searches
+  without calling `jira_query`; it does not demonstrate a server translation
+  failure. Initialize/tool descriptions now emphasize direct query invocation,
+  server-side ordering, an exact creation-date example, unconditional avoidance
+  of credential discovery for business requests, and reporting missing MCP
+  availability instead of shell/REST workarounds. These are client-visible
+  instructions, not host tool-access enforcement. The user confirmed that Codex
+  uses Qwen hosted on a separate Mac mini and that the MCP server works on this
+  machine. No model-specific behavior, running deployment, or end-to-end host
+  routing is verified by the local regression suite.
+- **Passed:** focused parser, production translation, training/replay, and mock
+  execution regressions. Verification corrected keyword repair of the valid
+  leading word “how” and added structural JQL membership-function support for
+  `issuetype NOT IN subtaskIssueTypes()`. Function operands do not receive the
+  direct-issue-identity scope exemption; malformed operands and leaking Boolean
+  branches remain rejected. Explicit-user mock requests and default-sort replay
+  expectations were corrected without weakening owner or ordering assertions.
+- **Passed:** final `make verify` (native CLI build, `go vet ./...`, full
+  `go test -v -race -count=1 ./...`, documentation lint, dashboard browser refresh
+  regressions, and diff checks) and `go build ./...`. The generated-query corpus,
+  Phase 6 durable lifecycle, dependency failure, and passive-polling regressions
+  remain in the passing full suite.
+- **Passed:** CLI offline replay: 64/64 reviewed expectations, including 50
+  successful semantic translations and 14 expected terminal failures; 49
+  deterministic successes and three fixture-provider calls. These corpus
+  statistics are not a live-model acceptance estimate.
+- **Passed:** all four release-platform builds (`linux/amd64`, `linux/arm64`,
+  `darwin/amd64`, `darwin/arm64`) to temporary directories, and the container
+  image build using a source-only temporary context and a separate verification
+  tag. No running container was replaced or started.
+- **Passed:** race-enabled local oracle protocol tests, compilation of all
+  oracle-tagged packages, and all 12 Python oracle-runner tests. **Not run:** the
+  live strict Jira oracle, consistent with the prohibition on production Jira
+  operations. Compilation and protocol mocks do not establish tenant validity.
+- **Passed:** changed-file diff review, formatting, redacted Gitleaks scan, and
+  SHA-256 preservation checks for both preexisting harness files. Local mock
+  listeners required approved execution outside the filesystem sandbox.
+- No production Jira operations, credential discovery, deployment, or private
+  feedback reads are part of this work. The existing untracked harness files
+  remain outside the changes. Hosted CI, live tenant hierarchy/full-text
+  evaluation, and the Qwen client's adherence to MCP instructions remain
+  unverified. The collected changes were subsequently committed in dependency
+  order; see the [session log](SESSION-LOG.md).
+
+### Weekly generation failure follow-up (2026-10-17)
+
+- Weekly status is explicitly labeled **experimental** in MCP discovery, CLI
+  help, the dashboard report view, and README documentation. This is a maturity
+  label; it does not change invocation parameters or publication defaults.
+- A reported weekly tool call returned truncated JSON and repeated narrative
+  fragments after several minutes. This is a failed report, not a successful
+  partial weekly status. The code ignored provider completion stop reasons,
+  discarded the caller context for generation, and included raw model output in
+  parse errors/debug logs. No private production response was copied into Git.
+- Weekly generation now shares a caller-derived 90-second deadline across
+  provider initialization and completion. It makes one completion request with
+  no repair/retry loop. Both provider backends reject explicit abnormal stop
+  reasons and empty content; absent reasons remain compatible with legacy
+  OpenAI-compatible responses.
+- Weekly input/output is bounded to 64 KiB, with at most 64 parent/standalone
+  groups. The existing 500-byte description and 1000-byte comment previews now
+  preserve UTF-8. Aggregate overflow fails explicitly instead of dropping
+  issues. Only report-relevant fields enter the JSON source payload.
+- Complete report shape, nonempty bounded bullets, unique groups, source group
+  identity/coverage, duplicate bullets, and adjacent phrase loops are checked
+  before report caching, dashboard storage, or Confluence calls. Invalid cached
+  report shapes regenerate; the versioned weekly fingerprint prevents reports
+  from the earlier generation contract from bypassing the new checks. Old cache
+  rows are not imported or rewritten and expire normally.
+- Instructions require documented evidence, preserve planned versus completed
+  work, avoid inferring historical transitions from current status, and omit
+  unsupported impact commentary. These instructions and structural checks do
+  not prove narrative truthfulness or every child's coverage within a parent
+  group. They are not a comprehensive prompt-injection or hallucination defense.
+  Description/comment previews remain partial evidence; live model quality and
+  remote cancellation behavior remain unverified.
+- Weekly failures retain bounded `invalid_output`, timeout, or cancellation
+  categories in attempt history. Actual weekly generation updates provider
+  observations; cache hits and dashboard polling make no provider calls. Errors
+  and weekly logs omit raw generated responses. Earlier persisted private
+  diagnostics are not scrubbed retroactively.
+- **Passed:** focused provider/weekly unit tests and race-enabled CLI/cache/MCP
+  regressions, including malformed/truncated JSON, repeated fragments, unknown
+  or missing groups, privacy, source preview bounds, caller cancellation,
+  preservation of failed attempts, no failed-report cache/publication, valid
+  cache reuse, and passive polling. OpenAI-compatible and SDK-backed Vertex
+  mocks cover normal stops, token limits, refusal/unknown stop reasons, empty
+  content, one-call behavior, and safe errors. An initial Vertex mock failure
+  was corrected by supplying its required JSON content type.
+- **Passed:** final `make verify` (native build, vet, full race suite,
+  documentation lint, dashboard browser checks, and diff checks), plus
+  `go build ./...`, changed-Go formatting, a redacted changed-file secret scan,
+  and preservation checks for both protected harness files. Live Jira/provider
+  execution and Confluence publication remain untested and were not attempted.
+- No production Jira/provider/Confluence operations, deployment, or commits are
+  part of this follow-up. Existing working-tree and protected harness changes
+  remain preserved.
+
+### Translation attempt visibility and typo follow-up (2026-10-17)
+
+- Successful `jira_translate_query` calls were deliberately omitted from
+  history. They now retain private durable attempt traces alongside failures,
+  including original/normalized wording, generated/display JQL, route,
+  timestamps, duration, and local validation. Executed JQL remains empty and no
+  issue-result row or Jira search is produced. Existing retention and instance
+  isolation apply to these attempts. New handler lifecycle logs contain bounded
+  tool/route/outcome/category/validation/duration fields, without copying input
+  or upstream error bodies into those events. Existing translator logs and
+  stored query evidence remain private diagnostics.
+- The translation response explicitly labels `validation.scope=local_structure`.
+  This is not a claim of complete semantic equivalence or tenant validation.
+  Tool/initialize instructions require exact original spelling, casing, and
+  spacing; clients must not repair or pretranslate the request.
+- The reported `thare are priority` example now has a narrowly scoped
+  `thare`→`that` repair after an issue noun and before `are/is priority`.
+  It preserves original input separately and uses the deterministic path with
+  self ownership, open-work semantics, Critical priority, and `priority DESC`.
+  Project/assignee names, quoted strings, text-search terms, and unrelated
+  occurrences are preserved. General fuzzy matching remains one-edit bounded.
+- A separate fallback guard rejects missing/wrong/negated ownership or ownership
+  that leaks through an OR branch for recognizable leading possessive requests.
+  A history actor does not substitute for an assignee. Configured effective-user
+  overrides are preserved. Recognizable explicit sort keys and their reviewed
+  default directions must match the typed model plan; mismatches fail as
+  `invalid_output` without silently rewriting arbitrary model Boolean logic.
+- These are bounded semantic guards, not a complete natural-language verifier.
+  Ownership outside the recognized leading frames, model-only sort vocabulary,
+  and other constraints still require semantic regression coverage and review.
+  An unsupported model response remains a terminal refusal, not a partial query.
+  Old routing tests that accepted unrelated ownerless model output now use
+  explicit unsupported responses and assert failure plus preserved diagnostics.
+- The sanitized corpus now contains 68 reviewed expectations: 52 successful
+  translations, 16 expected failures, 50 deterministic successes, and six
+  fixture-provider calls. **Passed:** focused guard, typo, replay, and
+  translation-attempt tests; final `make verify` (native build, vet, full race
+  suite, documentation lint, dashboard browser checks, and diff checks);
+  `go build ./...`; CLI offline replay (68/68); compilation of all oracle-tagged
+  packages; changed-Go formatting; redacted changed-file secret scan; and both
+  protected harness preservation checks. No live strict Jira oracle was run.
+- No production Jira operation, credential discovery, private feedback read,
+  deployment, or commit is part of this follow-up. Live model/tenant validation
+  remains separate from local mocks, and the protected harness files remain
+  outside the changes.
+
 ## Phase 6: Diagnostic dashboard and result lifecycle
 
 Primary files: `internal/mcpserver/store.go`, `webserver.go`, `results.go`,
@@ -910,7 +1097,8 @@ call, production Jira operation, or credential discovery was performed.
   addition to any existing rich report they produce. Natural-language digest
   attempts and failed translation-only attempts retain query traces too; digest
   search uses the same bounded search service and preserves its completeness.
-  Successful translation-only inspection retains its no-history contract. Digest
+  Successful translation-only inspection now retains a private attempt trace,
+  without issue results or executed JQL, following the visibility follow-up. Digest
   item errors recorded in a trace make the attempt a failure even though its
   existing aggregate MCP response still contains per-item error text.
 - Upstream error messages/bodies and arbitrary tool arguments are excluded from
