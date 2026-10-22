@@ -3,6 +3,112 @@
 This log contains sanitized engineering outcomes, not raw Jira responses,
 provider output, runtime logs, credentials, or private feedback records.
 
+## 2026-10-22 — Review fixes and focused commits
+
+The user authorized committing the open changes in multiple commits to preserve
+context. Root reviewed and integrated the changes, preserving the private ordering
+corpus and both protected local harness files outside Git. Both protected files
+still match their recorded checksums.
+
+Review reproduced and corrected two semantic regressions. Explicit label OR
+groups now preserve a trailing negation, nested group, or date predicate within
+its AND branch; ungrouped mixed alternatives require clarification. Recency
+idioms retain the explicitly named date field, including multiple sort terms,
+and non-date chronological ordering refuses without fallback. Recognized recency
+vocabulary is protected from fuzzy keyword repair. Luna added the focused tests,
+which failed on the original behavior and passed after root implementation.
+
+The implementation was committed in this dependency order:
+
+| Commit | Result |
+| --- | --- |
+| `31c90fd` | Deterministic date ranges, Boolean intent, recency ordering, and sanitized replay regressions |
+| `d35245a` | Bounded authored Jira activity reads, search response validation, and authenticated connection checks |
+| `dfcf957` | CLI/MCP activity routing, evidence reports, retained diagnostics, and translation error guidance |
+| `9516a01` | Manual dashboard connection checks, atomic instance history clearing, and browser/HTTP coverage |
+| `7028c49` | Fixed Bitwarden oracle workflows, CI/local checks, and supported setup documentation |
+
+The documentation handoff follows these commits. Final `make verify` passed,
+including build, vet, the full race suite, generated-query and sanitized replay
+regressions, documentation lint, both browser harnesses, 32 Python tests, and diff
+checks. `go build ./...` and focused race tests for `internal/nl2jql`,
+`internal/llm`, and `internal/nlfeedback` also passed. Staged Gitleaks scans found
+no leaks. No live Jira/provider operation, new live oracle, deployment, restart,
+or push was performed. The earlier user-reported 6/6 smoke remains historical
+bounded evidence, not live verification of the review fixes.
+
+## 2026-10-20 — Local review and translation failure follow-up
+
+Added a confirmed **Clear log** action for saved dashboard results and attempts.
+It issues one instance-scoped atomic SQL delete, preserves other owners and
+future saves, and refreshes the list without resurrecting old selections. Failed
+or uncertain responses retain an explicit warning; after a confirmed delete and
+failed refresh, stale rows are removed without claiming that no new rows exist.
+The action is manual-only and guarded by method/header/origin checks. Tests use
+temporary stores; no existing user history was cleared. The dashboard now calls
+the indicators **MCP tool calls** and **LLM provider** and explains unknown,
+stale, and last-observed-operation semantics. Changes remain undeployed.
+Final `make verify` also passed for this follow-up, including atomic-clear,
+owner-isolation, cancellation, HTTP route, and dashboard interaction regressions.
+
+Added an explicit dashboard connection-test control using the protected Jira
+current-user endpoint. The bounded GET validates an authenticated account
+response, returns only safe categories/timing, and updates the Jira dependency
+observation. Browser requests cannot supply destinations or credentials;
+redirects/retries and concurrent tests are blocked. Existing passive polling is
+unchanged. Local configuration uses existing environment/mounted secrets without
+requiring a project, model, Bitwarden lookup, or host Keychain. The local button
+has not been deployed; its behavior is covered with mock Jira and browser tests.
+Final `make verify` passed for this change, including build, vet, the complete
+race suite, both dashboard JavaScript harnesses, documentation lint, 32 Python
+tests, and diff checks. The HTTP integration covers both accepted and rejected
+credentials through the registered dashboard route without exposing account or
+credential data. No new live connection probe was run from this agent.
+
+At this session's end, changes were uncommitted; the 2026-10-22 entry records
+their later delivery. Luna reviews identified and local probes confirmed
+incorrect status OR collapse, label conjunction widening, terminal-status
+negation narrowing, and capitalization-dependent recency sorting. Local fixes
+and semantic regressions cover those cases.
+
+The reported activity-query failure exposed missing deterministic ISO-date
+range handling, an overbroad past-tense guard, and a client bypassing MCP after
+translation errors. Explicit issue-date ranges now include the entire final
+day. Personal dated "worked on" requests now inspect actual authored comments,
+worklogs, and status changes through a separate CLI/MCP activity path, using
+inclusive calendar dates in the effective user's timezone. Project-wide visible
+candidates prevent assignment, later updates, and backdated worklogs from
+silently dropping evidence. Four workers, time/page/issue limits, and a shared
+matching-event budget bound the scan; partial results retain evidence and
+disclose unknown totals. Unsupported requests still require clarification.
+MCP error responses and discovery retain original wording and instruct clients
+to stop, report errors, and avoid credential discovery or shell/REST bypasses.
+Client-side enforcement, deleted/restricted records, historical membership of
+issues moved out of the project, and atomic snapshots remain outside this path.
+
+Added explicit development oracle commands using the existing
+Keychain/Bitwarden conventions, with hermetic credential-boundary tests and a
+fixed smoke mode. Documentation now covers initialization, both service names,
+and the Podman secret lifecycle. The user sees the item in iCloud and confirms
+the configured lookup succeeds in their Terminal. This agent's identical lookup
+still returns item-not-found outside the sandbox, indicating a context/access
+difference rather than proof of a missing token. The user was given the fixed
+`make test-live` command for the working Terminal. It checks date-query strict
+parsing and a single visible issue's paginated activity endpoints. After fixing
+the date oracle's nil-provider fixture, the user's Terminal rerun passed
+**6/6 leaf oracle cases, 0 failed, 0 skipped**: one activity-read smoke, two
+explicit-date query shapes, and three date-sort cases. The date harness supplies
+a non-live fixture provider and asserts zero calls. No full-corpus or
+full-project live success is claimed.
+
+Final local verification passed: `make verify`, `go build ./...`, oracle-tagged
+compilation, and local oracle protocol tests. Replay passes 75/75 reviewed
+expectations, including 57 successful translations and 18 expected refusals,
+55 deterministic successes, and six fixture-provider calls. `make verify`
+includes all 32 Python launcher/runner tests. Live operations were limited to
+the fixed non-mutating smoke; no Jira writes or server deployment occurred. Protected
+local harness files and private corpora remain outside the changes.
+
 ## 2026-10-17 — Exit handoff
 
 ### Delivery state
