@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
@@ -37,24 +38,28 @@ type QueryResultData struct {
 	NormalizedInput string
 	// JQL retains the legacy display field. Execution evidence is separate and
 	// remains empty when validation/translation prevented a search attempt.
-	GeneratedJQL  string
-	ExecutedJQL   string
-	DisplayJQL    string
-	Outcome       string
-	ErrorStage    string
-	ErrorCategory string
-	Validation    string
-	StartedAt     time.Time
-	CompletedAt   time.Time
-	Duration      time.Duration
-	Route         string
-	JQL           string
-	Issues        []jira.Issue
-	Search        *jira.SearchInfo
-	SearchError   string
-	User          string
-	JiraServer    string
-	QueriedAt     time.Time
+	GeneratedJQL         string
+	ExecutedJQL          string
+	DisplayJQL           string
+	Outcome              string
+	ErrorStage           string
+	ErrorCategory        string
+	Validation           string
+	StartedAt            time.Time
+	CompletedAt          time.Time
+	Duration             time.Duration
+	Route                string
+	JQL                  string
+	Issues               []jira.Issue
+	Search               *jira.SearchInfo
+	SearchError          string
+	Activity             *jira.ActivityResult
+	ActivityError        string
+	ActivityYearInferred bool
+	ActivityDisplayLimit int
+	User                 string
+	JiraServer           string
+	QueriedAt            time.Time
 }
 
 // Metadata keeps missing or incomplete metadata explicitly unknown. Returned
@@ -77,11 +82,33 @@ func (q *QueryResultData) Metadata() jira.SearchInfo {
 }
 
 func (q *QueryResultData) Summary() string {
+	if q != nil && q.Activity != nil {
+		outcome := "partial"
+		if q.Outcome == "success" && q.Activity.CandidateComplete && q.Activity.Complete {
+			outcome = "complete"
+		}
+		summary := fmt.Sprintf("Activity lookup: %d observed matching issues from %d candidates (%s)", len(q.Activity.Matches), q.Activity.Candidates, outcome)
+		if q.ActivityError != "" {
+			summary += " | Activity error: " + q.ActivityError
+		}
+		return summary
+	}
 	summary := format.SearchSummary(q.Metadata())
 	if q != nil && q.SearchError != "" {
 		summary += " | Search error: " + q.SearchError
 	}
 	return summary
+}
+
+func (q *QueryResultData) ActivityText() string {
+	if q == nil || q.Activity == nil {
+		return ""
+	}
+	text := format.RenderActivity(*q.Activity, q.ActivityDisplayLimit)
+	if q.ActivityYearInferred && len(q.Activity.StartDate) >= 4 {
+		text = fmt.Sprintf("Years omitted; both dates were interpreted in %s.\n\n", q.Activity.StartDate[:4]) + text
+	}
+	return text
 }
 
 func (q *QueryResultData) HasMore() bool {

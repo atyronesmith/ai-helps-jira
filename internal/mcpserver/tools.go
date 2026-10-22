@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -20,6 +21,7 @@ import (
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
 	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
+	"github.com/atyronesmith/ai-helps-jira/internal/nl2jql"
 )
 
 // defaultConfluenceParent is the page ID for the weekly status parent page.
@@ -49,6 +51,7 @@ type Handlers struct {
 	// override them to stub translation without a fetch or a real LLM.
 	translate       func(ctx context.Context, cfg *config.Config, query string) (*llm.QueryResult, error)
 	digestTranslate func(ctx context.Context, cfg *config.Config, query string) (*llm.QueryResult, error)
+	activityLookup  func(ctx context.Context, cfg *config.Config, opts jira.WorkActivityOptions) (jira.ActivityResult, error)
 }
 
 // NewHandlers creates a new handler set. The query and digest handlers translate
@@ -99,6 +102,13 @@ func NewHandlers(store *ResultStore, db *cache.Cache, webPort int, bindHost stri
 		}
 		projects := projectListContext(ctx, scoped, cfg)
 		return h.jqlCache.GenerateJQLForDigest(llm.WithTranslationMetadata(ctx, scoped), cfg, query, projects)
+	}
+	h.activityLookup = func(ctx context.Context, cfg *config.Config, opts jira.WorkActivityOptions) (jira.ActivityResult, error) {
+		client, err := jira.NewClient(cfg)
+		if err != nil {
+			return jira.ActivityResult{}, err
+		}
+		return client.WithContext(ctx).WorkActivity(ctx, opts)
 	}
 	return h
 }
@@ -183,8 +193,8 @@ func summaryToolDef() mcp.Tool {
 
 func queryToolDef() mcp.Tool {
 	return mcp.NewTool("jira_query",
-		mcp.WithDescription("Search JIRA using natural language. Call jira_query directly for filtering and sorting. Jira executes the requested ORDER BY; no extra timestamp lookup or client-side sorting is needed. Example original wording: 'list my open issues ordered by date created'. For these Jira business requests: Do not seek credentials or bypass Jira MCP with shell, curl, or direct REST calls, even before a tool call. If the Jira MCP tools are unavailable, report the connection/tool availability problem. Translates to JQL (deterministic parser first, LLM fallback for complex queries), executes, and returns candidate issues with a rich HTML view. For recommendation or prioritization requests, this tool retrieves candidates but does not recommend: inspect each issue with jira_get_issue when the candidate count is reasonably bounded, then reason over the issue content. If there are too many, shortlist by returned priority, status, and summary, disclose the shortlist, and inspect those issues with jira_get_issue."),
-		mcp.WithString("natural_query", mcp.Required(), mcp.Description("Pass the user's exact original wording verbatim (for example, 'list my open issues ordered by date created' or 'Which of my open jiras should I work on next?'). Keep phrases like 'my open Jiras' unchanged; do not look up or replace 'me'/'my' with a username or email. Use jira_query for sorting too: Jira executes requested ORDER BY, so no extra timestamp lookup or client-side sorting is needed. For recommendations, use these results as candidates and inspect them with jira_get_issue; the host assistant makes the recommendation. If translation errors, return the MCP error; do not bypass it with REST or shell. Do not seek credentials or bypass Jira MCP using shell, curl, or direct REST calls, even before a tool call. If Jira MCP tools are unavailable, report the connection/tool availability problem.")),
+		mcp.WithDescription("Search JIRA using natural language. Call jira_query directly for filtering and sorting. Jira executes the requested ORDER BY; no extra timestamp lookup or client-side sorting is needed. Example original wording: 'list my open issues ordered by date created'. Pass the exact original request without silent rephrasing. Personal past-work requests with a supported date range use authored comments, worklogs, and status changes as evidence, regardless of current assignee. A request about work someone 'worked on' does not automatically mean currently assigned to them or imply an updated-time filter. Unsupported activity constraints or ambiguous dates require clarification. On translation errors, stop and report the error; if it reports ambiguity, ask the user for clarification. Do not retry variants or add/drop constraints or change dates; report other translation failures without rewriting the request. For these Jira business requests: Do not seek credentials or inspect local authentication config, or bypass Jira MCP with shell, CLI, curl, or direct REST calls, even before a tool call. If the Jira MCP tools are unavailable, report the connection/tool availability problem. Translates ordinary issue searches to JQL (deterministic parser first, LLM fallback for complex queries), executes, and returns candidate issues with a rich HTML view. For recommendation or prioritization requests, this tool retrieves candidates but does not recommend: inspect each issue with jira_get_issue when the candidate count is reasonably bounded, then reason over the issue content. If there are too many, shortlist by returned priority, status, and summary, disclose the shortlist, and inspect those issues with jira_get_issue."),
+		mcp.WithString("natural_query", mcp.Required(), mcp.Description("Pass the user's exact original wording verbatim (for example, 'list my open issues ordered by date created' or 'Which of my open jiras should I work on next?'). Keep phrases like 'my open Jiras' unchanged; do not look up or replace 'me'/'my' with a username or email. Personal past-work requests with a supported date range use authored comments, worklogs, and status changes as evidence, regardless of current assignee. A request about work someone 'worked on' does not automatically imply current assignment or an updated-time filter. Unsupported activity constraints or ambiguous dates require clarification. If translation errors, return the MCP error; do not bypass it with REST or shell. Stop and report the error; ask the user for clarification only when the error reports ambiguity. Do not silently rephrase or retry variants, add/drop constraints, or change dates; report other translation failures without rewriting the request. No Jira issue search ran after a translation error. Use jira_query for sorting ordinary issue searches too: Jira executes requested ORDER BY, so no extra timestamp lookup or client-side sorting is needed. For recommendations, use these results as candidates and inspect them with jira_get_issue; the host assistant makes the recommendation. Do not seek credentials or inspect local authentication config, or bypass Jira MCP using shell, CLI, curl, or direct REST calls, even before a tool call. If Jira MCP tools are unavailable, report the connection/tool availability problem.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
 		mcp.WithNumber("max_results", mcp.Description("Maximum issues to return in the displayed preview. Default 50; must be a positive integer.")),
@@ -196,7 +206,7 @@ func queryToolDef() mcp.Tool {
 func translateQueryToolDef() mcp.Tool {
 	return mcp.NewTool("jira_translate_query",
 		mcp.WithDescription("Translate the user's original natural-language Jira request to JQL and run local structural validation. Stores a private diagnostic attempt. Does not search Jira or save issue results."),
-		mcp.WithString("natural_query", mcp.Required(), mcp.Description("Pass the user's exact original wording verbatim, preserving spelling, casing, and spacing. The server owns normalization and typo repair; do not pretranslate it to JQL or repair typos.")),
+		mcp.WithString("natural_query", mcp.Required(), mcp.Description("Pass the user's exact original wording verbatim, preserving spelling, casing, and spacing. The server owns normalization and typo repair; do not pretranslate it to JQL, silently rephrase, or repair typos. If translation errors, stop and report the error; ask the user for clarification only when the error reports ambiguity. No Jira issue search ran. Do not retry variants or add/drop constraints or change dates; report other translation failures without rewriting the request. A request about work someone 'worked on' means activity and does not automatically imply current assignment or an updated-time filter; ask the user to clarify.")),
 		mcp.WithString("user", mcp.Description("JIRA user email.")),
 		mcp.WithString("project", mcp.Description("JIRA project key.")),
 		readOnlyAnnotations(),
@@ -453,6 +463,14 @@ func errorResult(msg string) *mcp.CallToolResult {
 	return mcp.NewToolResultError(msg)
 }
 
+func translationErrorResult(err error) *mcp.CallToolResult {
+	message := fmt.Sprintf("JQL generation failed: %v\n\nNo Jira issue search was executed. Stop and report this error. Do not silently rephrase or retry variants, add or drop constraints, or change dates. Do not seek credentials or inspect local authentication config, and do not bypass MCP via shell, curl, CLI, or direct REST.", err)
+	if errors.Is(err, nl2jql.ErrAmbiguousIntent) {
+		message += " Ask the user for clarification about the intended wording or constraints."
+	}
+	return errorResult(message)
+}
+
 func textResult(text string) *mcp.CallToolResult {
 	return mcp.NewToolResultText(text)
 }
@@ -565,6 +583,10 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 			}
 		}
 	}
+	activityRequest, recognized, activityErr := nl2jql.ParseActivityRequest(naturalQuery, attempt.StartedAt)
+	if recognized {
+		return h.handleActivityQuery(ctx, req, activityRequest, activityErr, maxResults, attempt, finish), nil
+	}
 
 	attempt.ErrorStage, attempt.ErrorCategory = "configuration", "configuration"
 	cfg, err := loadConfig(req)
@@ -592,7 +614,7 @@ func (h *Handlers) HandleQuery(ctx context.Context, req mcp.CallToolRequest) (*m
 	}
 	if err != nil {
 		attempt.ErrorCategory = diagnosticErrorCategory(err)
-		return errorResult(fmt.Sprintf("JQL generation failed: %v", err)), nil
+		return translationErrorResult(err), nil
 	}
 	slog.Info("JQL generated", "jql", result.JQL, "route", result.Route)
 
@@ -748,7 +770,7 @@ func (h *Handlers) HandleTranslateQuery(ctx context.Context, req mcp.CallToolReq
 	}
 	if err != nil {
 		completionCategory = diagnosticErrorCategory(err)
-		return errorResult(fmt.Sprintf("JQL generation failed: %v", err)), nil
+		return translationErrorResult(err), nil
 	}
 
 	type validationResult struct {
@@ -845,7 +867,7 @@ func (h *Handlers) HandleDigest(ctx context.Context, req mcp.CallToolRequest) (*
 		result, err := h.digestTranslate(ctx, cfg, naturalQuery)
 		h.observeTranslation(ctx, cfg, result, err)
 		if err != nil {
-			return errorResult(fmt.Sprintf("JQL generation failed: %v", err)), nil
+			return translationErrorResult(err), nil
 		}
 		nlDays = result.Days
 		slog.Info("digest JQL", "jql", result.JQL, "days", result.Days, "route", result.Route)

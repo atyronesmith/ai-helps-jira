@@ -17,6 +17,7 @@ import (
 	"github.com/atyronesmith/ai-helps-jira/internal/jira"
 	"github.com/atyronesmith/ai-helps-jira/internal/jql"
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
+	"github.com/atyronesmith/ai-helps-jira/internal/nl2jql"
 )
 
 var (
@@ -43,11 +44,17 @@ var queryCmd = &cobra.Command{
 handles common queries; an LLM handles the complex ones it cannot), then
 execute the search against JIRA and display matching issues.
 
+For date ranges, name the issue date field. Calendar end dates are inclusive.
+"Worked on" requests inspect authored comments, worklogs, and status changes
+within an inclusive date range; current assignment or an updated timestamp alone
+does not establish who performed the work.
+
 Examples:
   jira-cli query "show me all critical bugs from last week"
   jira-cli query "unresolved stories assigned to me" --show-jql
   jira-cli query "epics created this month" --max 10
-  jira-cli query "tickets worked on by jsmith this week"`,
+  jira-cli query "issues assigned to me updated between 2026-10-12 and 2026-10-16"
+  jira-cli query "Which issues did I work on between 2026-10-12 and 2026-10-16"`,
 	Args: cobra.ExactArgs(1),
 	RunE: runQuery,
 }
@@ -68,6 +75,11 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("max") && flagMaxResults <= 0 {
 		return fmt.Errorf("--max must be greater than zero")
 	}
+	naturalQuery := args[0]
+	activityRequest, recognized, activityErr := nl2jql.ParseActivityRequest(naturalQuery, time.Now())
+	if recognized {
+		return runActivityQuery(cmd, activityRequest, activityErr)
+	}
 	loadConfig := config.Load
 	if flagDryRun {
 		loadConfig = config.LoadTranslation
@@ -78,7 +90,6 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	}
 	setupLogging()
 
-	naturalQuery := args[0]
 	if !flagDryRun {
 		slog.Info("starting query")
 	}

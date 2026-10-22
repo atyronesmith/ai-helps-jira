@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -45,6 +46,13 @@ func TestMCPServerDiscovery(t *testing.T) {
 		"deterministic translation",
 		"configured LLM fallback",
 		"report that error",
+		"On translation errors, stop and report the error",
+		"If it reports ambiguity, ask the user for clarification",
+		"Report other translation failures without rewriting the request",
+		"worked on",
+		"does not automatically mean currently assigned",
+		"authored comments, worklogs, and status changes",
+		"incomplete scans",
 		"do not seek credentials",
 		"direct REST or shell calls",
 		"Which of my open jiras should I work on next?",
@@ -123,6 +131,11 @@ func TestMCPServerDiscovery(t *testing.T) {
 		"jira_query": {
 			"does not recommend", "jira_get_issue",
 			"list my open issues ordered by date created",
+			"On translation errors, stop and report the error",
+			"if it reports ambiguity, ask the user for clarification",
+			"Do not retry variants or add/drop constraints or change dates",
+			"worked on",
+			"does not automatically mean currently assigned to them or imply an updated-time filter",
 			"Call jira_query directly for filtering and sorting",
 			"Jira executes the requested ORDER BY",
 			"no extra timestamp lookup or client-side sorting",
@@ -136,6 +149,33 @@ func TestMCPServerDiscovery(t *testing.T) {
 		for _, phrase := range required {
 			if !strings.Contains(tool.Description, phrase) {
 				t.Errorf("discovered %s description missing %q: %q", name, phrase, tool.Description)
+			}
+		}
+	}
+	for name, required := range map[string][]string{
+		"jira_query": {
+			"Do not silently rephrase or retry variants, add/drop constraints, or change dates",
+			"ask the user for clarification only when the error reports ambiguity",
+			"No Jira issue search ran after a translation error",
+			"worked on",
+			"does not automatically imply current assignment or an updated-time filter",
+		},
+		"jira_translate_query": {
+			"exact original wording verbatim",
+			"ask the user for clarification only when the error reports ambiguity",
+			"No Jira issue search ran",
+			"Do not retry variants or add/drop constraints or change dates",
+			"worked on",
+			"does not automatically imply current assignment or an updated-time filter",
+		},
+	} {
+		input, err := json.Marshal(discovered[name].InputSchema.Properties["natural_query"])
+		if err != nil {
+			t.Fatalf("marshal %s natural_query schema: %v", name, err)
+		}
+		for _, phrase := range required {
+			if !strings.Contains(string(input), phrase) {
+				t.Errorf("discovered %s natural_query description missing %q: %s", name, phrase, input)
 			}
 		}
 	}

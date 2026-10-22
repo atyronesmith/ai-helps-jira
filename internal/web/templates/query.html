@@ -33,7 +33,12 @@
     {{if .Data.SearchError}}<p class="server-status-unhealthy"><strong>Search error:</strong> {{.Data.SearchError}}</p>{{end}}
 </article>
 
-{{if .Data.Issues}}
+{{if .Data.Activity}}
+<article>
+    <h3>Authored activity evidence</h3>
+    <pre>{{.Data.ActivityText}}</pre>
+</article>
+{{else if .Data.Issues}}
 <article><p>{{.Data.Summary}}</p></article>
 <div class="grid-2">
     <article>
