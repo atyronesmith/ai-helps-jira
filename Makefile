@@ -25,7 +25,7 @@ BWS_ENV_FILE ?= .env
 .PHONY: all build clean install uninstall test lint fmt vet tidy run \
         release check doc-lint restart-mcp container container-build container-run container-run-bitwarden container-stop \
         container-scan container-sign container-sbom train-jql train-jql-report train-jql-replay \
-        test-translation test-dashboard verify help
+        test-translation test-dashboard test-live test-live-full verify help
 
 CORPUS ?= internal/nlfeedback/testdata/regressions.jsonl
 
@@ -64,6 +64,12 @@ lint: vet  ## Run linters (vet + staticcheck if available)
 test:  ## Run tests
 	go test -v -race -count=1 ./...
 
+test-live:  ## Run non-mutating Jira parser and activity smoke tests with Keychain/Bitwarden credentials
+	@python3 scripts/run-jql-oracle-bitwarden.py --env-file "$(BWS_ENV_FILE)" --smoke
+
+test-live-full:  ## Run the complete strict Jira oracle with macOS Keychain/Bitwarden credentials
+	@python3 scripts/run-jql-oracle-bitwarden.py --env-file "$(BWS_ENV_FILE)"
+
 train-jql: build  ## Review translations interactively and collect private feedback (customize with ARGS)
 	./$(BINARY) train-jql $(ARGS)
 
@@ -79,11 +85,14 @@ test-translation:  ## Run focused JQL translation tests with the race detector
 test-dashboard:  ## Run dashboard browser refresh regression and MCP server tests
 	@command -v node >/dev/null 2>&1 || { echo "node is required for the dashboard browser regression"; exit 1; }
 	node scripts/test_dashboard_refresh.cjs
+	node scripts/test_jira_connection.cjs
 	go test -race -count=1 ./internal/mcpserver
 
 verify: build vet test doc-lint  ## Run build, vet, tests, docs, dashboard browser regression, and diff checks
 	@command -v node >/dev/null 2>&1 || { echo "node is required for the dashboard browser regression"; exit 1; }
 	node scripts/test_dashboard_refresh.cjs
+	node scripts/test_jira_connection.cjs
+	python3 -m unittest discover -s scripts -p 'test_run_jql_oracle*.py'
 	git diff --check
 
 check: tidy fmt vet  ## Run all checks (tidy, fmt, vet)

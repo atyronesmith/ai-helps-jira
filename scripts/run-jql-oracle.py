@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -20,7 +21,18 @@ REQUIRED_ENV = (
     "JIRA_ORACLE_SPRINT_ID",
     "JIRA_ORACLE_RELEASE",
 )
+SMOKE_REQUIRED_ENV = REQUIRED_ENV[:4]
+SMOKE_TESTS = (
+    "TestOracle_DateSortWithoutDirection",
+    "TestOracle_ExplicitAbsoluteDateRanges",
+    "TestOracle_WorkActivityReadEndpoints",
+)
 COMMAND = ["go", "test", "-json", "-tags=oracle", "-count=1", "./..."]
+SMOKE_COMMAND = [
+    "go", "test", "-json", "-tags=oracle", "-count=1",
+    "-run", "^TestOracle_(DateSortWithoutDirection|ExplicitAbsoluteDateRanges|WorkActivityReadEndpoints)$",
+    "./internal/llm", "./internal/jira",
+]
 
 
 def _summary(message: str, stream: TextIO | None = None) -> None:
@@ -32,17 +44,19 @@ def _summary(message: str, stream: TextIO | None = None) -> None:
             summary.write(message + "\n")
 
 
-def run(env: dict[str, str] | None = None) -> int:
-    """Run go tests, returning nonzero unless oracle cases conclusively pass."""
+def run(env: dict[str, str] | None = None, *, smoke: bool = False) -> int:
+    """Run full or smoke oracle tests; pass only when oracle cases conclusively pass."""
     environment = dict(os.environ if env is None else env)
-    absent = [key for key in REQUIRED_ENV if not environment.get(key)]
+    required_env = SMOKE_REQUIRED_ENV if smoke else REQUIRED_ENV
+    command = SMOKE_COMMAND if smoke else COMMAND
+    absent = [key for key in required_env if not environment.get(key)]
     if absent:
         _summary("## JQL oracle: SKIPPED\nMissing required configuration: " + ", ".join(absent))
         return 2
 
     try:
         proc = subprocess.Popen(
-            COMMAND,
+            command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -125,6 +139,11 @@ def run(env: dict[str, str] | None = None) -> int:
     )
 
     problems = []
+    if smoke:
+        passing_roots = {name for (_, name), state in test_terminal.items() if state == "pass"}
+        missing = [name for name in SMOKE_TESTS if name not in passing_roots]
+        if missing:
+            problems.append("required smoke tests did not pass: " + ", ".join(missing))
     if exit_code != 0:
         problems.append(f"go test exited with status {exit_code}")
     if counts["any_fail"]:
@@ -157,5 +176,16 @@ def run(env: dict[str, str] | None = None) -> int:
     return 1 if problems else 0
 
 
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="run fixed date parser checks and one issue's read-only activity endpoints (requires Jira connection and a nonempty visible project)",
+    )
+    args = parser.parse_args(argv)
+    return run(smoke=args.smoke)
+
+
 if __name__ == "__main__":
-    raise SystemExit(run())
+    raise SystemExit(main())

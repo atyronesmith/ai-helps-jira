@@ -139,7 +139,7 @@ go build ./...
 go vet ./...
 go test -race -count=1 ./...
 go test -race -tags=oracle -count=1 ./internal/jqloracle
-python3 -m unittest discover -s scripts -p 'test_run_jql_oracle.py' -v
+python3 -m unittest discover -s scripts -p 'test_run_jql_oracle*.py' -v
 make doc-lint
 git diff --check
 ```
@@ -187,6 +187,63 @@ with a nonzero exit. Test failures, any skipped oracle case, malformed or
 incomplete results, and zero passing leaf oracle cases cannot report `PASS`.
 Raw `go test -tags=oracle ./...` can still succeed while live tests skip; that
 exit status alone is not evidence that the oracle passed.
+
+### macOS development with Bitwarden
+
+Use the existing container launcher's host-side Keychain and Bitwarden setup to
+run the oracle locally. This requires Python 3, Go, the `security` command, and
+the Bitwarden Secrets Manager CLI (`bws`). The machine access token must be in
+an entry accessible to `security find-generic-password` under service
+`jira-bws-access-token` and account `$USER`, normally in the file-based macOS
+**login** Keychain. **iCloud** or **Local Items** in Keychain Access uses different
+storage. If the lookup works in your Terminal
+but fails in an agent, run the tests in the working Terminal context; a token
+copy or rotation is unnecessary. See the initialization guide below.
+`BWS_ACCESS_TOKEN_KEYCHAIN_SERVICE` and `BWS_ACCESS_TOKEN_KEYCHAIN_ACCOUNT`
+override those defaults, as with the container launcher.
+
+For one-time token creation and storage, see
+[Bitwarden initialization and credential lifecycle](docs/CONTAINER-SETUP.md#bitwarden-initialization-and-credential-lifecycle).
+If your earlier setup stored the token under `bws-access-token`, set
+`BWS_ACCESS_TOKEN_KEYCHAIN_SERVICE=bws-access-token` in the environment or, for
+the development launcher, `.env` to select that existing entry.
+
+Set `BWS_JIRA_API_TOKEN_ID` to the UUID of the Bitwarden secret whose key is
+exactly `JIRA_API_TOKEN`. Supply `JIRA_SERVER`, `JIRA_EMAIL`, and `JIRA_PROJECT`
+in `.env` or the process environment, then run:
+
+```sh
+make test-live
+make test-live-full  # Also requires the three JIRA_ORACLE_* fixture settings above
+```
+
+`test-live` runs the fixed date-sort and absolute-date parser checks plus
+`TestOracle_WorkActivityReadEndpoints`, which reads the authenticated profile,
+searches for one visible project issue, and reads its paginated comments,
+worklogs, and changelog. It requires a nonempty visible project but no issue,
+sprint, or release fixtures. Its intentional one-issue cap does not establish a
+complete activity report. `test-live-full` runs the complete tagged suite through
+the same strict result checker. Both use only GETs, read-only enhanced search,
+and strict JQL parsing for live operations; they do not modify Jira data or
+create fixtures. The smoke result checker requires all three named tests to
+pass. Ordinary `make test` and `make verify` remain hermetic.
+
+The development launcher reads only the named Jira/fixture and Bitwarden settings
+from `.env`; nonempty environment values take precedence. Use `BWS_ENV_FILE` to
+select another config file. Values are single-line literals, with optional
+`export`, quotes, and trailing comments; quote values containing spaces. Shell
+code and variable references are never executed or expanded. A `JIRA_API_TOKEN`
+or `BWS_ACCESS_TOKEN` already in `.env` or the environment is ignored: the Jira
+token always comes from Bitwarden, and the machine token always from Keychain.
+The machine token is passed only to `bws`; the Jira token reaches the test child
+through its environment. The launcher writes neither token to disk and does not
+print credential subprocess output. Missing configuration or failed credential
+retrieval exits nonzero before tests run.
+
+For explicitly exported credentials without Bitwarden, the original runner also
+supports `python3 scripts/run-jql-oracle.py --smoke`. It still does not load
+`.env` or retrieve credentials itself. The Bitwarden launcher accepts only the
+fixed smoke/full modes, not arbitrary commands.
 
 For GitHub Actions, create a protected environment named **jira-oracle** and restrict
 its deployment branch policy to the repository's default branch. Store

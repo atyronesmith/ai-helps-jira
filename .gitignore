@@ -15,5 +15,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+__pycache__/
 # Trainer output is private. Curated regression fixtures are authored separately.
 *feedback*.jsonl

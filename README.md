@@ -134,6 +134,7 @@ jira-cli -u user@company.com -p MYPROJ summary
 jira-cli query "show me all critical bugs from last week"
 jira-cli query "unresolved stories assigned to me" --show-jql
 jira-cli query "epics created this month" --max 10
+jira-cli query "issues assigned to me updated between 2026-10-12 and 2026-10-16"
 jira-cli query --dry-run "issues I closed in June 2026"
 # Count all matches, retaining at most 10 issue rows for display
 jira-cli query --count "my open bugs" --max 10
@@ -149,6 +150,44 @@ Supported core-field queries and dry runs need no Jira credentials or model. Uns
 queries use one typed LLM completion, compiled and validated locally, with a
 45-second deadline and no automatic retries. Invalid output and provider errors
 are terminal; the translator never switches prompts to retry the request.
+
+Explicit ISO calendar ranges for `created`, `updated`, `resolved`, and `due`
+include the entire end date. For example, `updated between 2026-10-12 and
+2026-10-16` becomes `updated >= "2026-10-12" AND updated < "2026-10-17"`.
+Current assignment plus an update timestamp does not prove who performed work.
+Personal activity requests with supported date ranges use the authors of actual
+comments, worklogs, and status changes, regardless of current assignment:
+
+```sh
+jira-cli query "what jira items did I work on during Oct 12 - Oct 16"
+jira-cli query "issues I worked on between 2026-10-12 and 2026-10-16 in PROJ" --max 20
+```
+
+The server handles the same original wording through `jira_query`. Comment and
+status-change dates are their creation times; worklogs use their work start
+times, including work logged later. Calendar boundaries use the effective user's
+Jira profile timezone (explicitly disclosed UTC fallback if absent). Omitted
+years use the current server year and are disclosed. Unsupported wording or
+additional constraints require clarification; translation-only commands still
+cannot express this report as a single JQL query. `query --dry-run` describes the
+activity plan without accessing Jira or credentials.
+
+The report scans currently visible issues in the selected project, including
+closed issues, without assignment or last-update filters. It reads paginated
+events with four workers and a 120-second deadline, up to 1,000 candidate issues
+and 20 pages per event endpoint per issue, with at most 10,000 retained matching
+events across the report. Any exceeded limit, failed page, or visibility
+loss makes the report partial with an unknown matching total. `--max` limits
+display rows, separately from scan completeness. Deleted/restricted records and
+issues now outside the selected project are excluded; reads are not an atomic
+snapshot.
+
+MCP clients must pass the original wording to `jira_query`. On a translation
+error, report the error and ask for any requested clarification. Rewording the
+request, adding a status filter, searching for credentials, or retrying through
+shell/REST changes the request or bypasses the MCP boundary. Server guidance
+cannot prevent a host client from ignoring it; client-side tool permissions and
+instructions must enforce that boundary too.
 
 Recognized ordering phrases accept an omitted direction and default to ascending.
 For example, `my open issues ordered by date created` stays deterministic,
@@ -659,14 +698,53 @@ processes. Defaults retain up to 1000 entries for 30 days; customize with
 `--history-max-results` and `--history-max-age` (zero disables the respective
 limit). Pruning occurs at startup and on save. Old PID histories are left alone.
 
+Use **Clear log** on the dashboard to delete all saved results and attempts for
+the current history instance after confirmation. This clears the entire saved
+history, including entries outside the current view. Processes sharing that
+instance see the deletion; other instances, Jira data, caches, and server text
+logs are outside its scope. New results can appear as ongoing operations finish.
+The clear runs atomically in SQLite, and subsequent results continue to save
+normally. Refreshing or opening the dashboard never clears history.
+
 The dashboard lists successes and failed attempts. Query views keep original and
 normalized wording, exact execution text, separate display JQL, validation,
 timing, and search completeness. `/healthz` reports liveness only. `/readyz`
 returns 503 for failed, unknown, or stale required dependency observations;
 `/api/status` includes checked-at times. These are passive observations from
-normal operations and expire after five minutes. Deterministic-only or idle use
+normal operations or an explicit connection test and expire after five minutes. Deterministic-only or idle use
 can leave readiness unknown. Polling does not call Jira or a model. See the
 [Phase 6 contracts and limitations](docs/project-reliability-implementation-plan.md#phase-6-delivered-contracts-2026-10-16).
+
+Under **Dependencies**, click **Test Jira connection** to check the running
+server's configured Jira connection. It makes one authenticated, read-only
+`GET /rest/api/3/myself` request and reports the result, check time, and latency.
+Success confirms reachability and access to the current-user endpoint; project
+and issue permissions are not tested. Failures distinguish rejected credentials,
+denied access, DNS/TLS errors, timeouts, rate limiting, and invalid responses.
+See [Atlassian's current-user endpoint](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-myself/#api-rest-api-3-myself-get).
+
+The browser sends no Jira credentials. The test uses the same environment or
+mounted-secret credentials as the server, requires no default project or model,
+and has a ten-second deadline with no retries or redirects. Only a button click
+starts the upstream request; dashboard refresh and health/readiness polling
+remain passive. Concurrent checks are rejected until the first finishes. Each
+completed check updates the Jira dependency observation without claiming full
+server readiness. Responses omit credentials, account details, and raw upstream
+errors.
+
+The dependency labels describe the last observed operation:
+
+- **MCP tool calls** means a tool request reached the MCP dispatcher. Jira can
+  still fail afterward; the indicator does not track connected client sessions.
+- **LLM provider** is the configured model service used for fallback translation
+  and AI features. Its observed operation can fail because of provider setup,
+  connectivity, or rejected model output. Deterministic queries may not use it.
+- **Unknown** means no operation has been observed; **stale** means the last
+  observation is over five minutes old. **OK** or **failed** describes the last
+  observed operation. An unused provider can leave overall readiness unknown.
+
+The dashboard includes these explanations beside the indicators. Clearing its
+saved history does not reset dependency observations or establish connectivity.
 
 ### JIRA API
 

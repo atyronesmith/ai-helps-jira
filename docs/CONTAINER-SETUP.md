@@ -8,6 +8,87 @@ The included `make container-run` target and the manual examples below publish b
 
 For macOS hosts using Bitwarden Secrets Manager, `make container-run-bitwarden` retrieves the JIRA token on the host and mounts it as a Podman secret. This requires the Bitwarden Secrets Manager CLI (`bws`), `jq`, and Podman. Store a machine access token in macOS Keychain under service `jira-bws-access-token` and account `$USER` (or configure `BWS_ACCESS_TOKEN_KEYCHAIN_SERVICE` and `BWS_ACCESS_TOKEN_KEYCHAIN_ACCOUNT`). Set `BWS_JIRA_API_TOKEN_ID` to the UUID of the Bitwarden secret whose key is exactly `JIRA_API_TOKEN`; it can be in the process environment or in `.env`. The launcher uses a private temporary copy of `.env` with `JIRA_API_TOKEN` omitted, so the original file remains compatible with non-Bitwarden workflows while the mounted secret remains authoritative.
 
+### Bitwarden initialization and credential lifecycle
+
+In Bitwarden **Secrets Manager**, create a project containing the
+`JIRA_API_TOKEN` secret, grant a machine account read access to that project,
+and generate a machine access token. Save that token when Bitwarden displays
+it; the value is shown only at creation. See Bitwarden's
+[access-token documentation](https://bitwarden.com/help/access-tokens/).
+
+For a new local setup, store the machine token as a Keychain generic password:
+
+```sh
+security add-generic-password \
+  -a "${BWS_ACCESS_TOKEN_KEYCHAIN_ACCOUNT:-$USER}" \
+  -s "${BWS_ACCESS_TOKEN_KEYCHAIN_SERVICE:-jira-bws-access-token}" \
+  -w
+```
+
+With `-w` last, `security` prompts for the value to store: paste the **Bitwarden
+machine access token** there. A separate macOS authorization dialog may ask for
+your login/keychain password. That password authorizes access to Keychain; the
+launcher retrieves the stored machine token rather than generating one from
+your password. The command adds a new item and does not overwrite an existing
+matching item.
+
+### An item is visible in iCloud, but the command says it cannot be found
+
+The `security` CLI mainly uses file-based Keychains, including **login**. The
+**iCloud** / **Local Items** entries in Keychain Access use the separate data
+protection Keychain, whose application access depends on code-signing
+entitlements and a user login context. An agent or background process can have
+different Keychain access from your interactive Terminal. Changing the
+service/account arguments does not resolve that session difference. See Apple's
+[Keychain implementation notes](https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains).
+
+First check the exact service/account lookup in your own Terminal, discarding
+the secret output:
+
+```sh
+/usr/bin/security find-generic-password -a "$USER" -s jira-bws-access-token -w >/dev/null
+```
+
+If it succeeds there while an agent receives item-not-found, run `make test-live`
+in that working Terminal context. Do not copy or rotate a working credential
+solely to fix an agent's access context.
+
+If the intended launcher genuinely lacks a file-based Keychain item, in
+Keychain Access select **login**, choose **File → New Password Item**, and
+create a local copy with item name `jira-bws-access-token`, your configured
+account (normally your macOS username), and the same Bitwarden machine access
+token stored in the iCloud item. Keep the original item. Enter the secret only
+in Keychain Access or the interactive `security ... -w` prompt, never in shell
+arguments, source files, chat, or logs. Then retry `make test-live`.
+
+The machine token is different from the non-secret `BWS_JIRA_API_TOKEN_ID`
+UUID. Copying the existing token requires no Bitwarden master-password login
+and does not rotate or recreate the Jira secret.
+
+### Service names and runtime storage
+
+Earlier setup instructions used the service name **`bws-access-token`**. Select
+an existing entry under that name by exporting this setting in the shell that
+runs either launcher:
+
+```sh
+export BWS_ACCESS_TOKEN_KEYCHAIN_SERVICE=bws-access-token
+```
+
+The development launcher also accepts that setting in `.env`. The container
+launcher reads the service/account overrides from its process environment.
+The UUID in `BWS_JIRA_API_TOKEN_ID` identifies the Jira secret; the separate
+machine access token authenticates the Bitwarden request.
+
+At startup, the host launcher retrieves the machine token from Keychain, uses
+`bws secret get` with the configured UUID to fetch the Jira token, and installs
+the Jira token as a Podman secret. Podman retains that copy until it is replaced
+or removed and mounts it at `/run/secrets/JIRA_API_TOKEN` with mode `0400` for
+UID 1001. The container can continue using that copy without further Keychain
+or Bitwarden access. Image building does not retrieve these credentials; the
+runtime image receives the Jira secret through the mount. The machine token
+stays on the host.
+
 ## Prerequisites
 
 - A JIRA Cloud account with an API token
@@ -142,6 +223,15 @@ curl -sf http://localhost:18080/healthz
 ```
 
 Open `http://localhost:18080` in a browser to see the web dashboard.
+
+Use **Dependencies → Test Jira connection** for an explicit read-only check of
+the container's configured Jira authentication and connectivity. It calls
+Jira's current-user endpoint using the mounted Jira token; it does not retrieve
+Bitwarden credentials or require host Keychain access. The result includes a
+timestamp and latency, and distinguishes authentication, access, network, TLS,
+timeout, and upstream-response failures. A passing check does not establish
+project/issue permissions. Ordinary dashboard polling does not run this check.
+Rebuild/restart the server after source changes to make the button available.
 
 The Make target offers an explicit host address override, for example `make container-run CONTAINER_HOST=192.0.2.10`. Its printed `localhost` URLs and client config are for clients running on the container host. Remote clients must replace `localhost` with the host's reachable DNS name or IP. The MCP endpoint and dashboard have no client authentication, so remote access must be protected by firewall rules and an authenticated proxy. `CONTAINER_HOST=0.0.0.0` publishes on every host interface and is unsafe without those protections. The services still bind to `0.0.0.0` inside the container so Podman or Docker can forward connections; that does not by itself publish them on every host interface.
 

@@ -42,4 +42,11 @@ jobs:
         run: go run . train-jql replay internal/nlfeedback/testdata/regressions.jsonl
       - run: go test -race -tags=oracle -count=1 ./internal/jqloracle
       - name: Test oracle runner
-        run: python3 -m unittest discover -s scripts -p 'test_run_jql_oracle.py' -v
+        run: python3 -m unittest discover -s scripts -p 'test_run_jql_oracle*.py' -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test dashboard behavior
+        run: |
+          node scripts/test_dashboard_refresh.cjs
+          node scripts/test_jira_connection.cjs
