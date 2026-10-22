@@ -39,8 +39,10 @@ mode: list, count, recommendation. filter kinds: and/or (children array), not (o
 Operators: = != > >= < <= ~ !~ IN NOT IN IS IS NOT. IS operands have kind empty. Values: {kind:string,text:...}, {kind:number,text:...}, {kind:boolean,text:true/false}, {kind:self}, {kind:relative_days,days:positive integer}, {kind:calendar_date,text:YYYY-MM-DD}, {kind:calendar_function,text:now/startOfDay/startOfWeek/startOfMonth/endOfDay/endOfWeek/endOfMonth,offset:integer}.
 No raw JQL, function calls or quoting in text values. sort: [{field:...,direction:ASC/DESC}]. Preserve Boolean groups and sorting exactly. Do not invent ordering. When a requested sort omits direction, priority, updated, numeric and duration fields default to DESC; summary/title and other date fields default to ASC. Explicit directions override these defaults.
 Use self for my/me/mine including history actors; the caller supplies the effective identity.
+Requests about items someone 'worked on' need clarification of the activity evidence. Never substitute current assignee and updated timestamps for comments, logged work or changes performed by that person.
 Requests for open, unresolved, active, unfinished, or not-done work mean statusCategory != Done. Never substitute an issuetype != ... predicate for a requested status filter.
 Relative last/past N days/weeks use inclusive lower bounds through now; calendar periods use inclusive start and exclusive next start. Do not approximate months or sprints with day counts. Search dates must name an issue date field. Comment windows are handled separately by the caller.
+Explicit calendar-date ranges include the final day: represent 'between START and END' using separate comparison nodes joined by and, with >= START and < the day after END. BETWEEN is not an operator. Never repeat JSON object keys.
 Fields must be core fields or fields in the supplied catalog. Prefer exact field IDs; never invent custom IDs, types or applicability.
 SCHEMA:
 %s`

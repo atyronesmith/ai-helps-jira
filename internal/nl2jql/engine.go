@@ -243,6 +243,7 @@ var ambiguousPeriod = regexp.MustCompile(`(?i)\b(?:last|past)\s+(?:[0-9]+\s+(?:m
 
 var ambiguousNegation = regexp.MustCompile(`(?i)\bnot\s+(?:done|closed|resolved|cancell?ed)\s+or\s+(?:done|closed|resolved|cancell?ed)\b`)
 var ambiguousTense = regexp.MustCompile(`(?i)\b(?:was|were|previously|had)\b`)
+var ambiguousWorkActivity = regexp.MustCompile(`(?i)\bworked\s+on\b|\bdid\s+(?:[a-z][a-z0-9_.@+-]*\s+){1,4}work\s+on\b`)
 
 func checkAmbiguity(q string) error {
 	if _, err := repairSearchKeywords(q); err != nil {
@@ -253,6 +254,12 @@ func checkAmbiguity(q string) error {
 	}
 	if start, end, ok := textLiteralSpan(q); ok {
 		q = q[:start] + strings.Repeat(" ", end-start) + q[end:]
+	}
+	if ambiguousWorkActivity.MatchString(maskFallbackLiterals(q)) {
+		return fmt.Errorf("%w: comments, logged work or status changes require event-level authorship and dates, which cannot be compiled to a single issue-search JQL; use jira_query or query with a supported personal activity date range, and clarify any unsupported constraints; ownership and update timestamps do not establish who performed the work", ErrAmbiguousIntent)
+	}
+	if err := validateAbsoluteDateRanges(q); err != nil {
+		return err
 	}
 	for _, match := range relRangeRe.FindAllStringSubmatch(q, -1) {
 		count, err := strconv.Atoi(match[relRangeRe.SubexpIndex("count")])
@@ -270,7 +277,9 @@ func checkAmbiguity(q string) error {
 	if ambiguousNegation.MatchString(q) {
 		return fmt.Errorf("%w: group negative status alternatives explicitly", ErrAmbiguousIntent)
 	}
-	if ambiguousTense.MatchString(q) {
+	// A named issue timestamp with an explicit date range is unambiguous even
+	// in "were updated between ...". Keep rejecting unsupported status history.
+	if ambiguousTense.MatchString(absoluteDateRangeRE.ReplaceAllString(q, " ")) {
 		return fmt.Errorf("%w: specify current status, resolution date, or a status transition", ErrAmbiguousIntent)
 	}
 	return nil

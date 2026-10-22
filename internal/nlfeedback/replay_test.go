@@ -29,10 +29,10 @@ func TestSanitizedRegressionCorpus(t *testing.T) {
 			t.Errorf("%s: checks=%v problem=%s translation=%+v category=%s", result.ID, result.Checks, result.Problem, result.Translation, result.ErrorCategory)
 		}
 	}
-	if report.Total != 68 || report.Passed != 68 || report.TranslationFailures != 16 || report.SemanticCorrect != 52 || report.ProviderCalls != 6 || report.Deterministic != 50 {
+	if report.Total != 75 || report.Passed != 75 || report.TranslationFailures != 18 || report.SemanticCorrect != 57 || report.ProviderCalls != 6 || report.Deterministic != 55 {
 		t.Errorf("unexpected corpus metrics: %+v", report)
 	}
-	if report.AcceptanceRate != 52.0/68 || report.ExpectationPassRate != 1 || report.DeterministicCoverage != 50.0/68 || report.DurationNanos <= 0 {
+	if report.AcceptanceRate != 57.0/75 || report.ExpectationPassRate != 1 || report.DeterministicCoverage != 55.0/75 || report.DurationNanos <= 0 {
 		t.Errorf("invalid rates/latency: %+v", report)
 	}
 	// A second replay has the same outcomes regardless of real elapsed time.

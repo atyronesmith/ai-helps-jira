@@ -361,6 +361,10 @@ func (q *Query) plan(self string, now time.Time, nested bool) (*QueryPlan, error
 			p = c.Status.predicate()
 		case c.Priority != nil:
 			p = c.Priority.predicate()
+		case c.Labeled != nil:
+			p = c.Labeled.predicate()
+		case c.StatusIs != nil:
+			p = c.StatusIs.predicate()
 		case c.StoryPoints != nil:
 			return comparison(jql.Quote("Story Points"), c.StoryPoints.Operator, c.StoryPoints.Value), "points", nil
 		default:
@@ -419,6 +423,30 @@ func (q *Query) plan(self string, now time.Time, nested bool) (*QueryPlan, error
 	// Cross-field alternatives need an explicit group. Inside a group, regular
 	// AND-before-OR precedence gives a composable, unsurprising interpretation.
 	crossOR := false
+	labelOR := false
+	firstLabel := -1
+	for idx, item := range items {
+		if item.field == "labels" {
+			if firstLabel < 0 {
+				firstLabel = idx
+			}
+			labelOR = labelOR || item.connector == "OR"
+		}
+	}
+	if labelOR {
+		if nested {
+			// Split explicit label alternatives into complete AND branches.
+			// Bucketing labels separately would hoist a trailing negation,
+			// group, date, or other predicate out of its original OR arm.
+			crossOR = true
+		} else {
+			for idx, item := range items {
+				if item.grouped || idx > firstLabel && item.field != "labels" {
+					return nil, fmt.Errorf("%w: group label alternatives with mixed operands explicitly", ErrAmbiguousIntent)
+				}
+			}
+		}
+	}
 	for idx, item := range items {
 		if item.connector == "OR" && (item.field == "" || item.field == "date" || item.field == "points" || item.field != items[idx-1].field) {
 			if !nested && !(item.grouped && items[idx-1].grouped) {
@@ -526,6 +554,41 @@ func statusPossibilities(i *Intent) (uint, error) {
 	return all, nil
 }
 
+// intersectOpenStatus recognizes the supported conjunction of open work and
+// explicit status Open in either order. It must never simplify an OR bucket.
+func intersectOpenStatus(a, b *Intent) *Intent {
+	isCategory := func(i *Intent) bool {
+		return i.Kind == IntentComparison && i.Field == "statusCategory" &&
+			i.Operator == "!=" && i.Value == "Done"
+	}
+	isOpen := func(i *Intent) bool {
+		return i.Kind == IntentComparison && i.Field == "status" &&
+			i.Operator == "=" && strings.EqualFold(i.Value, "Open")
+	}
+	if isCategory(a) && isOpen(b) {
+		return b
+	}
+	if isOpen(a) && isCategory(b) {
+		return a
+	}
+	return nil
+}
+
+// Labels are multi-valued: AND requires both values, while OR allows either.
+// Keep conjunctions together before joining alternatives, including adjacency.
+func labelIntent(items []intentItem) *Intent {
+	var alternatives, conjunction []*Intent
+	for _, item := range items {
+		if item.connector == "OR" && len(conjunction) > 0 {
+			alternatives = append(alternatives, joinIntent(IntentAll, conjunction...))
+			conjunction = nil
+		}
+		conjunction = append(conjunction, item.expr)
+	}
+	alternatives = append(alternatives, joinIntent(IntentAll, conjunction...))
+	return joinIntent(IntentAny, alternatives...)
+}
+
 func flatIntent(items []intentItem) (*Intent, error) {
 	// Same-field enumerations remain alternatives. Status conjunctions are
 	// rejected, including implicit adjacency; repeating the same status is safe.
@@ -538,13 +601,24 @@ func flatIntent(items []intentItem) (*Intent, error) {
 	}
 	buckets := map[string][]*Intent{}
 	var groups []*Intent
+	var labels []intentItem
 	for _, item := range items {
 		field := item.field
 		if field == "" || field == "date" || field == "points" {
 			groups = append(groups, item.expr)
 			continue
 		}
+		if field == "labels" {
+			labels = append(labels, item)
+			continue
+		}
 		bucket := buckets[field]
+		if field == "status" && item.connector != "OR" && len(bucket) == 1 {
+			if specific := intersectOpenStatus(bucket[0], item.expr); specific != nil {
+				buckets[field] = []*Intent{specific}
+				continue
+			}
+		}
 		duplicate := false
 		for _, old := range bucket {
 			if intentEqual(old, item.expr) {
@@ -563,6 +637,7 @@ func flatIntent(items []intentItem) (*Intent, error) {
 		}
 		buckets[field] = append(bucket, item.expr)
 	}
+
 	var terms []*Intent
 	for _, field := range []string{"project", "issuetype", "status", "assignee", "priority"} {
 		bucket := buckets[field]
@@ -584,6 +659,7 @@ func flatIntent(items []intentItem) (*Intent, error) {
 			terms = append(terms, joinIntent(IntentAny, bucket...))
 		}
 	}
+	terms = append(terms, labelIntent(labels))
 	terms = append(terms, groups...)
 	return joinIntent(IntentAll, terms...), nil
 }

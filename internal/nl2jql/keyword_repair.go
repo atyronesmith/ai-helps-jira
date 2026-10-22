@@ -15,7 +15,7 @@ var predicateKeywords = strings.Fields("open closed done created updated resolve
 var orderFrames = strings.Fields("ordered sorted order")
 
 func orderingKeywords() []string {
-	words := strings.Fields("from oldest newest ascending descending asc desc")
+	words := strings.Fields("from oldest newest most least recent latest earliest first ascending descending asc desc")
 	for alias := range orderFieldJQL {
 		words = append(words, strings.Fields(alias)...)
 	}

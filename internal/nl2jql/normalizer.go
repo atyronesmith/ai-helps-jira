@@ -84,10 +84,18 @@ func (n *Normalizer) normalizeSyntax(s string, projectMap map[string]string) str
 	if repaired, err := repairSearchKeywords(s); err == nil {
 		s = repaired
 	}
+	// The bare recency idiom ("newest first" / "oldest first") is unambiguous
+	// shorthand for ordering by the creation date. Map it onto the long form
+	// the grammar already parses ("by created from newest/oldest to ...") so
+	// the fast path handles it. This must precede the date/project passes and
+	// must NOT touch priority-direction words ("lowest first", "highest
+	// first"), which the needs-human review keeps as confirm-refuse.
+	s = normalizeRecencyWord(s)
 	s = normalizeRecommendationQuestion(s)
 
 	// Dates first: "in the last 3 days" must be consumed before the project
 	// pass starts matching "in <something>".
+	s = normalizeAbsoluteDateRanges(s)
 	s = n.normalizeDates(s)
 	s = n.normalizeProjects(s, projectMap)
 	s = normalizeOpenStatusPhrases(s)
@@ -133,7 +141,7 @@ var openStatusPhrases = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\banything\s+still\s+open\b`),
 	regexp.MustCompile(`(?i)\bunfinished\s+work\b`),
 	regexp.MustCompile(`(?i)\bactive\s+issues\b`),
-	regexp.MustCompile(`(?i)\bnot\s+(?:done|closed|resolved|cancell?ed)\b`),
+	regexp.MustCompile(`(?i)\b(?:status\s+is\s+)?not\s+(?:done|closed|resolved|cancell?ed)\b`),
 }
 
 func normalizeOpenStatusPhrases(s string) string {
@@ -141,6 +149,39 @@ func normalizeOpenStatusPhrases(s string) string {
 		s = phrase.ReplaceAllString(s, "open")
 	}
 	return s
+}
+
+// recencyWordRe matches the bare 2-word recency idiom: a recency lexicon word
+// immediately followed by "first". It is deliberately restricted to the recency
+// lexicon so it cannot rewrite the priority-direction words ("lowest first",
+// "highest first", "most urgent first") that the needs-human review keeps as
+// confirm-refuse (a priority value, not an ordering cue).
+var recencyWordRe = regexp.MustCompile(
+	`(?i)\b(?:newest|most\s+recent|latest|recent|oldest|least\s+recent|earliest)\s+first\b`)
+
+func normalizeRecencyWord(s string) string {
+	var out strings.Builder
+	last := 0
+	for _, span := range recencyWordRe.FindAllStringIndex(s, -1) {
+		m := s[span[0]:span[1]]
+		head := strings.ToLower(strings.TrimSpace(m[:len(m)-len("first")]))
+		direction := "from oldest to newest"
+		switch head {
+		case "newest", "latest", "recent", "most recent":
+			direction = "from newest to oldest"
+		}
+		out.WriteString(s[last:span[0]])
+		// An explicit ordering frame already names the field, including later
+		// comma/then terms. Supply only its direction and let sort() enforce
+		// that chronological wording applies to a date field.
+		if !textOrderingFrame.MatchString(s[:span[0]]) {
+			out.WriteString("by created ")
+		}
+		out.WriteString(direction)
+		last = span[1]
+	}
+	out.WriteString(s[last:])
+	return out.String()
 }
 
 // ---------------------------------------------------------------------------

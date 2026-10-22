@@ -79,6 +79,8 @@ var jqlLexer = lexer.MustStateful(lexer.Rules{
 		// ordinary Boolean connectors remain separate tokens elsewhere.
 		{Name: "OrderFrame", Pattern: `(?i)(?:\band\s+(?:ordered|sorted|order)\s+by\b|\b(?:ordered|sorted|order)\s+by\b|\bin\s+order\s+of\s+when\b|\bby\b)`},
 		{Name: "PriorityEither", Pattern: `(?i)\bpriority\s+is\s+either\b`},
+		{Name: "StatusIs", Pattern: `(?i)\bstatus\s+is\b`},
+		{Name: "Labeled", Pattern: `(?i)\blabeled\b`},
 		{Name: "And", Pattern: `(?i)\band\b`},
 		{Name: "Or", Pattern: `(?i)\bor\b`},
 		{Name: "Not", Pattern: `(?i)\bnot\b`},
@@ -174,6 +176,8 @@ type Clause struct {
 	Status        *Status         `parser:"| @@"`
 	Priority      *Priority       `parser:"| @@"`
 	StoryPoints   *StoryPoints    `parser:"| @@"`
+	Labeled       *Labeled        `parser:"| @@"`
+	StatusIs      *StatusIs       `parser:"| @@"`
 	OrderBy       *OrderBy        `parser:"| @@"`
 	Chronological string          `parser:"| @ChronologicalDirection"`
 	TextSearch    *TextSearch     `parser:"| @@"`
@@ -222,6 +226,23 @@ type IssueType struct {
 // Status -> statusCategory != Done | "In Progress" | Done.
 type Status struct {
 	Raw string `parser:"@Open | @Done | @Closed | @InProgress"`
+}
+
+// Labeled -> labels = <value>. A bare "labeled X" is a fast-path label
+// equality. The value is exactly one following word; a following ordering
+// tail is a separate clause, so the capture stops at the first word.
+type Labeled struct {
+	Raw   string `parser:"@Labeled"`
+	Value string `parser:"@Word"`
+}
+
+// StatusIs -> status = <value>. The explicit "status is X" frame pins a
+// specific status value. The value is one following token; recognised status
+// vocabulary (open/closed/done/in progress) is accepted alongside an arbitrary
+// word, so "status is Open" parses as status = Open.
+type StatusIs struct {
+	Frame string   `parser:"@StatusIs"`
+	Value []string `parser:"( @Word | @Open | @Closed | @Done | @InProgress )"`
 }
 
 // Priority accepts field/value pairs, bare values, and one value following the
@@ -462,6 +483,26 @@ func (p *Project) predicate() pred {
 		return pred{} // "in the ..." with nothing after it
 	}
 	return eqPred("project", quoteIfNeeded(key))
+}
+
+func (l *Labeled) predicate() pred {
+	value := clean(l.Value)
+	if value == "" {
+		return pred{}
+	}
+	return eqPred("labels", quoteIfNeeded(value))
+}
+
+func (s *StatusIs) predicate() pred {
+	value := clean(strings.Join(s.Value, " "))
+	if value == "" {
+		return pred{}
+	}
+	v, ok := statusJQL[normaliseStatus(value)]
+	if !ok {
+		v = value
+	}
+	return eqPred("status", quoteIfNeeded(v))
 }
 
 // ToJQL compiles the natural-language intent plan to the shared JQL tree.
