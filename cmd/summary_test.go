@@ -88,7 +88,7 @@ func newSummaryCLIHarness(t *testing.T) *summaryCLIHarness {
 			if strings.Contains(req.JQL, "bob@example.test") {
 				owner = "bob@example.test"
 			}
-			var rows []any
+			rows := []any{}
 			switch mode {
 			case "empty":
 			case "closed":

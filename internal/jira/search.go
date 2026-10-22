@@ -69,6 +69,9 @@ func (c *Client) SearchJQLResult(ctx context.Context, rawJQL string, opts Search
 			}
 			return stop(reason, err)
 		}
+		if response.Issues == nil {
+			return stop("invalid_response", errors.New("Jira search response omitted the issues array or returned null"))
+		}
 		// A previous token only proved that this page existed. It says nothing
 		// about further matches after the page now being processed.
 		result.HasMore = nil

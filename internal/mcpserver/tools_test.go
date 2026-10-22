@@ -1076,7 +1076,7 @@ func TestHandleTranslateQueryUsesSameTranslationWithoutSearching(t *testing.T) {
 	const original = "my open bugs in TEST"
 	const translated = "project = TEST AND statusCategory != Done AND assignee = currentUser()"
 	var searchedJQL string
-	searchServer := jqlSearchServer(t, nil, &searchedJQL)
+	searchServer := jqlSearchServer(t, []map[string]any{}, &searchedJQL)
 	t.Setenv("JIRA_SERVER", searchServer.URL)
 	var translatedInputs []string
 	h.translate = func(_ context.Context, cfg *config.Config, query string) (*llm.QueryResult, error) {
@@ -1221,7 +1221,7 @@ func TestHandleDigest_NLTranslationDrivesSearch(t *testing.T) {
 	setTestJIRAEnv(t)
 
 	var recorded string
-	ts := jqlSearchServer(t, nil, &recorded) // no matching issues
+	ts := jqlSearchServer(t, []map[string]any{}, &recorded) // no matching issues
 	t.Setenv("JIRA_SERVER", ts.URL)
 
 	var gotQuery string

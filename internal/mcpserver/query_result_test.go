@@ -210,7 +210,7 @@ func TestHandleQueryEmptyExactZero(t *testing.T) {
 	h := newTestHandlers(t)
 	setTestJIRAEnv(t)
 	var recorded string
-	ts := jqlSearchServer(t, nil, &recorded)
+	ts := jqlSearchServer(t, []map[string]any{}, &recorded)
 	t.Setenv("JIRA_SERVER", ts.URL)
 	h.translate = func(_ context.Context, _ *config.Config, _ string) (*llm.QueryResult, error) {
 		return &llm.QueryResult{JQL: "project = TEST"}, nil

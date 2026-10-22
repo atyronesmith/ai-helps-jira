@@ -131,6 +131,30 @@ func LoadJIRAOnly(userOverride, projectOverride string) (*Config, error) {
 	}, nil
 }
 
+// LoadJIRAConnection loads only the authenticated Jira connection settings.
+// A connection check neither needs a default project nor initializes an LLM.
+func LoadJIRAConnection() (*Config, error) {
+	_ = godotenv.Load()
+	cfg := &Config{
+		JiraServer:   getEnvOrSecret("JIRA_SERVER"),
+		JiraEmail:    getEnvOrSecret("JIRA_EMAIL"),
+		JiraAPIToken: getEnvOrSecret("JIRA_API_TOKEN"),
+	}
+	var missing []string
+	values := map[string]string{
+		"JIRA_SERVER": cfg.JiraServer, "JIRA_EMAIL": cfg.JiraEmail, "JIRA_API_TOKEN": cfg.JiraAPIToken,
+	}
+	for _, name := range []string{"JIRA_SERVER", "JIRA_EMAIL", "JIRA_API_TOKEN"} {
+		if strings.TrimSpace(values[name]) == "" {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) != 0 {
+		return nil, fmt.Errorf("missing Jira connection settings (env or mounted secret): %s", strings.Join(missing, ", "))
+	}
+	return cfg, nil
+}
+
 func (c *Config) Assignee() string {
 	if c.JiraUser != "" {
 		return jql.Quote(c.JiraUser)
