@@ -8,7 +8,9 @@
     <button id="refresh-now" class="outline">Refresh now</button>
     <label for="auto-refresh"><input type="checkbox" id="auto-refresh"> Auto-refresh results (15s)</label>
     <button id="bulk-delete-btn" class="outline secondary" style="display:none;">Delete Selected</button>
+    <button id="clear-log" class="outline secondary" type="button">Clear log</button>
 </div>
+<p>Clears saved dashboard results and attempts for this server. New entries can appear as operations finish.</p>
 <p id="dashboard-update" role="status" aria-live="polite"></p>
 <div id="dashboard-results">
 {{if .Results}}

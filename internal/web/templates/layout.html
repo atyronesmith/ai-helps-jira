@@ -71,9 +71,18 @@
             <h2>Dependencies</h2>
             <ul id="server-dependencies">
                 {{range .Dependencies}}
-                <li><strong>{{.Name}}</strong>: {{.State}}{{if .Required}} (required){{end}} · checked {{if .CheckedAt.IsZero}}never observed{{else}}{{formatTime .CheckedAt}}{{end}}</li>
+                <li><strong>{{if eq .Name "mcp"}}MCP tool calls{{else if eq .Name "provider"}}LLM provider{{else}}{{.Name}}{{end}}</strong>: {{.State}}{{if .Required}} (required){{end}} · checked {{if .CheckedAt.IsZero}}never observed{{else}}{{formatTime .CheckedAt}}{{end}}</li>
                 {{else}}<li>No dependency observations recorded.</li>{{end}}
             </ul>
+            <details>
+                <summary>What do these statuses mean?</summary>
+                <p><strong>MCP tool calls:</strong> a tool request reached this server. This can be OK even when the Jira operation fails; it does not track whether a client remains connected.</p>
+                <p><strong>LLM provider:</strong> the configured language-model service used for fallback translation and AI features. This records the last observed model-backed operation, including output errors. Deterministic queries may never contact it.</p>
+                <p><strong>Unknown</strong> means no operation has been observed. <strong>Stale</strong> means the last observation is over five minutes old. <strong>OK</strong> or <strong>failed</strong> describes the last observed operation. These are observations, not continuous connection tests; an unused provider can leave readiness unknown.</p>
+            </details>
+            <button id="jira-test-connection" type="button">Test Jira connection</button>
+            <p id="jira-connection-result" role="status" aria-live="polite"></p>
+            <small>Checks Jira connectivity and authentication only; project permissions are not checked.</small>
         </section>
         {{end}}
         {{with cacheStatus}}
@@ -87,6 +96,7 @@
     <footer class="container">
         <small class="timestamp">Powered by jira-cli MCP server</small>
     </footer>
+    <script src="/static/js/jira-connection.js" defer></script>
     {{block "scripts" .}}{{end}}
     <script>
         (() => {
@@ -108,7 +118,8 @@
                     const item = document.createElement('li');
                     const checkedAt = observation.checked_at && !observation.checked_at.startsWith('0001-01-01')
                         ? observation.checked_at : 'never observed';
-                    item.textContent = `${observation.name || 'Unknown dependency'}: ${observation.state || 'unknown'}${observation.required ? ' (required)' : ''} · checked ${checkedAt}`;
+                    const label = ({mcp: 'MCP tool calls', provider: 'LLM provider'})[observation.name] || observation.name || 'Unknown dependency';
+                    item.textContent = `${label}: ${observation.state || 'unknown'}${observation.required ? ' (required)' : ''} · checked ${checkedAt}`;
                     dependencies.appendChild(item);
                 });
             };
@@ -131,6 +142,7 @@
                     updated.textContent = 'Could not reach server';
                 }
             };
+            window.addEventListener('jira-connection-tested', refreshStatus);
             refreshStatus();
             window.setInterval(refreshStatus, 15000);
         })();

@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -8,22 +9,26 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/atyronesmith/ai-helps-jira/internal/cache"
+	"github.com/atyronesmith/ai-helps-jira/internal/jira"
 	"github.com/atyronesmith/ai-helps-jira/internal/llm"
 	"github.com/atyronesmith/ai-helps-jira/internal/web"
 )
 
 // WebServer serves rich HTML dashboards for MCP tool results.
 type WebServer struct {
-	store        *ResultStore
-	port         int
-	bindHost     string
-	tmpls        map[string]*template.Template
-	startedAt    time.Time
-	dependencies *dependencyObservations
-	httpServer   *http.Server
+	store               *ResultStore
+	port                int
+	bindHost            string
+	tmpls               map[string]*template.Template
+	startedAt           time.Time
+	dependencies        *dependencyObservations
+	httpServer          *http.Server
+	jiraConnectionMu    sync.Mutex
+	checkJiraConnection func(context.Context) jira.ConnectionCheck
 }
 
 // NewWebServer creates a web server with parsed templates.
@@ -80,6 +85,8 @@ func NewWebServer(store *ResultStore, db *cache.Cache, port int, bindHost string
 				return llm.RouteFastPath + " — the deterministic parser handled this query with no LLM call."
 			case llm.RouteFallback:
 				return llm.RouteFallback + " — the parser could not handle it, so one LLM produced typed intent compiled locally to JQL."
+			case "activity":
+				return "activity — authored comments, worklogs, and status changes were checked by account and event date. No LLM translation was used."
 			default:
 				return ""
 			}
@@ -114,12 +121,13 @@ func NewWebServer(store *ResultStore, db *cache.Cache, port int, bindHost string
 	}
 
 	ws = &WebServer{
-		store:        store,
-		port:         port,
-		bindHost:     bindHost,
-		tmpls:        tmpls,
-		startedAt:    time.Now(),
-		dependencies: newDependencyObservations(),
+		store:               store,
+		port:                port,
+		bindHost:            bindHost,
+		tmpls:               tmpls,
+		startedAt:           time.Now(),
+		dependencies:        newDependencyObservations(),
+		checkJiraConnection: checkConfiguredJira,
 	}
 	if db != nil {
 		ws.dependencies.observe("cache", nil)
@@ -160,7 +168,9 @@ func (ws *WebServer) Start() (int, error) {
 	mux.HandleFunc("GET /healthz", ws.handleHealthz)
 	mux.HandleFunc("GET /readyz", ws.handleReadyz)
 	mux.HandleFunc("GET /api/status", ws.handleStatus)
-	mux.HandleFunc("GET /", ws.handleIndex)
+	mux.HandleFunc("/api/jira/test-connection", ws.handleJiraConnection)
+	mux.HandleFunc("/api/history", ws.handleClearHistory)
+	mux.HandleFunc("GET /{$}", ws.handleIndex)
 	mux.HandleFunc("GET /view/{id}", ws.handleView)
 	mux.HandleFunc("GET /api/result/{id}", ws.handleAPIResult)
 	mux.HandleFunc("DELETE /api/result/{id}", ws.handleDeleteResult)

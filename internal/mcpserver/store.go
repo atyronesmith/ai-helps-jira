@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -291,6 +292,52 @@ func (s *ResultStore) Delete(id string) bool {
 	delete(s.results, id)
 	s.removeOrder(id)
 	return true
+}
+
+// Clear removes every saved result and attempt owned by this store instance.
+// Durable stores use one atomic statement so concurrent handles observe a single
+// clear point, while the database file and schema remain available for later saves.
+func (s *ResultStore) Clear(ctx context.Context) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		s.setPersistenceError(errResultStoreClosed)
+		return 0, errResultStoreClosed
+	}
+	if err := ctx.Err(); err != nil {
+		s.setPersistenceError(err)
+		return 0, err
+	}
+	if s.db != nil {
+		res, err := s.db.ExecContext(ctx, "DELETE FROM results")
+		if err != nil {
+			s.setPersistenceError(err)
+			return 0, err
+		}
+		if res == nil {
+			err = errors.New("clear results returned no execution result")
+			s.setPersistenceError(err)
+			return 0, err
+		}
+		n, err := res.RowsAffected()
+		maxInt := int64(^uint(0) >> 1)
+		if err == nil && (n < 0 || n > maxInt) {
+			err = fmt.Errorf("cleared result count %d is out of range", n)
+		}
+		s.setPersistenceError(err)
+		if err != nil {
+			return 0, err
+		}
+		return int(n), nil
+	}
+	deleted := len(s.results)
+	s.results = make(map[string]*StoredResult)
+	s.order = make([]string, 0)
+	s.setPersistenceError(nil)
+	return deleted, nil
 }
 
 func (s *ResultStore) List() []*StoredResult {

@@ -6,9 +6,10 @@
     const refreshButton = document.getElementById('refresh-now');
     const autoCheckbox = document.getElementById('auto-refresh');
     const bulkButton = document.getElementById('bulk-delete-btn');
+    const clearButton = document.getElementById('clear-log');
     const updateMessage = document.getElementById('dashboard-update');
     const results = document.getElementById('dashboard-results');
-    if (!refreshButton || !autoCheckbox || !bulkButton || !updateMessage || !results) return;
+    if (!refreshButton || !autoCheckbox || !bulkButton || !clearButton || !updateMessage || !results) return;
 
     let refreshing = false;
     let deleting = false;
@@ -37,6 +38,7 @@
 
     function updateControls() {
         refreshButton.disabled = refreshing || deleting;
+        clearButton.disabled = refreshing || deleting;
         autoCheckbox.disabled = deleting;
         updateBulkButton();
     }
@@ -111,6 +113,52 @@
         }
     }
 
+    async function clearHistory() {
+        if (refreshing || deleting) return;
+        if (!confirm('Clear all saved dashboard results and attempts for this server? This cannot be undone. Jira issues and server text logs are not removed.')) return;
+        deleting = true;
+        updateControls();
+        setMessage('Clearing saved dashboard history…');
+        try {
+            const response = await fetch('/api/history', {
+                method: 'DELETE',
+                cache: 'no-store',
+                headers: { 'X-Jira-Clear-History': '1' },
+            });
+            if (!response.ok) throw new Error('Could not clear saved dashboard history.');
+            const payload = await response.json();
+            if (!payload || !Number.isSafeInteger(payload.deleted) || payload.deleted < 0) {
+                throw new Error('Could not clear saved dashboard history.');
+            }
+
+            try {
+                const refreshed = await fetch('/', { cache: 'no-store' });
+                if (!refreshed.ok) throw new Error('Refresh failed');
+                const html = await refreshed.text();
+                const parsed = new DOMParser().parseFromString(html, 'text/html');
+                const incoming = parsed.getElementById('dashboard-results');
+                if (!incoming) throw new Error('Refresh response did not contain results');
+                const replacement = document.importNode(incoming, true);
+                results.replaceChildren(...replacement.childNodes);
+                updateBulkButton();
+                const newRows = getRowChecks().length;
+                const count = payload.deleted;
+                setMessage(`Cleared ${count} saved ${count === 1 ? 'entry' : 'entries'}.${newRows ? ' New entries are shown.' : ' Results refreshed.'}`);
+            } catch (_) {
+                const emptyState = document.createElement('p');
+                emptyState.textContent = 'Saved history was cleared. Refresh to load current entries.';
+                results.replaceChildren(emptyState);
+                updateBulkButton();
+                setMessage('History cleared, but results could not be refreshed. Refresh to see current entries.', true);
+            }
+        } catch (_) {
+            setMessage('Could not confirm the log was cleared. Refresh before retrying.', true);
+        } finally {
+            deleting = false;
+            updateControls();
+        }
+    }
+
     refreshButton.addEventListener('click', () => refresh(true));
     autoCheckbox.addEventListener('change', () => {
         try { localStorage.setItem(AUTO_REFRESH_KEY, autoCheckbox.checked ? 'true' : 'false'); } catch (_) { /* Storage may be unavailable. */ }
@@ -121,6 +169,7 @@
         }
     });
     bulkButton.addEventListener('click', bulkDelete);
+    clearButton.addEventListener('click', clearHistory);
     document.addEventListener('change', (event) => {
         if (event.target.matches('#select-all')) {
             getRowChecks().forEach((check) => { check.checked = event.target.checked; });

@@ -16,8 +16,9 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// DependencyObservation describes an actual local operation, never an active
-// probe. A successful observation is not a guarantee about the next request.
+// DependencyObservation describes a completed operation, including an explicit
+// dashboard connection test. Polling never creates an upstream probe. A
+// successful observation is not a guarantee about the next request.
 type DependencyObservation struct {
 	Name      string    `json:"name"`
 	State     string    `json:"state"`

@@ -29,6 +29,13 @@ class Element {
     this.childNodes = children;
     children.forEach((child) => { child.parent = this; });
   }
+  clone() {
+    const copy = new Element(this.id, [...this.classes]);
+    copy.textContent = this.textContent;
+    copy.childNodes = this.childNodes.map((node) => node.clone ? node.clone() : new Element(node.id, [...node.classes]));
+    copy.childNodes.forEach((child) => { child.parent = copy; });
+    return copy;
+  }
 }
 
 function makeRow(id, selected = false) {
@@ -49,10 +56,12 @@ class Harness {
     this.intervals = [];
     this.requests = [];
     this.storage = storage;
+    this.confirmMessages = [];
+    this.confirmResult = true;
     this.hidden = false;
     for (const [id, classes] of [
       ['refresh-now', []], ['auto-refresh', []], ['bulk-delete-btn', []],
-      ['dashboard-update', []], ['dashboard-results', []], ['select-all', []],
+      ['clear-log', []], ['dashboard-update', []], ['dashboard-results', []], ['select-all', []],
     ]) this.elements.set(id, new Element(id, classes));
     this.document = {
       hidden: false,
@@ -64,6 +73,7 @@ class Harness {
       },
       addEventListener: (type, fn) => { (this.listeners[type] ||= []).push(fn); },
       importNode: (node) => node.clone(),
+      createElement: (tag) => new Element(tag),
     };
     this.results = this.elements.get('dashboard-results');
     this.window = {};
@@ -89,7 +99,7 @@ class Harness {
       },
       AbortController,
       fetch: (...args) => new Promise((resolve, reject) => harness.requests.push({ args, resolve, reject })),
-      confirm: () => true,
+      confirm: (message) => { harness.confirmMessages.push(message); return harness.confirmResult; },
       setInterval: (fn, ms) => { harness.intervals.push({ fn, ms }); },
       localStorage: {
         getItem(key) { if (harness.storage.throw) throw new Error('blocked'); return harness.storage[key] ?? null; },
@@ -108,9 +118,16 @@ class Harness {
   respond(index, html, status = 200) {
     this.requests[index].resolve({ ok: status >= 200 && status < 300, status, text: async () => html });
   }
+  respondJSON(index, payload, status = 200) {
+    this.requests[index].resolve({ ok: status >= 200 && status < 300, status, json: async () => payload });
+  }
+  respondMalformedJSON(index) {
+    this.requests[index].resolve({ ok: true, status: 200, json: async () => { throw new SyntaxError('invalid JSON'); } });
+  }
   reject(index, error) { this.requests[index].reject(error); }
   async flush() { await new Promise((resolve) => setImmediate(resolve)); }
   startManual() { return this.trigger(this.elements.get('refresh-now'), 'click')[0]; }
+  clear() { return this.trigger(this.elements.get('clear-log'), 'click')[0]; }
   html(rows, empty = false) {
     const body = empty ? '<p>No results yet. Use Claude Code to call a jira-cli tool and results will appear here.</p>' : rows.map((id) => `<tr id="row-${id}"><input type="checkbox" class="row-check" data-id="${id}"></tr>`).join('');
     return `<div id="dashboard-results">${body}</div>`;
@@ -243,6 +260,94 @@ async function main() {
     assert.equal(h.rows()[0].checkbox.checked, true, 'failed deletion remains selected');
     assert.equal(h.elements.get('dashboard-update').attributes.role, 'alert');
     assert.match(h.elements.get('dashboard-update').textContent, /Failed selections remain selected/);
+  }
+  {
+    const h = new Harness({ 'jira-cli.dashboard.auto-refresh': 'true' });
+    h.results.replaceChildren(makeRow('preexisting', true));
+    assert.equal(h.requests.length, 0, 'initialization never clears history');
+    h.intervals[0].fn();
+    assert.equal(h.requests.length, 1, 'automatic refresh only reads results');
+    h.respond(0, h.html(['preexisting']));
+    await h.flush();
+    h.confirmResult = false;
+    h.clear();
+    assert.equal(h.requests.length, 1, 'canceling confirmation does not fetch');
+    assert.match(h.confirmMessages[0], /Jira issues and server text logs are not removed/);
+    h.confirmResult = true;
+    const clearing = h.clear();
+    assert.equal(h.requests[1].args[0], '/api/history');
+    assert.equal(h.requests[1].args[1].method, 'DELETE');
+    assert.equal(h.requests[1].args[1].cache, 'no-store');
+    assert.equal(h.requests[1].args[1].headers['X-Jira-Clear-History'], '1');
+    assert.equal(Object.keys(h.requests[1].args[1].headers).length, 1);
+    assert.equal(h.requests[1].args[1].body, undefined);
+    assert.equal(h.requests[1].args[0].includes('?'), false);
+    assert.equal(h.elements.get('clear-log').disabled, true);
+    assert.equal(h.elements.get('refresh-now').disabled, true);
+    assert.equal(h.elements.get('auto-refresh').disabled, true);
+    assert.equal(h.elements.get('bulk-delete-btn').disabled, true);
+    assert.equal(h.rows()[0].checkbox.disabled, true);
+    h.clear();
+    h.startManual();
+    h.intervals[0].fn();
+    assert.equal(h.requests.length, 2, 'overlapping clear, manual refresh, and timer are blocked');
+    h.respondJSON(1, { deleted: 1 });
+    await h.flush();
+    assert.equal(h.requests.length, 3, 'successful clear fetches a fresh fragment');
+    h.respond(2, h.html(['created-after-clear']));
+    await clearing;
+    assert.deepEqual(h.rows().map((row) => [row.checkbox.dataset.id, row.checkbox.checked]), [['created-after-clear', false]]);
+    assert.match(h.elements.get('dashboard-update').textContent, /Cleared 1 saved entry/);
+    assert.match(h.elements.get('dashboard-update').textContent, /New entries are shown/);
+  }
+  {
+    const h = new Harness();
+    h.results.replaceChildren(makeRow('preserve-selection', true));
+    const clearing = h.clear();
+    h.respondJSON(0, { deleted: 1 });
+    await h.flush();
+    h.reject(1, new Error('refresh network failed'));
+    await clearing;
+    assert.equal(h.rows().length, 0, 'stale rows are removed after deletion even when refresh fails');
+    assert.equal(h.results.childNodes[0].textContent, 'Saved history was cleared. Refresh to load current entries.');
+    assert.match(h.elements.get('dashboard-update').textContent, /History cleared, but results could not be refreshed/);
+    assert.equal(h.elements.get('dashboard-update').attributes.role, 'alert');
+  }
+  {
+    const h = new Harness();
+    h.results.replaceChildren(makeRow('retry-clear', true));
+    const clearing = h.clear();
+    h.respondJSON(0, { deleted: '1' });
+    await clearing;
+    assert.deepEqual(h.rows().map((row) => [row.checkbox.dataset.id, row.checkbox.checked]), [['retry-clear', true]]);
+    assert.equal(h.elements.get('dashboard-update').textContent, 'Could not confirm the log was cleared. Refresh before retrying.');
+    assert.equal(h.elements.get('clear-log').disabled, false, 'malformed count failure is recoverable');
+    const retrying = h.clear();
+    h.respondJSON(1, { deleted: 0 });
+    await h.flush();
+    h.respond(2, h.html([], true));
+    await retrying;
+    assert.equal(h.rows().length, 0, 'retry after malformed response can complete');
+  }
+  {
+    const h = new Harness();
+    h.results.replaceChildren(makeRow('failed-delete', true));
+    const clearing = h.clear();
+    h.respondJSON(0, { message: 'unavailable' }, 503);
+    await clearing;
+    assert.deepEqual(h.rows().map((row) => [row.checkbox.dataset.id, row.checkbox.checked]), [['failed-delete', true]]);
+    assert.equal(h.requests.length, 1, 'failed DELETE does not trigger a result refresh');
+    assert.equal(h.elements.get('dashboard-update').textContent, 'Could not confirm the log was cleared. Refresh before retrying.');
+  }
+  {
+    const h = new Harness();
+    h.results.replaceChildren(makeRow('malformed-json', true));
+    const clearing = h.clear();
+    h.respondMalformedJSON(0);
+    await clearing;
+    assert.deepEqual(h.rows().map((row) => [row.checkbox.dataset.id, row.checkbox.checked]), [['malformed-json', true]]);
+    assert.equal(h.requests.length, 1, 'malformed JSON fails closed before refreshing');
+    assert.equal(h.elements.get('dashboard-update').textContent, 'Could not confirm the log was cleared. Refresh before retrying.');
   }
   console.log('dashboard refresh regressions passed');
 }
