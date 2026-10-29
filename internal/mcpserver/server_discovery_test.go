@@ -35,8 +35,11 @@ func TestMCPServerDiscovery(t *testing.T) {
 	if got := initResult.ServerInfo.Version; got != version {
 		t.Errorf("server version = %q, want %q", got, version)
 	}
+	assertJiraSearchInputContract(t, "server instructions", initResult.Instructions)
 	for _, required := range []string{
 		"exact original natural-language wording",
+		"wording of the Jira search clause to jira_query.natural_query",
+		"Pass the exact original search clause there too",
 		"jira_query.natural_query",
 		"jira_translate_query.natural_query",
 		"does not search",
@@ -127,6 +130,31 @@ func TestMCPServerDiscovery(t *testing.T) {
 			t.Errorf("discovered tools missing %q", name)
 		}
 	}
+	for _, name := range []string{"jira_query", "jira_translate_query"} {
+		tool := discovered[name]
+		assertJiraSearchInputContract(t, name+" description", tool.Description)
+		input, err := json.Marshal(tool.InputSchema.Properties["natural_query"])
+		if err != nil {
+			t.Fatalf("marshal %s natural_query schema: %v", name, err)
+		}
+		var property struct {
+			Description string `json:"description"`
+		}
+		if err := json.Unmarshal(input, &property); err != nil {
+			t.Fatalf("decode %s natural_query schema: %v", name, err)
+		}
+		assertJiraSearchInputContract(t, name+" natural_query", property.Description)
+		if name == "jira_translate_query" {
+			for _, surface := range []struct{ name, text string }{
+				{"description", tool.Description},
+				{"natural_query", property.Description},
+			} {
+				if strings.Contains(surface.text, "call jira_query with") {
+					t.Errorf("%s %s must not direct translation-only callers to execute a search", name, surface.name)
+				}
+			}
+		}
+	}
 	for name, required := range map[string][]string{
 		"jira_query": {
 			"does not recommend", "jira_get_issue",
@@ -178,6 +206,31 @@ func TestMCPServerDiscovery(t *testing.T) {
 				t.Errorf("discovered %s natural_query description missing %q: %s", name, phrase, input)
 			}
 		}
+	}
+}
+
+// These assertions cover the public initialize/tools-list surfaces, not model
+// compliance or server-side semantic enforcement of a generated translation.
+func assertJiraSearchInputContract(t *testing.T, surface, text string) {
+	t.Helper()
+	for _, required := range []string{
+		"Pass only the user's Jira search wording",
+		"preserving ownership, scope, dates, and ordering",
+		"Separate Jira retrieval from follow-up actions such as editing TODO.md",
+		"do not include those actions in natural_query",
+		"search clause verbatim, not the whole compound request",
+		"'my items' does not automatically mean 'my open items'",
+		"ask the user for clarification before calling the tool",
+		"list my issues and update TODO.md",
+		"then handle the requested file update separately",
+		"do not include 'and update TODO.md', add 'open', or drop 'my'",
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("%s missing %q", surface, required)
+		}
+	}
+	if !strings.Contains(text, `{"natural_query":"list my issues"}`) {
+		t.Errorf("%s missing search-only example payload", surface)
 	}
 }
 

@@ -108,7 +108,18 @@ that every path already satisfies them.
 
 ## Jira MCP Usage
 
-- For Jira searches, call `jira_query` and pass the user's exact original wording in `natural_query`.
+- For Jira searches, call `jira_query` and pass only the user's Jira search wording
+  in `natural_query`, preserving the search clause verbatim, including ownership,
+  scope, dates, and ordering. Separate Jira retrieval from follow-up actions such
+  as editing `TODO.md`; do not send the whole compound request to the query tool.
+- Do not invent constraints or drop ownership: "my items" does not automatically
+  mean "my open items". If the Jira search scope is unclear or cannot be separated
+  from follow-up actions without guessing, ask for clarification before calling
+  the tool.
+- Example: for "list my issues and update TODO.md", pass
+  `{"natural_query":"list my issues"}` to `jira_query`, then handle the requested
+  file update separately. Do not include "and update TODO.md", add "open", or
+  drop "my" from the search.
 - Do not pretranslate the request to JQL, replace `my`/`me` with a username or email, or call `jira_lookup_user` first. The server owns deterministic translation and its configured LLM fallback.
 - If a Jira MCP tool returns an error, report it. Do not bypass MCP with `curl`, direct Jira REST calls, local CLI commands, or credential discovery unless the user explicitly requests that fallback.
 - These rules govern Jira business operations. Explicitly requested development
